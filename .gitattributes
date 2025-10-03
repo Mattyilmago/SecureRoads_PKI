@@ -1,0 +1,6 @@
+# Forza LF per tutti i file PEM (certificati, chiavi, CRL)
+*.pem text eol=lf
+
+# (Opzionale) Forza LF anche per altri file critici
+*.crt text eol=lf
+*.key text eol=lf

@@ -5,6 +5,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
+import secrets
 
 # COMPITI EA:   
 #   Ricezione e verifica CSR da ITS-S
@@ -13,11 +14,19 @@ import os
 #   Gestione revoca EC (pubblicazione CRL Delta)
 
 class EnrollmentAuthority:
-    def __init__(self, root_ca, base_dir="./data/ea/"):
-        print(f"[EA] Inizializzando Enrollment Authority...")
+    def __init__(self, root_ca, ea_id=None, base_dir="./data/ea/"):
+        # Genera un ID randomico se non specificato
+        if ea_id is None:
+            ea_id = f"EA_{secrets.token_hex(4).upper()}"
+        
+        # Sottocartelle uniche per ogni EA
+        base_dir = os.path.join(base_dir, f"{ea_id}/")
+        
+        print(f"[EA] Inizializzando Enrollment Authority {ea_id}...")
         print(f"[EA] Directory base: {base_dir}")
         
-        self.ea_certificate_path = os.path.join(base_dir, "enrollment_certificates/ea_certificate.pem")
+        self.ea_id = ea_id
+        self.ea_certificate_path = os.path.join(base_dir, "certificates/ea_certificate.pem")
         self.ea_key_path = os.path.join(base_dir, "private_keys/ea_key.pem")
         self.root_ca_certificate_path = "./data/root_ca/certificates/root_ca_certificate.pem"
         self.ec_dir = os.path.join(base_dir, "enrollment_certificates/")
@@ -46,7 +55,7 @@ class EnrollmentAuthority:
         self.load_or_generate_ea()
         print(f"[EA] Caricando certificato Root CA...")
         self.load_root_ca_certificate()
-        print(f"[EA] Inizializzazione Enrollment Authority completata!")
+        print(f"[EA] Inizializzazione Enrollment Authority {ea_id} completata!")
 
    
     # Carica chiave/cert se esistono, altrimenti li genera
@@ -78,8 +87,8 @@ class EnrollmentAuthority:
 
     # Chiede alla rootCa di generare e firmare un certificato. Salva il certificato X.509 firmato
     def generate_signed_certificate_from_rootca(self):
-        print("[EA] Richiedendo alla Root CA la firma del certificato EA...")
-        subject_name = "EnrollmentAuthority"
+        print(f"[EA] Richiedendo alla Root CA la firma del certificato EA {self.ea_id}...")
+        subject_name = f"EnrollmentAuthority_{self.ea_id}"
         ea_certificate = self.root_ca.sign_certificate(
             subject_public_key=self.private_key.public_key(),
             subject_name=subject_name,
@@ -163,7 +172,7 @@ class EnrollmentAuthority:
         ).not_valid_before(
             datetime.now(timezone.utc)
         ).not_valid_after(
-            datetime.now(timezone.utc) + timedelta(seconds=1)
+            datetime.now(timezone.utc) + timedelta(seconds=60)
         ).add_extension(
             x509.BasicConstraints(ca=False, path_length=None), critical=True,
         )

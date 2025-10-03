@@ -1,5 +1,0 @@
-From: Vehicle_001
-Type: CAM
-Message: Ciao da Vehicle_001! Questo è un messaggio CAM di test.
-Signature: 3045022100c92b5922285a8d708fc304db72bbcb39cb73c23cce915f36536842a008f7b7e602204b1c153456d44388c5228681eeecc216c260c0fa374d1fb102f8e0f8a4348d1b
----

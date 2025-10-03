@@ -6,6 +6,7 @@ from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
 import time
+import secrets
 
 # COMPITI AA:
 #   Ricezione richieste AT (standard) #TODO butterfly
@@ -14,9 +15,17 @@ import time
 #   Gestione revoca AT (pubblicazione CRL Delta)
 
 class AuthorizationAuthority:
-    def __init__(self, ea_certificate_path, root_ca, base_dir="./data/aa/"):
-        print("[AA] Inizializzando Authorization Authority...")
-        self.aa_certificate_path = os.path.join(base_dir, "authorization_tickets/aa_certificate.pem")
+    def __init__(self, ea_certificate_path, root_ca, aa_id=None, base_dir="./data/aa/"):
+        # Genera un ID randomico se non specificato
+        if aa_id is None:
+            aa_id = f"AA_{secrets.token_hex(4).upper()}"
+        
+        # Sottocartelle uniche per ogni AA
+        base_dir = os.path.join(base_dir, f"{aa_id}/")
+        
+        print(f"[AA] Inizializzando Authorization Authority {aa_id}...")
+        self.aa_id = aa_id
+        self.aa_certificate_path = os.path.join(base_dir, "certificates/aa_certificate.pem")
         self.aa_key_path = os.path.join(base_dir, "private_keys/aa_key.pem")
         self.ea_certificate_path = ea_certificate_path
         self.crl_path = os.path.join(base_dir, "crl/aa_crl.pem")
@@ -40,7 +49,7 @@ class AuthorizationAuthority:
 
         self.load_or_generate_aa()
         self.load_ea_certificate()
-        print("[AA] Inizializzazione AA completata!")
+        print(f"[AA] Inizializzazione AA {aa_id} completata!")
 
 
     # Carica chiave/certificate se esistono, altrimenti li genera
@@ -70,8 +79,8 @@ class AuthorizationAuthority:
 
     # Chiede alla rootCa di generare e firmare un certificato. Salva il certificato X.509 firmato
     def generate_signed_certificate_from_rootca(self):
-        print("[AA] Richiedo alla Root CA la firma del certificato AA...")
-        subject_name = "AuthorizationAuthority"
+        print(f"[AA] Richiedo alla Root CA la firma del certificato AA {self.aa_id}...")
+        subject_name = f"AuthorizationAuthority_{self.aa_id}"
         aa_certificate = self.root_ca.sign_certificate(
             subject_public_key=self.private_key.public_key(),
             subject_name=subject_name,
