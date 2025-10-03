@@ -26,7 +26,7 @@ def main():
     print("\n4. Verifica certificato AA")
     print(f"AA Subject: {aa.certificate.subject}")
     print(f"AA Serial: {aa.certificate.serial_number}")
-    print(f"AA Validità: dal {aa.certificate.not_valid_before_utc} al {aa.certificate.not_valid_after_utc}")
+    print(f"AA Validità: dal {aa.certificate.not_valid_before} al {aa.certificate.not_valid_after}")
     print(f"AA Issuer: {aa.certificate.issuer}")
     
     print("\n5. Test emissione primo Authorization Ticket")
@@ -47,7 +47,7 @@ def main():
         print(f"Authorization Ticket emesso con successo!")
         print(f"AT Serial: {at_cert1.serial_number}")
         print(f"AT Subject: {at_cert1.subject}")
-        print(f"AT Validità: dal {at_cert1.not_valid_before_utc} al {at_cert1.not_valid_after_utc}")
+        print(f"AT Validità: dal {at_cert1.not_valid_before} al {at_cert1.not_valid_after}")
     
     print("\n6. Test emissione secondo Authorization Ticket")
     # Genera seconda ITS-S
@@ -91,34 +91,42 @@ def main():
     time.sleep(2)
 
     
-    print("\n10. Test caricamento e verifica CRL AA")
-    aa_crl = aa.load_crl()
+    print("\n10. Test pubblicazione Full CRL")
+    aa.crl_manager.publish_full_crl(validity_days=7)
+    
+    print("\n11. Test caricamento e verifica Full CRL AA")
+    aa_crl = aa.crl_manager.load_full_crl()
     if aa_crl:
         revoked_list = list(aa_crl)
-        print(f"CRL AA caricata con {len(revoked_list)} certificati revocati:")
+        print(f"Full CRL AA caricata con {len(revoked_list)} certificati revocati:")
         for revoked in revoked_list:
             print(f"  - Serial revocato: {revoked.serial_number}")
-            print(f"    Data revoca: {revoked.revocation_date_utc}")
+            print(f"    Data revoca: {revoked.revocation_date}")
             # Verifica estensioni per il motivo
             if revoked.extensions:
                 for ext in revoked.extensions:
                     if 'CRLReason' in str(ext.oid):
                         print(f"    Motivo: {ext.value.reason}")
     
-    print("\n11. Test pubblicazione CRL aggiuntiva")
-    aa.publish_crl()
-    
     print("\n12. Test revoca terzo certificato")
     aa.revoke_authorization_ticket(at_cert3, reason=ReasonFlags.cessation_of_operation)
     
-    print("\n13. Verifica finale stato AA")
+    print("\n13. Test pubblicazione Delta CRL")
+    aa.crl_manager.publish_delta_crl(validity_hours=24)
+    
+    print("\n14. Test statistiche CRL")
+    stats = aa.crl_manager.get_statistics()
+    print(f"Statistiche CRL AA: {stats}")
+    
+    print("\n15. Verifica finale stato AA")
     print(f"Authorization Tickets revocati in memoria: {len(aa.revoked)}")
     
-    print("\n14. Verifica finale CRL AA")
-    final_crl = aa.load_crl()
+    print("\n16. Verifica finale Full CRL AA con tutte le revoche")
+    aa.crl_manager.publish_full_crl(validity_days=7)
+    final_crl = aa.crl_manager.load_full_crl()
     if final_crl:
         final_revoked_list = list(final_crl)
-        print(f"CRL AA finale con {len(final_revoked_list)} certificati revocati")
+        print(f"Full CRL AA finale con {len(final_revoked_list)} certificati revocati")
     
     print("\n=== TEST AUTHORIZATION AUTHORITY COMPLETATI ===")
 

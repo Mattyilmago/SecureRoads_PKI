@@ -76,7 +76,11 @@ class CRLManager:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
+        # Se la data è naive, la rendiamo aware assumendo UTC
+        if expiry_date.tzinfo is None:
+            expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+        
         revocation_date = datetime.now(timezone.utc)
         
         print(f"[CRLManager] Aggiungendo certificato revocato: serial={serial_number}")
@@ -266,10 +270,18 @@ class CRLManager:
         old_count = len(self.revoked_certificates)
         
         # Filtra solo certificati non ancora scaduti
-        self.revoked_certificates = [
-            entry for entry in self.revoked_certificates
-            if entry.get("expiry_date") and entry["expiry_date"] > now
-        ]
+        # Gestisce sia date naive che aware
+        filtered = []
+        for entry in self.revoked_certificates:
+            expiry_date = entry.get("expiry_date")
+            if expiry_date:
+                # Se la data è naive, la rendiamo aware assumendo UTC
+                if expiry_date.tzinfo is None:
+                    expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                if expiry_date > now:
+                    filtered.append(entry)
+        
+        self.revoked_certificates = filtered
         
         removed = old_count - len(self.revoked_certificates)
         if removed > 0:
@@ -293,8 +305,8 @@ class CRLManager:
         
         print(f"[CRLManager] Full CRL caricata:")
         print(f"[CRLManager]   Certificati revocati: {len(crl)}")
-        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update_utc}")
-        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update_utc}")
+        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update}")
+        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update}")
         
         return crl
 
@@ -315,8 +327,8 @@ class CRLManager:
         
         print(f"[CRLManager] Delta CRL caricata:")
         print(f"[CRLManager]   Nuove revoche: {len(crl)}")
-        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update_utc}")
-        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update_utc}")
+        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update}")
+        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update}")
         
         return crl
 

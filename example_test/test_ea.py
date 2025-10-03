@@ -22,7 +22,7 @@ def main():
     print("\n3. Verifica certificato EA")
     print(f"EA Subject: {ea.certificate.subject}")
     print(f"EA Serial: {ea.certificate.serial_number}")
-    print(f"EA Validità: dal {ea.certificate.not_valid_before_utc} al {ea.certificate.not_valid_after_utc}")
+    print(f"EA Validità: dal {ea.certificate.not_valid_before} al {ea.certificate.not_valid_after}")
     print(f"EA Issuer: {ea.certificate.issuer}")
     
     print("\n4. Test generazione CSR da ITS-S simulata")
@@ -52,7 +52,7 @@ def main():
         print(f"Enrollment Certificate emesso con successo!")
         print(f"EC Serial: {ec_cert.serial_number}")
         print(f"EC Subject: {ec_cert.subject}")
-        print(f"EC Validità: dal {ec_cert.not_valid_before_utc} al {ec_cert.not_valid_after_utc}")
+        print(f"EC Validità: dal {ec_cert.not_valid_before} al {ec_cert.not_valid_after}")
     
     print("\n6. Test emissione secondo Enrollment Certificate")
     # Genera seconda ITS-S
@@ -76,27 +76,34 @@ def main():
     print("\n9. Test revoca secondo certificato con motivo diverso")
     ea.revoke_enrollment_certificate(ec_cert2, reason=ReasonFlags.superseded)
     
-    print("\n10. Test caricamento e verifica CRL EA")
-    ea_crl = ea.load_crl()
+    print("\n10. Test pubblicazione Full CRL")
+    ea.crl_manager.publish_full_crl(validity_days=7)
+    
+    print("\n11. Test caricamento e verifica Full CRL EA")
+    ea_crl = ea.crl_manager.load_full_crl()
     if ea_crl:
         revoked_list = list(ea_crl)
-        print(f"CRL EA caricata con {len(revoked_list)} certificati revocati:")
+        print(f"Full CRL EA caricata con {len(revoked_list)} certificati revocati:")
         for revoked in revoked_list:
             print(f"  - Serial revocato: {revoked.serial_number}")
-            print(f"    Data revoca: {revoked.revocation_date_utc}")
+            print(f"    Data revoca: {revoked.revocation_date}")
             # Verifica estensioni per il motivo
             if revoked.extensions:
                 for ext in revoked.extensions:
                     if 'CRLReason' in str(ext.oid):
                         print(f"    Motivo: {ext.value.reason}")
     
-    print("\n11. Test pubblicazione CRL aggiuntiva")
-    ea.publish_crl()
-    
     print("\n12. Test revoca terzo certificato")
     ea.revoke_enrollment_certificate(ec_cert3, reason=ReasonFlags.cessation_of_operation)
     
-    print("\n13. Verifica finale stato EA")
+    print("\n13. Test pubblicazione Delta CRL")
+    ea.crl_manager.publish_delta_crl(validity_hours=24)
+    
+    print("\n14. Test statistiche CRL")
+    stats = ea.crl_manager.get_statistics()
+    print(f"Statistiche CRL EA: {stats}")
+    
+    print("\n15. Verifica finale stato EA")
     print(f"Certificati revocati in memoria: {len(ea.revoked)}")
     
     print("\n=== TEST ENROLLMENT AUTHORITY COMPLETATI ===")

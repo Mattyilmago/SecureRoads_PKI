@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import time
 import secrets
+from entities.crl_manager import CRLManager
 
 # COMPITI AA:
 #   Ricezione richieste AT (standard) #TODO butterfly
@@ -49,6 +50,17 @@ class AuthorizationAuthority:
 
         self.load_or_generate_aa()
         self.load_ea_certificate()
+        
+        # Inizializza CRLManager dopo aver caricato certificato e chiave privata
+        print(f"[AA] Inizializzando CRLManager per AA {aa_id}...")
+        self.crl_manager = CRLManager(
+            authority_id=aa_id,
+            base_dir=base_dir,
+            issuer_certificate=self.certificate,
+            issuer_private_key=self.private_key
+        )
+        print(f"[AA] CRLManager inizializzato con successo!")
+        
         print(f"[AA] Inizializzazione AA {aa_id} completata!")
 
 
@@ -90,6 +102,10 @@ class AuthorizationAuthority:
         with open(self.aa_certificate_path, "wb") as f:
             f.write(aa_certificate.public_bytes(serialization.Encoding.PEM))
         print(f"[AA] Certificato AA firmato dalla Root CA salvato: {self.aa_certificate_path}")
+        
+        # Archivia il certificato anche nella RootCA
+        print(f"[AA] Richiedendo archiviazione certificato nella RootCA...")
+        self.root_ca.save_subordinate_certificate(aa_certificate)
 
 
     # Carica la chiave privata ECC dal file PEM
@@ -128,7 +144,11 @@ class AuthorizationAuthority:
             if ec_certificate.issuer != self.ea_certificate.subject:
                 print("[AA] EC NON valido: issuer non corrisponde a EA.")
                 return None
-            if ec_certificate.not_valid_after_utc < datetime.now(timezone.utc):
+            # Gestisce sia date naive che aware
+            ec_expiry = ec_certificate.not_valid_after
+            if ec_expiry.tzinfo is None:
+                ec_expiry = ec_expiry.replace(tzinfo=timezone.utc)
+            if ec_expiry < datetime.now(timezone.utc):
                 print("[AA] EC scaduto.")
                 return None
             print("[AA] EC valido. Procedo con emissione Authorization Ticket.")
@@ -177,64 +197,43 @@ class AuthorizationAuthority:
     def revoke_authorization_ticket(self, certificate, reason=ReasonFlags.unspecified):
         """
         Revoca un Authorization Ticket aggiungendolo alla lista dei certificati revocati.
+        Pubblica automaticamente una Delta CRL.
         
         Args:
             certificate: Il certificato X.509 da revocare
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
         
         print(f"[AA] Revocando Authorization Ticket con serial: {serial_number}")
         print(f"[AA] Data di scadenza certificato: {expiry_date}")
         print(f"[AA] Motivo revoca: {reason}")
         
-        self.revoked.append({
-            "serial_number": serial_number,
-            "revocation_date": datetime.now(timezone.utc),
-            "expiry_date": expiry_date,
-            "reason": reason
-        })
+        # Usa CRLManager per aggiungere il certificato revocato
+        self.crl_manager.add_revoked_certificate(certificate, reason)
         print(f"[AA] Authorization Ticket aggiunto alla lista di revoca AA")
-        print(f"[AA] Pubblicando nuova CRL AA...")
-        self.publish_crl()
+        
+        # Pubblica Delta CRL incrementale
+        print(f"[AA] Pubblicando Delta CRL AA...")
+        self.crl_manager.publish_delta_crl()
         print(f"[AA] Revoca completata!")
 
 
-    # Genera e salva una CRL conforme X.509 ASN.1 su file PEM 
-    def publish_crl(self):
-        print("[AA] Generazione e firma CRL AA...")
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(self.certificate.subject)
-        builder = builder.last_update(datetime.now(timezone.utc))
-        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(days=7))
-        print(f"[AA] Numero Authorization Ticket revocati nella CRL: {len(self.revoked)}")
-        for entry in self.revoked:
-            print(f"[AA] Aggiungo AT revocato: serial={entry['serial_number']}, "
-                  f"data revoca={entry['revocation_date']}, "
-                  f"data scadenza={entry.get('expiry_date', 'N/A')}, "
-                  f"motivo={entry['reason']}")
-            revoked_certificate = x509.RevokedCertificateBuilder()\
-                .serial_number(entry["serial_number"])\
-                .revocation_date(entry["revocation_date"])\
-                .add_extension(
-                    x509.CRLReason(entry["reason"]),
-                    critical=False
-                ).build()
-            builder = builder.add_revoked_certificate(revoked_certificate)
-        crl = builder.sign(private_key=self.private_key, algorithm=hashes.SHA256())
-        with open(self.crl_path, "wb") as f:
-            f.write(crl.public_bytes(serialization.Encoding.PEM))
-        print(f"[AA] CRL AA salvata su file: {self.crl_path}")
+    # Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM 
+    def publish_crl(self, validity_days=7):
+        """
+        Pubblica una Full CRL completa consolidando tutte le revoche.
+        Questo metodo dovrebbe essere chiamato periodicamente (es. settimanalmente)
+        per consolidare tutte le Delta CRL in una nuova Full CRL.
+        
+        Args:
+            validity_days: Numero di giorni di validità della Full CRL (default: 7)
+        """
+        print(f"[AA] Pubblicando Full CRL AA (validità: {validity_days} giorni)...")
+        self.crl_manager.publish_full_crl(validity_days=validity_days)
+        print(f"[AA] Full CRL AA pubblicata con successo!")
 
-        # Dopo la pubblicazione, rimuovo dalla lista delle revoche i certificati scaduti
-        now = datetime.now(timezone.utc)
-        old_count = len(self.revoked)
-        self.revoked = [
-            entry for entry in self.revoked
-            if entry.get("expiry_date", None) is None or entry["expiry_date"] > now
-        ]
-        print(f"[AA] Pulizia revoche: da {old_count} a {len(self.revoked)} ancora attive.")
 
 
 

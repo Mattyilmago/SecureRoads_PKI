@@ -5,6 +5,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
+from entities.crl_manager import CRLManager
 
 # COMPITI RootCa:
 #   Generazione chiave privata
@@ -38,6 +39,17 @@ class RootCA:
         # Prova a caricare chiave/cert
         print(f"[RootCA] Caricando o generando chiave e certificato...")
         self.load_or_generate_ca()
+        
+        # Inizializza CRLManager dopo aver caricato certificato e chiave privata
+        print(f"[RootCA] Inizializzando CRLManager per RootCA...")
+        self.crl_manager = CRLManager(
+            authority_id="RootCA",
+            base_dir=base_dir,
+            issuer_certificate=self.certificate,
+            issuer_private_key=self.private_key
+        )
+        print(f"[RootCA] CRLManager inizializzato con successo!")
+        
         print(f"[RootCA] Inizializzazione completata!")
 
    
@@ -96,7 +108,7 @@ class RootCA:
         
         self.certificate = cert
         print(f"[RootCA] Certificato generato con serial number: {cert.serial_number}")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
         print(f"[RootCA] Salvando certificato in: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -120,7 +132,7 @@ class RootCA:
         print(f"[RootCA] Certificato caricato con successo!")
         print(f"[RootCA] Subject: {self.certificate.subject}")
         print(f"[RootCA] Serial number: {self.certificate.serial_number}")
-        print(f"[RootCA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}")
+        print(f"[RootCA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}")
 
    
     # Firma un certificato subordinato (EA/AA)
@@ -154,60 +166,81 @@ class RootCA:
         ).sign(self.private_key, hashes.SHA256())
 
         print(f"[RootCA] Certificato firmato con successo!")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
         return cert
 
     
     # Salva certificato subordinato su file
     def save_subordinate_certificate(self, cert, base_dir="./data/"):
         """
-        Salva il certificato subordinato nella cartella corretta dell'autorità,
-        riconoscendo EA/AA dal campo Organization o CommonName del certificato.
-        Salva anche una copia archivio in RootCA/subordinates.
+        Salva il certificato subordinato firmato nell'archivio della RootCA.
+        
+        Ogni certificato viene salvato con un nome univoco che include l'ID
+        dell'autorità, permettendo di archiviare certificati di più EA e AA.
+        
+        Nota: Ogni autorità subordinata (EA/AA) salva già il proprio certificato
+        nella propria cartella durante l'inizializzazione. Questo metodo serve
+        solo per mantenere una copia archivio centralizzata presso la RootCA.
+        
+        Args:
+            cert: Il certificato X.509 firmato da salvare
+            base_dir: Directory base (default: "./data/")
         """
         subject = cert.subject
-        # Prova a estrarre Organization (O) e Common Name (CN)
+        serial_number = cert.serial_number
+        
+        # Estrae Organization (O) e Common Name (CN)
         org_attrs = subject.get_attributes_for_oid(x509.NameOID.ORGANIZATION_NAME)
         cn_attrs = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
         org = org_attrs[0].value if org_attrs else ""
         cn = cn_attrs[0].value if cn_attrs else ""
 
-        # Determina tipo autorità
-        if "EnrollmentAuthority" in org or "EA" in cn:
-            authority_folder = "ea"
-            cert_subfolder = "enrollment_certificates"
-            cert_filename = "ea_certificate.pem"
-        elif "AuthorizationAuthority" in org or "AA" in cn:
-            authority_folder = "aa"
-            cert_subfolder = "authorization_tickets"
-            cert_filename = "aa_certificate.pem"
+        # Determina il nome del file in base al tipo di autorità e ID
+        if "EnrollmentAuthority" in org or "EnrollmentAuthority" in cn:
+            # Estrae l'ID dell'EA dal CN (es. EnrollmentAuthority_EA_ABC123)
+            if "_EA_" in cn:
+                ea_id = cn.split("_EA_")[1]
+                cert_filename = f"EA_{ea_id}_cert.pem"
+                authority_type = "Enrollment Authority"
+            else:
+                # Fallback: usa il serial number se non c'è ID
+                cert_filename = f"EA_cert_{serial_number}.pem"
+                authority_type = "Enrollment Authority"
+                
+        elif "AuthorizationAuthority" in org or "AuthorizationAuthority" in cn:
+            # Estrae l'ID dell'AA dal CN (es. AuthorizationAuthority_AA_ABC123)
+            if "_AA_" in cn:
+                aa_id = cn.split("_AA_")[1]
+                cert_filename = f"AA_{aa_id}_cert.pem"
+                authority_type = "Authorization Authority"
+            else:
+                # Fallback: usa il serial number se non c'è ID
+                cert_filename = f"AA_cert_{serial_number}.pem"
+                authority_type = "Authorization Authority"
         else:
-            # Default: usa CN come nome cartella, filename generico
-            authority_folder = cn.lower()
-            cert_subfolder = ""
-            cert_filename = f"{cn}_certificate.pem"
+            # Default: autorità generica
+            authority_type = "Subordinate Authority"
+            safe_cn = cn.replace(' ', '_').replace('/', '_')
+            cert_filename = f"{safe_cn}_cert.pem"
 
-        # Path operativo subordinato
-        authority_base_dir = os.path.join(base_dir, authority_folder)
-        if cert_subfolder:
-            authority_certificate_path = os.path.join(authority_base_dir, cert_subfolder, cert_filename)
-        else:
-            authority_certificate_path = os.path.join(authority_base_dir, cert_filename)
-
-        print(f"[RootCA] Salvo certificato subordinato operativo in: {authority_certificate_path}")
-        os.makedirs(os.path.dirname(authority_certificate_path), exist_ok=True)
-        with open(authority_certificate_path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f"[RootCA] Certificato subordinato salvato nell'autorità operativa!")
-
-        # Salva anche copia archivio in RootCA/subordinates
+        # Salva nella cartella archivio della RootCA
         archive_dir = os.path.join(base_dir, "root_ca/subordinates")
         os.makedirs(archive_dir, exist_ok=True)
         archive_path = os.path.join(archive_dir, cert_filename)
-        print(f"[RootCA] Salvo certificato subordinato archivio in: {archive_path}")
+        
+        print(f"[RootCA] ========================================")
+        print(f"[RootCA] Archiviando certificato subordinato")
+        print(f"[RootCA] Tipo: {authority_type}")
+        print(f"[RootCA] Subject: {subject}")
+        print(f"[RootCA] Serial: {serial_number}")
+        print(f"[RootCA] File: {cert_filename}")
+        print(f"[RootCA] Path completo: {archive_path}")
+        
         with open(archive_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f"[RootCA] Certificato subordinato salvato in archivio RootCA!")
+            
+        print(f"[RootCA] Certificato archiviato con successo!")
+        print(f"[RootCA] ========================================")
 
 
     
@@ -221,74 +254,120 @@ class RootCA:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
         
         print(f"[RootCA] Revocando certificato con serial number: {serial_number}")
-        print(f"[RootCA] Data di scadenza certificato: {expiry_date}")
+        print(f"[RootCA] Motivo revoca: {reason}")
         
+        # Aggiungi al CRLManager invece che alla lista locale
+        self.crl_manager.add_revoked_certificate(certificate, reason)
+        
+        # Mantieni anche nella lista locale per retrocompatibilità (se necessario)
+        expiry_date = certificate.not_valid_after
         self.revoked.append({
             "serial_number": serial_number,
             "revocation_date": datetime.now(timezone.utc),
             "expiry_date": expiry_date,
             "reason": reason
         })
+        
         print(f"[RootCA] Certificato aggiunto alla lista di revoca")
-        print(f"[RootCA] Pubblicando nuova CRL...")
-        self.publish_crl()
         print(f"[RootCA] Revoca completata!")
 
    
-    # Genera e salva una CRL conforme X.509 ASN.1 su file PEM
-    def publish_crl(self):
-        print(f"[RootCA] Generando Certificate Revocation List (CRL)...")
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(self.certificate.subject)
-        builder = builder.last_update(datetime.now(timezone.utc))
-        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(seconds=1))
-
-        print(f"[RootCA] Numero di certificati revocati: {len(self.revoked)}")
-        for entry in self.revoked:
-            print(f"[RootCA] Aggiungendo alla CRL serial number: {entry['serial_number']}")
-            print(f"[RootCA]   Data revoca: {entry['revocation_date']}")
-            print(f"[RootCA]   Data scadenza originale: {entry['expiry_date']}")
-            print(f"[RootCA]   Motivo: {entry['reason']}")
-            
-            revoked_certificate = x509.RevokedCertificateBuilder()\
-                .serial_number(entry["serial_number"])\
-                .revocation_date(entry["revocation_date"])\
-                .add_extension(
-                    x509.CRLReason(entry["reason"]),
-                    critical=False
-                ).build()
-            builder = builder.add_revoked_certificate(revoked_certificate)
-
-        crl = builder.sign(private_key=self.private_key, algorithm=hashes.SHA256())
-        print(f"[RootCA] Salvando CRL in: {self.crl_path}")
-        with open(self.crl_path, "wb") as f:
-            f.write(crl.public_bytes(serialization.Encoding.PEM))
-        print(f"[RootCA] CRL generata e pubblicata con successo!")
-
-        # Dopo la pubblicazione, rimuovo dalla lista delle revoche i certificati scaduti
-        now = datetime.now(timezone.utc)
-        old_count = len(self.revoked)
+    # Genera e pubblica una Full CRL usando il CRLManager
+    def publish_full_crl(self, validity_days=7):
+        """
+        Genera e pubblica una Full CRL contenente tutti i certificati revocati.
         
-        self.revoked = [
-            entry for entry in self.revoked
-            if entry.get("expiry_date", None) is None or entry["expiry_date"] > now
-        ]
-        print(f"[RootCA] Pulizia revoche: da {old_count} a {len(self.revoked)} ancora attive.")
+        Args:
+            validity_days: Giorni di validità della Full CRL (default: 7 giorni)
+        
+        Returns:
+            La CRL generata
+        """
+        print(f"[RootCA] Pubblicando Full CRL...")
+        crl = self.crl_manager.publish_full_crl(validity_days=validity_days)
+        print(f"[RootCA] Full CRL pubblicata con successo!")
+        return crl
+    
+    
+    # Genera e pubblica una Delta CRL usando il CRLManager
+    def publish_delta_crl(self, validity_hours=24):
+        """
+        Genera e pubblica una Delta CRL contenente solo le nuove revoche.
+        
+        Args:
+            validity_hours: Ore di validità della Delta CRL (default: 24 ore)
+        
+        Returns:
+            La Delta CRL generata o None se non ci sono nuove revoche
+        """
+        print(f"[RootCA] Pubblicando Delta CRL...")
+        crl = self.crl_manager.publish_delta_crl(validity_hours=validity_hours)
+        if crl:
+            print(f"[RootCA] Delta CRL pubblicata con successo!")
+        else:
+            print(f"[RootCA] Nessuna nuova revoca, Delta CRL non necessaria")
+        return crl
+    
+    
+    # Metodo deprecato - mantenuto per retrocompatibilità
+    def publish_crl(self):
+        """
+        DEPRECATO: Usa publish_full_crl() o publish_delta_crl() invece.
+        Questo metodo è mantenuto per retrocompatibilità e pubblica una Full CRL.
+        """
+        print(f"[RootCA] ATTENZIONE: publish_crl() è deprecato. Usa publish_full_crl() o publish_delta_crl()")
+        return self.publish_full_crl()
 
     
-    # Carica la CRL da file
+    # Carica la Full CRL da file
+    def load_full_crl(self):
+        """
+        Carica la Full CRL dal file usando il CRLManager.
+        
+        Returns:
+            La Full CRL o None se non esiste
+        """
+        print(f"[RootCA] Caricando Full CRL...")
+        return self.crl_manager.load_full_crl()
+    
+    
+    # Carica la Delta CRL da file
+    def load_delta_crl(self):
+        """
+        Carica la Delta CRL dal file usando il CRLManager.
+        
+        Returns:
+            La Delta CRL o None se non esiste
+        """
+        print(f"[RootCA] Caricando Delta CRL...")
+        return self.crl_manager.load_delta_crl()
+    
+    
+    # Metodo deprecato - mantenuto per retrocompatibilità
     def load_crl(self):
-        print(f"[RootCA] Caricando CRL da: {self.crl_path}")
-        if os.path.exists(self.crl_path):
-            with open(self.crl_path, "rb") as f:
-                crl = x509.load_pem_x509_crl(f.read())
-                print(f"[RootCA] CRL caricata con successo!")
-                print(f"[RootCA] Ultimo aggiornamento: {crl.last_update_utc}")
-                print(f"[RootCA] Prossimo aggiornamento: {crl.next_update_utc}")
-                return crl
-        else:
-            print(f"[RootCA] Nessuna CRL trovata nel percorso specificato")
-        return None
+        """
+        DEPRECATO: Usa load_full_crl() o load_delta_crl() invece.
+        Questo metodo è mantenuto per retrocompatibilità e carica la Full CRL.
+        """
+        print(f"[RootCA] ATTENZIONE: load_crl() è deprecato. Usa load_full_crl() o load_delta_crl()")
+        return self.load_full_crl()
+    
+    
+    # Ottiene statistiche sul CRL Manager
+    def get_crl_statistics(self):
+        """
+        Restituisce statistiche sullo stato del CRL Manager.
+        
+        Returns:
+            dict con statistiche (crl_number, certificati revocati, delta pending, ecc.)
+        """
+        print(f"[RootCA] Recuperando statistiche CRL...")
+        stats = self.crl_manager.get_statistics()
+        print(f"[RootCA] Statistiche CRL:")
+        print(f"[RootCA]   CRL Number attuale: {stats['crl_number']}")
+        print(f"[RootCA]   Base CRL Number: {stats['base_crl_number']}")
+        print(f"[RootCA]   Certificati revocati totali: {stats['total_revoked']}")
+        print(f"[RootCA]   Revoche delta pending: {stats['delta_pending']}")
+        return stats

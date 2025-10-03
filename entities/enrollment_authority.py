@@ -6,6 +6,7 @@ from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
 import secrets
+from entities.crl_manager import CRLManager
 
 # COMPITI EA:   
 #   Ricezione e verifica CSR da ITS-S
@@ -55,6 +56,17 @@ class EnrollmentAuthority:
         self.load_or_generate_ea()
         print(f"[EA] Caricando certificato Root CA...")
         self.load_root_ca_certificate()
+        
+        # Inizializza CRLManager dopo aver caricato certificato e chiave privata
+        print(f"[EA] Inizializzando CRLManager per EA {ea_id}...")
+        self.crl_manager = CRLManager(
+            authority_id=ea_id,
+            base_dir=base_dir,
+            issuer_certificate=self.certificate,
+            issuer_private_key=self.private_key
+        )
+        print(f"[EA] CRLManager inizializzato con successo!")
+        
         print(f"[EA] Inizializzazione Enrollment Authority {ea_id} completata!")
 
    
@@ -100,6 +112,10 @@ class EnrollmentAuthority:
             f.write(ea_certificate.public_bytes(serialization.Encoding.PEM))
         print(f"[EA] Certificato EA firmato dalla Root CA e salvato con successo!")
         print(f"[EA] Serial number certificato EA: {ea_certificate.serial_number}")
+        
+        # Archivia il certificato anche nella RootCA
+        print(f"[EA] Richiedendo archiviazione certificato nella RootCA...")
+        self.root_ca.save_subordinate_certificate(ea_certificate)
 
 
     # Carica la chiave privata ECC dal file PEM
@@ -119,7 +135,7 @@ class EnrollmentAuthority:
         print("[EA] Certificato EA caricato con successo!")
         print(f"[EA] Subject: {self.certificate.subject}")
         print(f"[EA] Serial number: {self.certificate.serial_number}")
-        print(f"[EA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}")
+        print(f"[EA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}")
 
 
     # Carica il certificato della RootCa
@@ -184,7 +200,7 @@ class EnrollmentAuthority:
         with open(ec_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         print(f"[EA] Enrollment Certificate emesso e salvato con successo!")
-        print(f"[EA] Validità EC: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[EA] Validità EC: dal {cert.not_valid_before} al {cert.not_valid_after}")
         return cert
 
     
@@ -192,65 +208,43 @@ class EnrollmentAuthority:
     def revoke_enrollment_certificate(self, certificate, reason=ReasonFlags.unspecified):
         """
         Revoca un certificato di enrollment aggiungendolo alla lista dei certificati revocati.
+        Pubblica automaticamente una Delta CRL.
         
         Args:
             certificate: Il certificato X.509 da revocare
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
         
         print(f"[EA] Revocando Enrollment Certificate con serial: {serial_number}")
         print(f"[EA] Data di scadenza certificato: {expiry_date}")
         print(f"[EA] Motivo revoca: {reason}")
         
-        self.revoked.append({
-            "serial_number": serial_number,
-            "revocation_date": datetime.now(timezone.utc),
-            "expiry_date": expiry_date,
-            "reason": reason
-        })
+        # Usa CRLManager per aggiungere il certificato revocato
+        self.crl_manager.add_revoked_certificate(certificate, reason)
         print(f"[EA] Certificato aggiunto alla lista di revoca EA")
-        print(f"[EA] Pubblicando nuova CRL EA...")
-        self.publish_crl()
+        
+        # Pubblica Delta CRL incrementale
+        print(f"[EA] Pubblicando Delta CRL EA...")
+        self.crl_manager.publish_delta_crl()
         print(f"[EA] Revoca completata!")
 
 
-    #  Genera e salva una CRL conforme X.509 ASN.1 su file PEM
-    def publish_crl(self):
-        print("[EA] Generando Certificate Revocation List EA...")
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(self.certificate.subject)
-        builder = builder.last_update(datetime.now(timezone.utc))
-        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(days=7))
-        print(f"[EA] Numero di Enrollment Certificates revocati: {len(self.revoked)}")
-        for entry in self.revoked:
-            print(f"[EA] Aggiungendo alla CRL EA: serial={entry['serial_number']}, "
-                  f"data revoca={entry['revocation_date']}, "
-                  f"data scadenza={entry.get('expiry_date', 'N/A')}, "
-                  f"motivo={entry['reason']}")
-            revoked_certificate = x509.RevokedCertificateBuilder()\
-                .serial_number(entry["serial_number"])\
-                .revocation_date(entry["revocation_date"])\
-                .add_extension(
-                    x509.CRLReason(entry["reason"]),
-                    critical=False
-                ).build()
-            builder = builder.add_revoked_certificate(revoked_certificate)
-        crl = builder.sign(private_key=self.private_key, algorithm=hashes.SHA256())
-        print(f"[EA] Salvando CRL EA in: {self.crl_path}")
-        with open(self.crl_path, "wb") as f:
-            f.write(crl.public_bytes(serialization.Encoding.PEM))
-        print(f"[EA] CRL EA generata e salvata con successo!")
+    #  Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM
+    def publish_crl(self, validity_days=7):
+        """
+        Pubblica una Full CRL completa consolidando tutte le revoche.
+        Questo metodo dovrebbe essere chiamato periodicamente (es. settimanalmente)
+        per consolidare tutte le Delta CRL in una nuova Full CRL.
+        
+        Args:
+            validity_days: Numero di giorni di validità della Full CRL (default: 7)
+        """
+        print(f"[EA] Pubblicando Full CRL EA (validità: {validity_days} giorni)...")
+        self.crl_manager.publish_full_crl(validity_days=validity_days)
+        print(f"[EA] Full CRL EA pubblicata con successo!")
 
-        # Dopo la pubblicazione, rimuovo dalla lista delle revoche i certificati scaduti
-        now = datetime.now(timezone.utc)
-        old_count = len(self.revoked)
-        self.revoked = [
-            entry for entry in self.revoked
-            if entry.get("expiry_date", None) is None or entry["expiry_date"] > now
-        ]
-        print(f"[EA] Pulizia revoche: da {old_count} a {len(self.revoked)} ancora attive.")
 
 
 
