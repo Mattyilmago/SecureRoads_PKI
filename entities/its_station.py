@@ -26,7 +26,7 @@ class ITSStation:
         self.trust_anchor_path = os.path.join(base_dir, "trust_anchors/trust_anchors.pem")
         self.ctl_path = os.path.join(base_dir, "ctl_full/ctl.pem")
         self.delta_path = os.path.join(base_dir, "ctl_delta/delta.pem")
-        self.inbox_path = os.path.join(base_dir, f"inbox/{its_id}_inbox.txt")
+        self.inbox_path = os.path.join(base_dir, f"inbox/")
         self.outbox_path = os.path.join(base_dir, f"outbox/{its_id}_outbox.txt")
 
         for d in [
@@ -216,10 +216,15 @@ class ITSStation:
         with open(self.outbox_path, "a") as f:
             f.write(outbox_message)
         
-        # Simula la consegna scrivendo nell''inbox del destinatario
-        recipient_inbox = os.path.join(os.path.dirname(self.inbox_path), f"{recipient_id}_inbox.txt")
-        os.makedirs(os.path.dirname(recipient_inbox), exist_ok=True)
-        with open(recipient_inbox, "a") as f:
+        # Simula la consegna scrivendo nell'inbox del destinatario
+        # Costruisce il percorso dell'inbox del destinatario usando la stessa logica del costruttore
+        recipient_base_dir = os.path.join("./data/itss/", f"{recipient_id}/")
+        recipient_inbox_dir = os.path.join(recipient_base_dir, "inbox")
+        recipient_inbox_file = os.path.join(recipient_inbox_dir, f"{self.its_id}_inbox.txt")
+        
+        print(f"[ITSS] Percorso inbox destinatario: {recipient_inbox_file}")
+        os.makedirs(recipient_inbox_dir, exist_ok=True)
+        with open(recipient_inbox_file, "a") as f:
             f.write(f"From: {self.its_id}\nType: {message_type}\nMessage: {message}\nSignature: {signature.hex()}\n---\n")
         
         print(f"[ITSS] Messaggio {message_type} firmato inviato e salvato su: {self.outbox_path}")
@@ -229,15 +234,32 @@ class ITSStation:
     # Legge i messaggi (CAM/DENM non crittati) ricevuti dall''inbox. 
     def receive_signed_message(self):
         print(f"[ITSS] Ricezione messaggi per {self.its_id}...")
+        
+        # Controlla se la cartella inbox esiste
         if not os.path.exists(self.inbox_path):
+            print(f"[ITSS] Cartella inbox non esistente per {self.its_id}.")
+            return []
+        
+        # Controlla se la cartella inbox è vuota
+        inbox_files = os.listdir(self.inbox_path)
+        if not inbox_files:
             print(f"[ITSS] Nessun messaggio in arrivo per {self.its_id}.")
             return []
         
         messages = []
-        with open(self.inbox_path, "r") as f:
-            content = f.read()
-            # Divide i messaggi usando il separatore ---
-            message_blocks = [block.strip() for block in content.split("---") if block.strip()]
+        # Legge tutti i file nella cartella inbox
+        for filename in inbox_files:
+            file_path = os.path.join(self.inbox_path, filename)
+            if os.path.isfile(file_path) and filename.endswith('.txt'):
+                print(f"[ITSS] Leggendo file: {filename}")
+                try:
+                    with open(file_path, "r") as f:
+                        content = f.read()
+                        # Divide i messaggi usando il separatore ---
+                        message_blocks = [block.strip() for block in content.split("---") if block.strip()]
+                        messages.extend(message_blocks)
+                except Exception as e:
+                    print(f"[ITSS] Errore nella lettura del file {filename}: {e}")
             
-        print(f"[ITSS] Messaggi ricevuti: {len(message_blocks)}")
-        return message_blocks
+        print(f"[ITSS] Messaggi ricevuti totali: {len(messages)}")
+        return messages

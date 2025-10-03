@@ -1,0 +1,10 @@
+From: Vehicle_002
+Type: DENM
+Message: Messaggio ricevuto! Risposta da Vehicle_002.
+Signature: 304502202e40bae2c16df7ad725f9894fefe73d801ff9a3c569ac4e9e13368a13c0f72f6022100e416fe1a234a247206aa548b6d45f213c53066bae6c690ea356680c159d167b4
+---
+From: Vehicle_002
+Type: DENM
+Message: Messaggio ricevuto! Risposta da Vehicle_002.
+Signature: 3045022100ff480d1a738101e3e48a62e89a9390a8aae184d6a665127ed6e2b08611c05bce022049511d3155adac5a51fb988d9a07f05fa3b5d032103afd47cd025300bca0a02a
+---

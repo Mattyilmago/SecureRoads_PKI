@@ -1,0 +1,10 @@
+From: Emergency_001
+Type: VAM
+Message: ATTENZIONE: Veicolo di emergenza in arrivo! Liberare la strada.
+Signature: 3046022100d24f6ca56b1761775eac0c05fb5ac1993eb94cb8c8f5a1d204e47fb61feb1c3102210094f67667915d7f62db805c9c7dd9762037d34c7a1592ccd43b68c100e9264f26
+---
+From: Emergency_001
+Type: VAM
+Message: ATTENZIONE: Veicolo di emergenza in arrivo! Liberare la strada.
+Signature: 3046022100cbb5d546b21ac01677624e3bf130274f6c195ec4383b17e45f80786c38c7cb410221009c999c0173de087b13b47d0eaa4682aaad8e26a835af016dd91448229af7b082
+---
