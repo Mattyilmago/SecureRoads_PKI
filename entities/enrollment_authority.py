@@ -6,13 +6,10 @@ from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
 import secrets
-from entities.crl_manager import CRLManager
+from managers.crl_manager import CRLManager
+from utils.cert_utils import get_certificate_identifier, get_short_identifier
 
-# COMPITI EA:   
-#   Ricezione e verifica CSR da ITS-S
-#   Validazione proof of possession e identità
-#   Emissione Enrollment Certificate (EC)
-#   Gestione revoca EC (pubblicazione CRL Delta)
+
 
 class EnrollmentAuthority:
     def __init__(self, root_ca, ea_id=None, base_dir="./data/ea/"):
@@ -43,7 +40,6 @@ class EnrollmentAuthority:
         self.private_key = None
         self.certificate = None
         self.root_ca_certificate = None
-        self.revoked = []
 
         print(f"[EA] Creando directory necessarie...")
         for d in [
@@ -135,7 +131,7 @@ class EnrollmentAuthority:
         print("[EA] Certificato EA caricato con successo!")
         print(f"[EA] Subject: {self.certificate.subject}")
         print(f"[EA] Serial number: {self.certificate.serial_number}")
-        print(f"[EA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}")
+        print(f"[EA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}")
 
 
     # Carica il certificato della RootCa
@@ -188,19 +184,24 @@ class EnrollmentAuthority:
         ).not_valid_before(
             datetime.now(timezone.utc)
         ).not_valid_after(
-            datetime.now(timezone.utc) + timedelta(seconds=60)
+            datetime.now(timezone.utc) + timedelta(days=365)  # ETSI TS 102 941: EC validity 1-3 anni
         ).add_extension(
             x509.BasicConstraints(ca=False, path_length=None), critical=True,
         )
 
         cert = cert_builder.sign(self.private_key, hashes.SHA256())
-        ec_path = os.path.join(self.ec_dir, f"EC_{its_id}_{cert.serial_number}.pem")
+        
+        # Usa identificatore basato su Subject + SKI invece di serial number
+        cert_id = get_short_identifier(cert)
+        ec_path = os.path.join(self.ec_dir, f"EC_{cert_id}.pem")
+        
         print(f"[EA] Salvando Enrollment Certificate in: {ec_path}")
         os.makedirs(os.path.dirname(ec_path), exist_ok=True)
         with open(ec_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         print(f"[EA] Enrollment Certificate emesso e salvato con successo!")
-        print(f"[EA] Validità EC: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[EA] Identificatore: {cert_id}")
+        print(f"[EA] Validità EC: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         return cert
 
     

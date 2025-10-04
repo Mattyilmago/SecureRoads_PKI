@@ -5,13 +5,10 @@ from cryptography.x509.oid import NameOID
 from cryptography.x509 import ReasonFlags
 from datetime import datetime, timedelta, timezone
 import os
-from entities.crl_manager import CRLManager
+from managers.crl_manager import CRLManager
+from utils.cert_utils import get_certificate_identifier, get_short_identifier
 
-# COMPITI RootCa:
-#   Generazione chiave privata
-#   Generazione certificato Root CA self-signed
-#   Firma certificati subordinati (es. EA, AA)
-#   Pubblicazione CRL 
+ 
 
 class RootCA:
     def __init__(self, base_dir="./data/root_ca/"):
@@ -25,7 +22,6 @@ class RootCA:
 
         self.private_key = None
         self.certificate = None
-        self.revoked = []
 
         # Assicura che le directory esistano
         print(f"[RootCA] Creando directory necessarie...")
@@ -108,7 +104,7 @@ class RootCA:
         
         self.certificate = cert
         print(f"[RootCA] Certificato generato con serial number: {cert.serial_number}")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         print(f"[RootCA] Salvando certificato in: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -132,7 +128,7 @@ class RootCA:
         print(f"[RootCA] Certificato caricato con successo!")
         print(f"[RootCA] Subject: {self.certificate.subject}")
         print(f"[RootCA] Serial number: {self.certificate.serial_number}")
-        print(f"[RootCA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}")
+        print(f"[RootCA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}")
 
    
     # Firma un certificato subordinato (EA/AA)
@@ -160,13 +156,13 @@ class RootCA:
         ).not_valid_before(
             datetime.now(timezone.utc)
         ).not_valid_after(
-            datetime.now(timezone.utc) + timedelta(seconds=1)
+            datetime.now(timezone.utc) + timedelta(days=365)  # 1 anno di validità
         ).add_extension(
             x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None), critical=True,
         ).sign(self.private_key, hashes.SHA256())
 
         print(f"[RootCA] Certificato firmato con successo!")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         return cert
 
     
@@ -189,39 +185,26 @@ class RootCA:
         subject = cert.subject
         serial_number = cert.serial_number
         
-        # Estrae Organization (O) e Common Name (CN)
+        # Usa identificatore basato su Subject + SKI
+        cert_id = get_short_identifier(cert)
+        
+        # Estrae Organization (O) e Common Name (CN) per determinare il tipo
         org_attrs = subject.get_attributes_for_oid(x509.NameOID.ORGANIZATION_NAME)
         cn_attrs = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
         org = org_attrs[0].value if org_attrs else ""
         cn = cn_attrs[0].value if cn_attrs else ""
 
-        # Determina il nome del file in base al tipo di autorità e ID
+        # Determina il nome del file usando il nuovo identificatore
         if "EnrollmentAuthority" in org or "EnrollmentAuthority" in cn:
-            # Estrae l'ID dell'EA dal CN (es. EnrollmentAuthority_EA_ABC123)
-            if "_EA_" in cn:
-                ea_id = cn.split("_EA_")[1]
-                cert_filename = f"EA_{ea_id}_cert.pem"
-                authority_type = "Enrollment Authority"
-            else:
-                # Fallback: usa il serial number se non c'è ID
-                cert_filename = f"EA_cert_{serial_number}.pem"
-                authority_type = "Enrollment Authority"
-                
+            cert_filename = f"EA_{cert_id}.pem"
+            authority_type = "Enrollment Authority"
         elif "AuthorizationAuthority" in org or "AuthorizationAuthority" in cn:
-            # Estrae l'ID dell'AA dal CN (es. AuthorizationAuthority_AA_ABC123)
-            if "_AA_" in cn:
-                aa_id = cn.split("_AA_")[1]
-                cert_filename = f"AA_{aa_id}_cert.pem"
-                authority_type = "Authorization Authority"
-            else:
-                # Fallback: usa il serial number se non c'è ID
-                cert_filename = f"AA_cert_{serial_number}.pem"
-                authority_type = "Authorization Authority"
+            cert_filename = f"AA_{cert_id}.pem"
+            authority_type = "Authorization Authority"
         else:
             # Default: autorità generica
             authority_type = "Subordinate Authority"
-            safe_cn = cn.replace(' ', '_').replace('/', '_')
-            cert_filename = f"{safe_cn}_cert.pem"
+            cert_filename = f"{cert_id}.pem"
 
         # Salva nella cartella archivio della RootCA
         archive_dir = os.path.join(base_dir, "root_ca/subordinates")
@@ -232,6 +215,7 @@ class RootCA:
         print(f"[RootCA] Archiviando certificato subordinato")
         print(f"[RootCA] Tipo: {authority_type}")
         print(f"[RootCA] Subject: {subject}")
+        print(f"[RootCA] Identificatore: {cert_id}")
         print(f"[RootCA] Serial: {serial_number}")
         print(f"[RootCA] File: {cert_filename}")
         print(f"[RootCA] Path completo: {archive_path}")
@@ -311,13 +295,9 @@ class RootCA:
         return crl
     
     
-    # Metodo deprecato - mantenuto per retrocompatibilità
     def publish_crl(self):
-        """
-        DEPRECATO: Usa publish_full_crl() o publish_delta_crl() invece.
-        Questo metodo è mantenuto per retrocompatibilità e pubblica una Full CRL.
-        """
-        print(f"[RootCA] ATTENZIONE: publish_crl() è deprecato. Usa publish_full_crl() o publish_delta_crl()")
+        """Pubblica una Full CRL (wrapper per retrocompatibilità)."""
+        print(f"[RootCA] Pubblicazione Full CRL via metodo legacy")
         return self.publish_full_crl()
 
     
@@ -345,13 +325,9 @@ class RootCA:
         return self.crl_manager.load_delta_crl()
     
     
-    # Metodo deprecato - mantenuto per retrocompatibilità
     def load_crl(self):
-        """
-        DEPRECATO: Usa load_full_crl() o load_delta_crl() invece.
-        Questo metodo è mantenuto per retrocompatibilità e carica la Full CRL.
-        """
-        print(f"[RootCA] ATTENZIONE: load_crl() è deprecato. Usa load_full_crl() o load_delta_crl()")
+        """Carica la Full CRL (wrapper per retrocompatibilità)."""
+        print(f"[RootCA] Caricamento Full CRL via metodo legacy")
         return self.load_full_crl()
     
     

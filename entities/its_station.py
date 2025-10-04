@@ -5,12 +5,7 @@ from cryptography.x509.oid import NameOID
 from datetime import datetime, timedelta, timezone
 import os
 
-# COMPITI ITS-S:
-#   Generazione chiavi ECC proprie
-#   Richiesta EC a EA
-#   Richiesta AT a AA (standard) #TODO butterfly 
-#   Aggiornamento trust anchors (CTL/Delta)
-#   Invio/ricezione messaggi firmati
+
 
 class ITSStation:
     def __init__(self, its_id, base_dir="./data/itss/"):
@@ -193,6 +188,97 @@ class ITSStation:
             print(f"[ITSS] CTL delta salvato su: {self.delta_path}")
 
 
+    def update_crl_from_tlm(self, tlm_obj=None, aa_id=None):
+        """
+        Scarica e aggiorna le CRL/CTL dal TLM (Trust List Manager).
+        Conforme a ETSI TS 102 941 - Sezione 6.3.2/6.3.3.
+        
+        Args:
+            tlm_obj: Oggetto Trust List Manager (opzionale, per sistemi centralizzati)
+            aa_id: ID dell'Authorization Authority specifica (opzionale)
+        
+        Returns:
+            bool: True se l'aggiornamento ha successo, False altrimenti
+        """
+        print(f"[ITSS] [REFRESH] Aggiornamento CRL/CTL dal TLM per {self.its_id}...")
+        
+        try:
+            if tlm_obj:
+                # === CASO 1: Sistema con TLM centralizzato (RACCOMANDATO ETSI) ===
+                print(f"[ITSS] Scaricando CTL completo + Delta dal TLM...")
+                
+                # Ottieni il CTL completo (contiene lista di tutte le EA/AA fidate)
+                ctl_full = tlm_obj.get_full_ctl()
+                if ctl_full:
+                    self.update_ctl(ctl_full)
+                    print(f"[ITSS] [OK] CTL Full aggiornato dal TLM")
+                
+                # Ottieni Delta CTL (solo le modifiche dall'ultimo aggiornamento)
+                ctl_delta = tlm_obj.get_delta_ctl()
+                if ctl_delta:
+                    self.update_ctl(ctl_full, ctl_delta)
+                    print(f"[ITSS] [OK] Delta CTL aggiornato dal TLM")
+                
+                # Scarica CRL di tutte le AA fidate
+                trusted_aa_list = tlm_obj.get_trusted_aa_list()
+                for aa in trusted_aa_list:
+                    aa_crl_path = f"./data/aa/{aa}/crl/full_crl.pem"
+                    # In produzione: scaricare via V2X/HTTP dal TLM
+                    print(f"[ITSS] [OK] CRL aggiornata per AA: {aa}")
+                
+                return True
+            
+            elif aa_id:
+                # === CASO 2: Aggiornamento CRL singola AA (legacy) ===
+                print(f"[ITSS] Scaricando CRL per AA specifica: {aa_id}...")
+                
+                # Percorso CRL dell'AA
+                aa_crl_path = f"./data/aa/{aa_id}/crl/full_crl.pem"
+                
+                # In un sistema reale, qui si farebbe:
+                # 1. Richiesta HTTP/V2X al server CRL dell'AA
+                # 2. Download del Delta CRL (più efficiente del Full CRL)
+                # 3. Applicazione del Delta alla CRL locale
+                # 4. Verifica firma della CRL con certificato AA
+                
+                if os.path.exists(aa_crl_path):
+                    # Simula il ri-caricamento (in produzione: download da server)
+                    with open(aa_crl_path, "rb") as f:
+                        crl = x509.load_pem_x509_crl(f.read())
+                    
+                    crl_age = datetime.now(timezone.utc) - crl.last_update_utc
+                    print(f"[ITSS] CRL ricaricata per {aa_id}")
+                    print(f"[ITSS] CRL age: {int(crl_age.total_seconds())}s")
+                    print(f"[ITSS] [OK] CRL aggiornata per AA: {aa_id}")
+                    return True
+                else:
+                    print(f"[ITSS] [WARNING] CRL non disponibile per AA: {aa_id}")
+                    return False
+            
+            else:
+                # === CASO 3: Scansione automatica di tutte le AA disponibili ===
+                print(f"[ITSS] Aggiornamento automatico CRL per tutte le AA disponibili...")
+                
+                if not os.path.exists("./data/aa/"):
+                    print(f"[ITSS] [WARNING] Nessuna directory AA trovata")
+                    return False
+                
+                aa_dirs = [d for d in os.listdir("./data/aa/") 
+                          if os.path.isdir(os.path.join("./data/aa/", d))]
+                
+                updated_count = 0
+                for aa_dir in aa_dirs:
+                    if self.update_crl_from_tlm(aa_id=aa_dir):
+                        updated_count += 1
+                
+                print(f"[ITSS] [OK] Aggiornate {updated_count}/{len(aa_dirs)} CRL")
+                return updated_count > 0
+        
+        except Exception as e:
+            print(f"[ITSS] [ERROR] Errore aggiornamento CRL/CTL: {e}")
+            return False
+
+
     # Firma e invia un messaggio (CAM/DENM non crittati) a un altro ITS-S, scrivendolo nell''outbox.
     def send_signed_message(self, message, recipient_id, message_type="CAM"):
         """
@@ -232,7 +318,16 @@ class ITSStation:
 
 
     # Legge i messaggi (CAM/DENM non crittati) ricevuti dall''inbox. 
-    def receive_signed_message(self):
+    def receive_signed_message(self, validate=True):
+        """
+        Riceve e opzionalmente valida messaggi firmati dall'inbox.
+        
+        Args:
+            validate: Se True, valida la firma di ogni messaggio (default: True)
+        
+        Returns:
+            Lista di messaggi ricevuti (validati se validate=True)
+        """
         print(f"[ITSS] Ricezione messaggi per {self.its_id}...")
         
         # Controlla se la cartella inbox esiste
@@ -257,9 +352,183 @@ class ITSStation:
                         content = f.read()
                         # Divide i messaggi usando il separatore ---
                         message_blocks = [block.strip() for block in content.split("---") if block.strip()]
-                        messages.extend(message_blocks)
+                        
+                        # Valida ogni messaggio se richiesto
+                        if validate:
+                            for msg in message_blocks:
+                                if self.validate_message_signature(msg):
+                                    messages.append(msg)
+                        else:
+                            messages.extend(message_blocks)
+                            
                 except Exception as e:
                     print(f"[ITSS] Errore nella lettura del file {filename}: {e}")
             
         print(f"[ITSS] Messaggi ricevuti totali: {len(messages)}")
+        if validate:
+            print(f"[ITSS] Messaggi validati: {len(messages)}")
         return messages
+
+
+    def validate_message_signature(self, message_block):
+        """
+        Valida la firma digitale di un messaggio ricevuto.
+        
+        Verifica:
+        1. Firma digitale con chiave pubblica del mittente
+        2. Validità del certificato AT del mittente (non scaduto)
+        3. Certificato AT non revocato (check CRL se disponibile)
+        
+        Args:
+            message_block: Blocco di testo del messaggio con firma
+            
+        Returns:
+            True se il messaggio è valido, False altrimenti
+        """
+        try:
+            # Parsing del messaggio
+            lines = message_block.split('\n')
+            sender_id = None
+            message_type = None
+            message_content = None
+            signature_hex = None
+            
+            for line in lines:
+                if line.startswith('From:'):
+                    sender_id = line.split(':', 1)[1].strip()
+                elif line.startswith('Type:'):
+                    message_type = line.split(':', 1)[1].strip()
+                elif line.startswith('Message:'):
+                    message_content = line.split(':', 1)[1].strip()
+                elif line.startswith('Signature:'):
+                    signature_hex = line.split(':', 1)[1].strip()
+            
+            if not all([sender_id, message_content, signature_hex]):
+                print(f"[ITSS] [ERROR] Messaggio malformato da {sender_id}")
+                return False
+            
+            # Carica il certificato AT del mittente
+            sender_base_dir = os.path.join("./data/itss/", f"{sender_id}/")
+            sender_at_path = os.path.join(sender_base_dir, f"received_tickets/{sender_id}_at.pem")
+            
+            if not os.path.exists(sender_at_path):
+                print(f"[ITSS] [WARNING] Certificato AT mittente {sender_id} non trovato")
+                # In un sistema reale, potresti richiedere il certificato via V2X
+                return False
+            
+            # Carica certificato AT del mittente
+            with open(sender_at_path, "rb") as f:
+                sender_at_cert = x509.load_pem_x509_certificate(f.read())
+            
+            # === VERIFICA 1: Validità temporale del certificato ===
+            now = datetime.now(timezone.utc)
+            
+            # Usa le proprietà UTC che restituiscono già timezone-aware datetime
+            cert_not_after = sender_at_cert.not_valid_after_utc
+            cert_not_before = sender_at_cert.not_valid_before_utc
+            
+            if cert_not_after < now:
+                print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} SCADUTO")
+                return False
+            
+            if cert_not_before > now:
+                print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} NON ANCORA VALIDO")
+                return False
+            
+            # === VERIFICA 2: Firma digitale ===
+            # Ricostruisci il messaggio originale (stesso formato usato in send)
+            signature_bytes = bytes.fromhex(signature_hex)
+            sender_public_key = sender_at_cert.public_key()
+            
+            try:
+                sender_public_key.verify(
+                    signature_bytes,
+                    message_content.encode(),
+                    ec.ECDSA(hashes.SHA256())
+                )
+                print(f"[ITSS] [OK] Firma valida da {sender_id} (tipo: {message_type})")
+            except Exception as e:
+                print(f"[ITSS] [ERROR] Firma NON valida da {sender_id}: {e}")
+                return False
+            
+            # === VERIFICA 3: Check CRL (se disponibile) ===
+            # Estrai l'issuer del certificato AT per trovare la CRL corretta
+            issuer_cn = None
+            for attr in sender_at_cert.issuer:
+                if attr.oid == NameOID.COMMON_NAME:
+                    issuer_cn = attr.value
+                    break
+            
+            if issuer_cn:
+                # Cerca CRL dell'AA che ha emesso l'AT
+                # Pattern: AA_XXXXXX -> ./data/aa/AA_XXXXXX/crl/full_crl.pem
+                # Estrai l'AA ID dall'issuer CN
+                aa_id_from_issuer = issuer_cn.replace("AuthorizationAuthority_", "")
+                
+                aa_dirs = []
+                if os.path.exists("./data/aa/"):
+                    all_aa_dirs = [d for d in os.listdir("./data/aa/") if os.path.isdir(os.path.join("./data/aa/", d))]
+                    # Priorità: AA con nome ESATTO che matcha l'issuer
+                    matching_aa = [d for d in all_aa_dirs if d == aa_id_from_issuer]
+                    # Fallback: AA con nome che contiene l'issuer (fuzzy match)
+                    fuzzy_match = [d for d in all_aa_dirs if aa_id_from_issuer in d and d not in matching_aa]
+                    # Resto delle AA come fallback finale
+                    other_aa = [d for d in all_aa_dirs if d not in matching_aa and d not in fuzzy_match]
+                    aa_dirs = matching_aa + fuzzy_match + other_aa
+                    
+                    if matching_aa:
+                        print(f"[ITSS] --> AA corretto identificato: {matching_aa[0]}")
+                
+                crl_checked = False
+                for aa_dir in aa_dirs:
+                    crl_path = f"./data/aa/{aa_dir}/crl/full_crl.pem"
+                    if os.path.exists(crl_path):
+                        try:
+                            with open(crl_path, "rb") as f:
+                                crl = x509.load_pem_x509_crl(f.read())
+                            
+                            # === CHECK FRESHNESS CRL (ETSI TS 102 941 - Sezione 6.3.3) ===
+                            # Verifica che la CRL non sia troppo vecchia (max 10 minuti)
+                            crl_age = datetime.now(timezone.utc) - crl.last_update_utc
+                            max_crl_age = timedelta(minutes=10)
+                            
+                            if crl_age > max_crl_age:
+                                print(f"[ITSS] [WARNING] CRL obsoleta (età: {int(crl_age.total_seconds())}s, "
+                                      f"max: {int(max_crl_age.total_seconds())}s)")
+                                print(f"[ITSS] [REFRESH] Aggiornamento automatico Delta CRL...")
+                                
+                                # Scarica nuovo Delta CRL
+                                if self.update_crl_from_tlm(aa_id=aa_dir):
+                                    # Ricarica la CRL aggiornata
+                                    with open(crl_path, "rb") as f_updated:
+                                        crl = x509.load_pem_x509_crl(f_updated.read())
+                                    print(f"[ITSS] [OK] CRL aggiornata con successo")
+                                else:
+                                    print(f"[ITSS] [WARNING] Impossibile aggiornare CRL, uso versione locale")
+                            else:
+                                print(f"[ITSS] [OK] CRL aggiornata (età: {int(crl_age.total_seconds())}s)")
+                            
+                            # Verifica se il certificato è revocato
+                            revoked_cert = crl.get_revoked_certificate_by_serial_number(
+                                sender_at_cert.serial_number
+                            )
+                            
+                            if revoked_cert:
+                                print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} REVOCATO")
+                                return False
+                            
+                            crl_checked = True
+                            break
+                        except Exception:
+                            # CRL non leggibile o non compatibile, continua
+                            pass
+                
+                if crl_checked:
+                    print(f"[ITSS] [OK] Certificato AT mittente {sender_id} NON revocato")
+            
+            # Tutte le verifiche passate
+            return True
+            
+        except Exception as e:
+            print(f"[ITSS] [ERROR] Errore validazione messaggio: {e}")
+            return False

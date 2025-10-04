@@ -1,4 +1,4 @@
-from cryptography.hazmat.primitives import serialization, hashes
+﻿from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -7,16 +7,23 @@ from datetime import datetime, timedelta, timezone
 import os
 import time
 import secrets
-from entities.crl_manager import CRLManager
+from managers.crl_manager import CRLManager
+from utils.cert_utils import get_certificate_identifier, get_short_identifier
 
-# COMPITI AA:
-#   Ricezione richieste AT (standard) #TODO butterfly
-#   Validazione EC tramite EA
-#   Emissione Authorization Ticket (AT)
-#   Gestione revoca AT (pubblicazione CRL Delta)
+
 
 class AuthorizationAuthority:
-    def __init__(self, ea_certificate_path, root_ca, aa_id=None, base_dir="./data/aa/"):
+    def __init__(self, root_ca, tlm=None, ea_certificate_path=None, aa_id=None, base_dir="./data/aa/"):
+        """
+        Inizializza Authorization Authority.
+        
+        Args:
+            root_ca: Riferimento alla Root CA
+            tlm: TrustListManager per validazione EC
+            ea_certificate_path: Path certificato EA singola (modalità legacy)
+            aa_id: ID dell'AA (generato automaticamente se None)
+            base_dir: Directory base per dati AA
+        """
         # Genera un ID randomico se non specificato
         if aa_id is None:
             aa_id = f"AA_{secrets.token_hex(4).upper()}"
@@ -24,32 +31,55 @@ class AuthorizationAuthority:
         # Sottocartelle uniche per ogni AA
         base_dir = os.path.join(base_dir, f"{aa_id}/")
         
-        print(f"[AA] Inizializzando Authorization Authority {aa_id}...")
+        print("\n" + "="*80)
+        print(f"[AA] *** INIZIO INIZIALIZZAZIONE AUTHORIZATION AUTHORITY {aa_id} ***")
+        print("="*80)
         self.aa_id = aa_id
         self.aa_certificate_path = os.path.join(base_dir, "certificates/aa_certificate.pem")
         self.aa_key_path = os.path.join(base_dir, "private_keys/aa_key.pem")
-        self.ea_certificate_path = ea_certificate_path
         self.crl_path = os.path.join(base_dir, "crl/aa_crl.pem")
         self.ticket_dir = os.path.join(base_dir, "authorization_tickets/")
-        self.revoked = []
         self.private_key = None
         self.certificate = None
-        self.ea_certificate = None
         self.root_ca = root_ca
+        
+        self.tlm = tlm
+        self.ea_certificate_path = ea_certificate_path
+        self.ea_certificate = None
+        
+        # Determina modalità operativa
+        if self.tlm:
+            print(f"[AA] Modalità TLM: validazione EC tramite Trust List Manager")
+            self.validation_mode = "TLM"
+        elif self.ea_certificate_path:
+            print(f"[AA] [WARNING] Modalità LEGACY: validazione EC tramite EA singola")
+            self.validation_mode = "LEGACY"
+        else:
+            print(f"[AA] [WARNING] WARNING: Nessun metodo di validazione EC configurato!")
+            print(f"[AA] [WARNING] Fornire 'tlm' o 'ea_certificate_path'")
+            self.validation_mode = "NONE"
 
         # Crea tutte le directory necessarie
-        for d in [
+        dirs_to_create = [
             os.path.dirname(self.aa_certificate_path),
             os.path.dirname(self.aa_key_path),
-            os.path.dirname(self.ea_certificate_path),
             os.path.dirname(self.crl_path),
             self.ticket_dir
-        ]:
+        ]
+        
+        # Legacy: crea anche directory EA se specificata
+        if self.ea_certificate_path:
+            dirs_to_create.append(os.path.dirname(self.ea_certificate_path))
+        
+        for d in dirs_to_create:
             os.makedirs(d, exist_ok=True)
             print(f"[AA] Directory creata o già esistente: {d}")
 
         self.load_or_generate_aa()
-        self.load_ea_certificate()
+        
+        # Legacy: carica EA certificate se modalità legacy
+        if self.validation_mode == "LEGACY":
+            self.load_ea_certificate()
         
         # Inizializza CRLManager dopo aver caricato certificato e chiave privata
         print(f"[AA] Inizializzando CRLManager per AA {aa_id}...")
@@ -140,20 +170,41 @@ class AuthorizationAuthority:
             ec_certificate = x509.load_pem_x509_certificate(ec_pem)
             print(f"[AA] EC caricato per ITS-S {its_id}, verifico chain e validità...")
 
-            # Verifica chain: EC deve essere stato emesso dalla EA trusted
-            if ec_certificate.issuer != self.ea_certificate.subject:
-                print("[AA] EC NON valido: issuer non corrisponde a EA.")
-                return None
-            # Gestisce sia date naive che aware
-            ec_expiry = ec_certificate.not_valid_after
-            if ec_expiry.tzinfo is None:
-                ec_expiry = ec_expiry.replace(tzinfo=timezone.utc)
+            # === VALIDAZIONE EC ===
+            if self.validation_mode == "TLM":
+                print(f"[AA] Validazione EC tramite TLM...")
+                is_trusted, trust_info = self.tlm.is_trusted(ec_certificate)
+                
+                if not is_trusted:
+                    print(f"[AA] [ERROR] EC NON valido: {trust_info}")
+                    return None
+                
+                print(f"[AA] [OK] EC validato tramite TLM: {trust_info}")
+            
+            elif self.validation_mode == "LEGACY":
+                print(f"[AA] Validazione EC tramite EA singola (legacy mode)...")
+                
+                # Verifica chain: EC deve essere stato emesso dalla EA trusted
+                if ec_certificate.issuer != self.ea_certificate.subject:
+                    print("[AA] [ERROR] EC NON valido: issuer non corrisponde a EA.")
+                    return None
+                    
+                print(f"[AA] [OK] EC issuer verificato")
+            
+            else:
+                print(f"[AA] [ERROR] ERRORE: Nessun metodo di validazione EC configurato!")
+                raise ValueError("Authorization Authority non configurata correttamente")
+            
+            # === VERIFICA SCADENZA ===
+            ec_expiry = ec_certificate.not_valid_after_utc
             if ec_expiry < datetime.now(timezone.utc):
-                print("[AA] EC scaduto.")
+                print("[AA] [ERROR] EC scaduto.")
                 return None
-            print("[AA] EC valido. Procedo con emissione Authorization Ticket.")
+            
+            print("[AA] [OK] EC valido. Procedo con emissione Authorization Ticket.")
+            
         except Exception as e:
-            print(f"[AA] Errore nel parsing EC: {e}")
+            print(f"[AA] [ERROR] Errore nel parsing EC: {e}")
             return None
 
         at_certificate = self.issue_authorization_ticket(its_id, ec_certificate.public_key(), attributes)
@@ -179,17 +230,22 @@ class AuthorizationAuthority:
         ).not_valid_before(
             datetime.now(timezone.utc)
         ).not_valid_after(
-            datetime.now(timezone.utc) + timedelta(seconds=1)
+            datetime.now(timezone.utc) + timedelta(weeks=1)  # ETSI TS 102 941: AT validity tipicamente 1 settimana
         ).add_extension(
             x509.BasicConstraints(ca=False, path_length=None), critical=True,
         )
 
         certificate = cert_builder.sign(self.private_key, hashes.SHA256())
-        at_path = os.path.join(self.ticket_dir, f"AT_{its_id}_{certificate.serial_number}.pem")
+        
+        # Usa identificatore basato su Subject + SKI invece di serial number
+        cert_id = get_short_identifier(certificate)
+        at_path = os.path.join(self.ticket_dir, f"AT_{cert_id}.pem")
+        
         os.makedirs(os.path.dirname(at_path), exist_ok=True)
         with open(at_path, "wb") as f:
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
         print(f"[AA] Authorization Ticket emesso e salvato: {at_path}")
+        print(f"[AA] Identificatore AT: {cert_id}")
         return certificate
 
 
@@ -204,7 +260,7 @@ class AuthorizationAuthority:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after
+        expiry_date = certificate.not_valid_after_utc
         
         print(f"[AA] Revocando Authorization Ticket con serial: {serial_number}")
         print(f"[AA] Data di scadenza certificato: {expiry_date}")
