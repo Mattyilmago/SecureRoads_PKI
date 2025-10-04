@@ -46,41 +46,76 @@ SecureRoad-PKI/
 │   ├── root_ca.py                  # Root Certificate Authority
 │   ├── enrollment_authority.py     # Enrollment Authority (EA)
 │   ├── authorization_authority.py  # Authorization Authority (AA)
-│   ├── its_station.py              # ITS Station (veicoli)
+│   └── its_station.py              # ITS Station (veicoli)
+│
+├── 📁 managers/                    # Manager componenti
 │   ├── crl_manager.py              # Certificate Revocation List Manager
-│   └── trust_list_manager.py       # Certificate Trust List Manager (NEW!)
+│   └── trust_list_manager.py       # Certificate Trust List Manager
 │
-├── 📁 crypto/                      # Crittografia (TODO)
-│   └── crypto_manager.py           # Gestione chiavi ECC, AES-CCM, HashedId8
-│
-├── 📁 protocol/                    # Protocolli messaggistica (TODO)
+├── 📁 protocols/                   # Protocolli messaggistica ETSI
 │   ├── etsi_message_encoder.py     # Serializzazione ASN.1 OER
-│   └── etsi_message_types.py       # Strutture dati ETSI TS 102941
+│   ├── etsi_message_types.py       # Strutture dati ETSI TS 102941
+│   └── etsi_ts_102941.asn          # Schema ASN.1 ETSI
+│
+├── 📁 utils/                       # Utilities
+│   └── cert_utils.py               # Funzioni utilità certificati
+│
+├── 📁 tests/                       # Test suite
+│   ├── test_entities_pki.py        # Test Root CA, EA, AA
+│   ├── test_its_station.py         # Test ITS Station
+│   ├── test_managers.py            # Test CRL/TLM Manager
+│   ├── test_integration.py         # Test integrazione end-to-end
+│   ├── test_protocols.py           # Test protocolli ETSI
+│   └── test_protocols_simple.py    # Test protocolli semplificati
+│
+├── 📁 docs/                        # Documentazione
+│   ├── DELTA_CRL_DOCUMENTATION.md
+│   ├── TRUST_LIST_MANAGER_DOCUMENTATION.md
+│   └── ... (altre guide)
+│
+├── 📁 data/                        # Dati runtime
+│   ├── root_ca/                    # Root Certificate Authority
+│   │   ├── certificates/           # Certificato root self-signed
+│   │   ├── private_keys/           # Chiave privata root
+│   │   ├── crl/                    # CRL Full e Delta pubblicate
+│   │   └── subordinates/           # Certificati EA/AA firmati
+│   │
+│   ├── ea/                         # Enrollment Authorities
+│   │   └── EA_XXX/                 # Una cartella per ogni EA
+│   │       ├── certificates/       # Certificato EA firmato da Root
+│   │       ├── private_keys/       # Chiave privata EA
+│   │       ├── crl/                # CRL Delta pubblicate da EA
+│   │       └── enrollment_certificates/ # EC emessi ai veicoli
+│   │
+│   ├── aa/                         # Authorization Authorities
+│   │   └── AA_XXX/                 # Una cartella per ogni AA
+│   │       ├── certificates/       # Certificato AA firmato da Root
+│   │       ├── private_keys/       # Chiave privata AA
+│   │       ├── crl/                # CRL Delta pubblicate da AA
+│   │       └── authorization_tickets/ # AT emessi ai veicoli
+│   │
+│   ├── itss/                       # ITS Stations (veicoli)
+│   │   └── Vehicle_XXX/            # Una cartella per ogni veicolo
+│   │       ├── own_certificates/   # EC e AT del veicolo
+│   │       ├── trust_anchors/      # CTL ricevute (Root, EA, AA)
+│   │       ├── ctl_full/           # Full CTL ricevute
+│   │       ├── ctl_delta/          # Delta CTL ricevute
+│   │       ├── inbox/              # Messaggi V2X ricevuti
+│   │       ├── outbox/             # Messaggi V2X inviati
+│   │       └── received_tickets/   # AT ricevuti da altri veicoli
+│   │
+│   └── tlm/                        # Trust List Manager
+│       ├── ctl/                    # CTL Full e Delta pubblicate
+│       └── link_certificates/      # Link certificates per catene fiducia
+│
+├── 📁 crypto/                      # Crittografia avanzata (TODO)
+│   └── crypto_manager.py           # Gestione AES-CCM, HashedId8, Butterfly
 │
 ├── 📁 api/                         # REST API (TODO)
 │   └── flask_app_factory.py        # API per comunicazione inter-authority
 │
-├── 📁 storage/                     # Gestione storage (TODO)
-│   └── filesystem_manager.py       # Gestione unificata filesystem
-│
-├── 📁 docs/                        # Documentazione
-│   ├── DELTA_CRL_DOCUMENTATION.md
-│   └── TRUST_LIST_MANAGER_DOCUMENTATION.md
-│
-├── 📁 example_test/                # Test suite
-│   ├── test_rootca.py
-│   ├── test_ea.py
-│   ├── test_aa.py
-│   ├── test_itss.py
-│   ├── test_crl_manager.py
-│   └── test_tlm.py                 # Test Trust List Manager (NEW!)
-│
-└── 📁 data/                        # Dati runtime
-    ├── root_ca/
-    ├── ea/
-    ├── aa/
-    ├── itss/
-    └── tlm/                        # Trust List Manager data (NEW!)
+└── 📁 storage/                     # Gestione storage (TODO)
+    └── filesystem_manager.py       # Gestione unificata filesystem
 ```
 
 ---
@@ -121,6 +156,7 @@ SecureRoad-PKI/
 - ⚠️ TODO: Richiesta AT butterfly
 
 #### 5. **CRLManager** ✅ - COMPLETO!
+*(Spostato in `managers/crl_manager.py`)*
 - ✅ Generazione Full CRL (tutti i revocati)
 - ✅ Generazione Delta CRL (solo nuove revoche)
 - ✅ Sincronizzazione Full/Delta
@@ -128,7 +164,8 @@ SecureRoad-PKI/
 - ✅ Metadata persistence
 - ✅ Statistiche e monitoraggio
 
-#### 6. **TrustListManager** ✅ - NEW!
+#### 6. **TrustListManager** ✅
+*(Spostato in `managers/trust_list_manager.py`)*
 - ✅ Gestione Certificate Trust Lists (CTL)
 - ✅ Full CTL (tutte le CA fidate)
 - ✅ Delta CTL (modifiche aggiunte/rimozioni)
@@ -140,15 +177,18 @@ SecureRoad-PKI/
 
 ---
 
-### **Livello Protocollo/Messaggistica** - 0% Completo
+### **Livello Protocollo/Messaggistica** - 50% Completo
 
-#### ETSIMessageEncoder ❌
-- Serializzazione ASN.1 OER
-- Parsing messaggi ETSI TS 102941
+#### ETSIMessageEncoder ⚠️
+- ✅ Struttura base implementata
+- ✅ Schema ASN.1 ETSI TS 102941
+- ⚠️ Serializzazione ASN.1 OER (parziale)
+- ⚠️ Parsing messaggi ETSI (in sviluppo)
 
-#### ETSIMessageTypes ❌
-- EnrollmentRequest, AuthorizationRequest
-- ButterflyRequest structures
+#### ETSIMessageTypes ⚠️
+- ✅ Strutture dati base
+- ⚠️ EnrollmentRequest, AuthorizationRequest (parziale)
+- ❌ ButterflyRequest structures
 
 ---
 
@@ -224,10 +264,10 @@ from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.authorization_authority import AuthorizationAuthority
 from entities.its_station import ITSStation
-from entities.trust_list_manager import TrustListManager
+from managers.trust_list_manager import TrustListManager
 
 # 1. Setup PKI Infrastructure
-root_ca = RootCA()
+root_ca = RootCA(base_dir="data/root_ca")
 ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_001")
 aa = AuthorizationAuthority(
     ea_certificate_path=ea.ea_certificate_path,
@@ -236,7 +276,7 @@ aa = AuthorizationAuthority(
 )
 
 # 2. Setup Trust List Manager
-tlm = TrustListManager(root_ca=root_ca)
+tlm = TrustListManager(root_ca=root_ca, tlm_id="TLM_001")
 tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 tlm.add_trust_anchor(aa.certificate, authority_type="AA")
 tlm.publish_full_ctl(validity_days=30)
@@ -326,32 +366,35 @@ print("✅ EA revocata e trust aggiornato!")
 ### Esegui Test Completi
 
 ```bash
-# Test Root CA
-python example_test/test_rootca.py
-
-# Test Enrollment Authority
-python example_test/test_ea.py
-
-# Test Authorization Authority
-python example_test/test_aa.py
+# Test PKI Entities (Root CA, EA, AA)
+pytest tests/test_entities_pki.py
 
 # Test ITS Station
-python example_test/test_itss.py
+pytest tests/test_its_station.py
 
-# Test CRL Manager
-python example_test/test_crl_manager.py
+# Test Managers (CRL, TLM)
+pytest tests/test_managers.py
 
-# Test Trust List Manager (NEW!)
-python example_test/test_tlm.py
+# Test Integrazione end-to-end
+pytest tests/test_integration.py
+
+# Test Protocolli ETSI
+pytest tests/test_protocols.py
+
+# Esegui TUTTI i test in batch
+python run_all_tests.py
+# oppure
+pytest tests/
 ```
 
 ### Test Coverage
 
-- ✅ Unit tests per ogni entità
-- ✅ Integration tests enrollment → authorization
-- ✅ Scenario tests revoca e recupero
-- ✅ Delta CRL/CTL workflow completo
-- ⚠️ TODO: End-to-end tests con messaggistica V2X
+
+### Stato Test Suite
+
+- Tutti i test ora usano i parametri costruttore aggiornati
+- Gli errori dovuti a parametri obsoleti sono stati risolti
+- Alcuni test potrebbero fallire per mismatch API/metodi: vedi changelog
 
 ---
 
@@ -363,9 +406,11 @@ python example_test/test_tlm.py
 - [x] TrustListManager con Delta CTL
 - [x] Test suite base
 
-### 🚧 Phase 2: Protocollo e Messaggistica (0%)
-- [ ] ETSIMessageEncoder (ASN.1 OER)
-- [ ] ETSIMessageTypes structures
+### 🚧 Phase 2: Protocollo e Messaggistica (50%)
+- [x] ETSIMessageEncoder (struttura base)
+- [x] ETSIMessageTypes (strutture base)
+- [x] Schema ASN.1 ETSI TS 102941
+- [ ] Completamento serializzazione ASN.1 OER
 - [ ] CryptoManager completo
   - [ ] AES-CCM encryption
   - [ ] HashedId8 generation
@@ -405,12 +450,12 @@ python example_test/test_tlm.py
 | ITSStation | ✅ | 90% |
 | CRLManager | ✅ | 100% |
 | TrustListManager | ✅ | 95% |
-| ETSIMessageEncoder | ❌ | 0% |
-| CryptoManager | ⚠️ | 30% |
-| FlaskAppFactory | ❌ | 0% |
-| FileSystemManager | ⚠️ | 40% |
-| ConfigLoader | ❌ | 0% |
-| TestScenarioManager | ⚠️ | 20% |
+| ETSIMessageEncoder | ⚠️ | 50% |
+| ETSIMessageTypes | ⚠️ | 50% |
+| CertUtils | ✅ | 80% |
+| CryptoManager | ❌ | 0% (TODO) |
+| FlaskAppFactory | ❌ | 0% (TODO) |
+| FileSystemManager | ❌ | 0% (TODO) |
 
 ---
 
