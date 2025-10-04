@@ -1,3 +1,4 @@
 cryptography
-time
-datetime
+asn1tools
+pytest
+pytest-cov

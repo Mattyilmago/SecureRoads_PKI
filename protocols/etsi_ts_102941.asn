@@ -1,0 +1,254 @@
+-- ETSI TS 102941 V2.1.1 ASN.1 Schema
+-- Trust and Privacy Management for V2X PKI
+-- 
+-- This schema defines the message structures for:
+-- - Enrollment (ITS-S <-> EA)
+-- - Authorization (ITS-S <-> AA)
+-- - Validation (AA <-> EA)
+-- - Certificate Trust Lists (CTL)
+-- - Certificate Revocation Lists (CRL)
+
+ETSI-TS-102941 DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+-- ============================================================================
+-- IMPORTS (from ETSI TS 103097)
+-- ============================================================================
+
+-- Basic types
+HashedId8 ::= OCTET STRING (SIZE(8))
+Opaque ::= OCTET STRING
+Time32 ::= INTEGER (0..4294967295)
+Uint8 ::= INTEGER (0..255)
+Uint16 ::= INTEGER (0..65535)
+Uint32 ::= INTEGER (0..4294967295)
+
+-- ============================================================================
+-- VERSION AND PROTOCOL INFORMATION
+-- ============================================================================
+
+Version ::= Uint8
+
+-- Protocol version: 1 = ETSI TS 102941 V1.x, 2 = V2.x
+currentVersion Version ::= 2
+
+-- ============================================================================
+-- ENROLLMENT MESSAGES (Section 6.2)
+-- ============================================================================
+
+-- Inner Enrollment Certificate Request (unencrypted)
+InnerEcRequest ::= SEQUENCE {
+    itsId               UTF8String,
+    certificateFormat   Uint8,
+    publicKeys          PublicKeys,
+    requestedSubjectAttributes SubjectAttributes OPTIONAL
+}
+
+-- Public keys in request
+PublicKeys ::= SEQUENCE {
+    verificationKey     OCTET STRING,
+    encryptionKey       OCTET STRING OPTIONAL
+}
+
+-- Subject attributes
+SubjectAttributes ::= SEQUENCE {
+    country             UTF8String OPTIONAL,
+    organization        UTF8String OPTIONAL,
+    geographicRegion    OCTET STRING OPTIONAL,
+    assuranceLevel      Uint8 OPTIONAL,
+    appPermissions      UTF8String OPTIONAL
+}
+
+-- Inner EC Request with Proof of Possession
+InnerEcRequestSignedForPop ::= SEQUENCE {
+    ecRequest           InnerEcRequest,
+    tbsData             OCTET STRING,
+    signature           OCTET STRING
+}
+
+-- Complete Enrollment Request (top-level, encrypted)
+EnrollmentRequest ::= SEQUENCE {
+    version             Version,
+    encryptedData       OCTET STRING,
+    recipientId         HashedId8 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Inner Enrollment Response
+InnerEcResponse ::= SEQUENCE {
+    requestHash         OCTET STRING (SIZE(32)),
+    responseCode        ResponseCode,
+    certificate         OCTET STRING OPTIONAL
+}
+
+-- Complete Enrollment Response
+EnrollmentResponse ::= SEQUENCE {
+    version             Version,
+    encryptedData       OCTET STRING,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- AUTHORIZATION MESSAGES (Section 6.3)
+-- ============================================================================
+
+-- Shared AT Request (for butterfly expansion)
+SharedAtRequest ::= SEQUENCE {
+    eaId                HashedId8,
+    keyTag              OCTET STRING,
+    certificateFormat   Uint8,
+    requestedSubjectAttributes SubjectAttributes OPTIONAL
+}
+
+-- Inner Authorization Ticket Request
+InnerAtRequest ::= SEQUENCE {
+    publicKeys          PublicKeys,
+    hmacKey             OCTET STRING (SIZE(32)),
+    sharedAtRequest     SharedAtRequest OPTIONAL,
+    ecSignature         OCTET STRING OPTIONAL,
+    requestedSubjectAttributes SubjectAttributes OPTIONAL
+}
+
+-- Complete Authorization Request
+AuthorizationRequest ::= SEQUENCE {
+    version             Version,
+    encryptedData       OCTET STRING,
+    enrollmentCertificate OCTET STRING,
+    recipientId         HashedId8 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Butterfly Authorization Request (batch mode)
+ButterflyAuthorizationRequest ::= SEQUENCE {
+    sharedAtRequest     SharedAtRequest,
+    innerAtRequests     SEQUENCE OF InnerAtRequest,
+    batchSize           Uint8,
+    version             Version,
+    enrollmentCertificate OCTET STRING,
+    recipientId         HashedId8 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Inner Authorization Response
+InnerAtResponse ::= SEQUENCE {
+    requestHash         OCTET STRING (SIZE(32)),
+    responseCode        ResponseCode,
+    certificate         OCTET STRING OPTIONAL
+}
+
+-- Complete Authorization Response
+AuthorizationResponse ::= SEQUENCE {
+    version             Version,
+    encryptedData       OCTET STRING,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- VALIDATION MESSAGES (Section 6.4)
+-- ============================================================================
+
+-- Authorization Validation Request (AA -> EA)
+AuthorizationValidationRequest ::= SEQUENCE {
+    sharedAtRequest     SharedAtRequest,
+    enrollmentCertificate OCTET STRING,
+    version             Version,
+    recipientId         HashedId8 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Authorization Validation Response (EA -> AA)
+AuthorizationValidationResponse ::= SEQUENCE {
+    requestHash         OCTET STRING (SIZE(32)),
+    responseCode        ResponseCode,
+    version             Version,
+    confirmedSubjectAttributes SubjectAttributes OPTIONAL,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- CTL MESSAGES (Section 6.5)
+-- ============================================================================
+
+-- Certificate Trust List Request
+CtlRequest ::= SEQUENCE {
+    version             Version,
+    requestType         UTF8String,
+    lastKnownCtlSequence Uint32 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Certificate Trust List Response
+CtlResponse ::= SEQUENCE {
+    responseCode        ResponseCode,
+    ctlSequence         Uint32,
+    isFullCtl           BOOLEAN,
+    version             Version,
+    ctlData             OCTET STRING OPTIONAL,
+    nextUpdate          Time32 OPTIONAL,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- CRL MESSAGES (Section 6.6)
+-- ============================================================================
+
+-- Certificate Revocation List Request
+CrlRequest ::= SEQUENCE {
+    issuerId            HashedId8,
+    version             Version,
+    lastKnownCrlSequence Uint32 OPTIONAL,
+    timestamp           Time32
+}
+
+-- Certificate Revocation List Response
+CrlResponse ::= SEQUENCE {
+    responseCode        ResponseCode,
+    version             Version,
+    crlData             OCTET STRING OPTIONAL,
+    nextUpdate          Time32 OPTIONAL,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- CA CERTIFICATE MESSAGES (Section 6.7)
+-- ============================================================================
+
+-- CA Certificate Request
+CaCertificateRequest ::= SEQUENCE {
+    version             Version,
+    caId                HashedId8 OPTIONAL,
+    timestamp           Time32
+}
+
+-- CA Certificate Response
+CaCertificateResponse ::= SEQUENCE {
+    responseCode        ResponseCode,
+    version             Version,
+    certificate         OCTET STRING OPTIONAL,
+    certificateChain    SEQUENCE OF OCTET STRING OPTIONAL,
+    timestamp           Time32
+}
+
+-- ============================================================================
+-- RESPONSE CODES (Section 7.2)
+-- ============================================================================
+
+ResponseCode ::= ENUMERATED {
+    ok                                  (0),
+    canonicalEncodingError              (1),
+    badContentType                      (2),
+    implicitCertificateVerificationFailed (3),
+    decryptionFailed                    (4),
+    unknownItsId                        (5),
+    invalidSignature                    (6),
+    invalidEncryptionKey                (7),
+    badRequest                          (8),
+    unauthorized                        (9),
+    internalServerError                 (10),
+    unsupportedVersion                  (11),
+    wrongEa                             (12),
+    wrongAa                             (13),
+    denmInvalidPermissions              (14),
+    camInvalidPermissions               (15)
+}
+
+END
