@@ -1,10 +1,12 @@
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.x509 import ReasonFlags
-from datetime import datetime, timedelta, timezone
+﻿import json
 import os
-import json
-from utils.cert_utils import get_certificate_ski, get_certificate_identifier
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509 import ReasonFlags
+
+from utils.cert_utils import get_certificate_identifier, get_certificate_ski
 
 
 class CRLManager:
@@ -32,14 +34,22 @@ class CRLManager:
         self.issuer_certificate = issuer_certificate
         self.issuer_private_key = issuer_private_key
 
-        # Percorsi file
+        # Percorsi file con separazione full/delta
         self.crl_dir = os.path.join(base_dir, "crl/")
-        self.full_crl_path = os.path.join(self.crl_dir, "full_crl.pem")
-        self.delta_crl_path = os.path.join(self.crl_dir, "delta_crl.pem")
+        self.full_crl_dir = os.path.join(self.crl_dir, "full/")
+        self.delta_crl_dir = os.path.join(self.crl_dir, "delta/")
+        self.full_crl_path = os.path.join(self.full_crl_dir, "full_crl.pem")
+        self.delta_crl_path = os.path.join(self.delta_crl_dir, "delta_crl.pem")
         self.metadata_path = os.path.join(self.crl_dir, "crl_metadata.json")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
 
         # Crea directory
         os.makedirs(self.crl_dir, exist_ok=True)
+        os.makedirs(self.full_crl_dir, exist_ok=True)
+        os.makedirs(self.delta_crl_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.backup_dir, exist_ok=True)
 
         # Lista completa dei certificati revocati (per Full CRL)
         self.revoked_certificates = []
@@ -76,7 +86,7 @@ class CRLManager:
         serial_number = certificate.serial_number
         ski = get_certificate_ski(certificate)
         cert_id = get_certificate_identifier(certificate)
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
 
         revocation_date = datetime.now(timezone.utc)
 
@@ -94,6 +104,14 @@ class CRLManager:
                 print(f"[CRLManager] Certificato già presente nella lista revocati")
                 return
 
+        # Log revocation
+        self.log_operation("REVOKE_CERTIFICATE", {
+            "certificate_id": cert_id,
+            "serial_number": str(serial_number),
+            "reason": str(reason),
+            "expiry_date": expiry_date.isoformat()
+        })
+        
         revoked_entry = {
             "serial_number": serial_number,  # Necessario per la CRL X.509
             "ski": ski,  # Per identificazione univoca
@@ -182,6 +200,14 @@ class CRLManager:
 
         # Salva metadata manager generale
         self.save_metadata()
+        
+        # Log e backup
+        self.log_operation("PUBLISH_FULL_CRL", {
+            "crl_number": self.crl_number,
+            "revoked_count": len(self.revoked_certificates),
+            "validity_days": validity_days
+        })
+        self.backup_crl("full")
 
         print(f"[CRLManager] === FULL CRL PUBBLICATA ===")
         return crl
@@ -260,6 +286,15 @@ class CRLManager:
 
         # Salva metadata manager generale
         self.save_metadata()
+        
+        # Log e backup
+        self.log_operation("PUBLISH_DELTA_CRL", {
+            "crl_number": self.crl_number,
+            "base_crl_number": self.base_crl_number,
+            "delta_revocations_count": len(self.delta_revocations),
+            "validity_hours": validity_hours
+        })
+        self.backup_crl("delta")
 
         print(f"[CRLManager] === DELTA CRL PUBBLICATA ===")
         return crl
@@ -524,3 +559,61 @@ class CRLManager:
 
         except Exception as e:
             print(f"[CRLManager] Errore caricamento Full CRL metadata: {e}")
+
+    def log_operation(self, operation, details):
+        """
+        Log delle operazioni CRL per audit trail ETSI-compliant.
+        
+        Args:
+            operation: Tipo di operazione (es. "PUBLISH_FULL_CRL", "REVOKE_CERTIFICATE")
+            details: Dettagli dell'operazione
+        """
+        timestamp = datetime.now(timezone.utc).isoformat()
+        log_file = os.path.join(self.log_dir, f"{self.authority_id}_crl_audit.log")
+        
+        log_entry = {
+            "timestamp": timestamp,
+            "authority_id": self.authority_id,
+            "operation": operation,
+            "crl_number": self.crl_number,
+            "details": details
+        }
+        
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry) + "\n")
+            print(f"[CRLManager] Operazione loggata: {operation}")
+        except Exception as e:
+            print(f"[CRLManager] Errore logging: {e}")
+
+    def backup_crl(self, crl_type="full"):
+        """
+        Crea backup delle CRL per disaster recovery.
+        
+        Args:
+            crl_type: Tipo di CRL ("full" o "delta")
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        
+        if crl_type == "full":
+            source = self.full_crl_path
+            backup_name = f"full_crl_backup_{timestamp}.pem"
+        else:
+            source = self.delta_crl_path
+            backup_name = f"delta_crl_backup_{timestamp}.pem"
+        
+        backup_path = os.path.join(self.backup_dir, backup_name)
+        
+        try:
+            if os.path.exists(source):
+                import shutil
+                shutil.copy2(source, backup_path)
+                print(f"[CRLManager] Backup creato: {backup_path}")
+                
+                # Log backup operation
+                self.log_operation("BACKUP_CRL", {
+                    "crl_type": crl_type,
+                    "backup_path": backup_path
+                })
+        except Exception as e:
+            print(f"[CRLManager] Errore creazione backup: {e}")

@@ -10,9 +10,10 @@ Approccio: Subject + SKI
 - Conforme ETSI: usa standard X.509 (RFC 5280)
 """
 
+import hashlib
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-import hashlib
 
 
 def get_certificate_ski(certificate):

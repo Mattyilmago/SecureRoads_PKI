@@ -1,20 +1,28 @@
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-from cryptography.x509 import ReasonFlags
+﻿import os
 from datetime import datetime, timedelta, timezone
-import os
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509 import ReasonFlags
+from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
-from utils.cert_utils import get_certificate_identifier, get_short_identifier, get_certificate_ski
+from utils.cert_utils import (
+    get_certificate_identifier,
+    get_certificate_ski,
+    get_short_identifier,
+)
 
 
 class RootCA:
     def __init__(self, base_dir="./data/root_ca/"):
+        self.base_dir = base_dir
         self.ca_certificate_path = os.path.join(base_dir, "certificates/root_ca_certificate.pem")
         self.ca_key_path = os.path.join(base_dir, "private_keys/root_ca_key.pem")
         self.crl_path = os.path.join(base_dir, "crl/root_ca_crl.pem")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
         print(f"[RootCA] Inizializzando Root CA...")
         print(f"[RootCA] Percorso certificato: {self.ca_certificate_path}")
         print(f"[RootCA] Percorso chiave privata: {self.ca_key_path}")
@@ -29,6 +37,8 @@ class RootCA:
             os.path.dirname(self.ca_certificate_path),
             os.path.dirname(self.ca_key_path),
             os.path.dirname(self.crl_path),
+            self.log_dir,
+            self.backup_dir,
         ]:
             os.makedirs(d, exist_ok=True)
 
@@ -107,7 +117,7 @@ class RootCA:
 
         self.certificate = cert
         print(f"[RootCA] Certificato generato con serial number: {cert.serial_number}")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
         print(f"[RootCA] Salvando certificato in: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -129,7 +139,7 @@ class RootCA:
         print(f"[RootCA] Subject: {self.certificate.subject}")
         print(f"[RootCA] Serial number: {self.certificate.serial_number}")
         print(
-            f"[RootCA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
+            f"[RootCA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}"
         )
 
     # Firma un certificato subordinato (EA/AA)
@@ -164,11 +174,11 @@ class RootCA:
         )
 
         print(f"[RootCA] Certificato firmato con successo!")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
         return cert
 
     # Salva certificato subordinato su file
-    def save_subordinate_certificate(self, cert, base_dir="./data/"):
+    def save_subordinate_certificate(self, cert):
         """
         Salva il certificato subordinato firmato nell'archivio della RootCA.
 
@@ -181,7 +191,6 @@ class RootCA:
 
         Args:
             cert: Il certificato X.509 firmato da salvare
-            base_dir: Directory base (default: "./data/")
         """
         subject = cert.subject
         serial_number = cert.serial_number
@@ -207,8 +216,8 @@ class RootCA:
             authority_type = "Subordinate Authority"
             cert_filename = f"SUB_{cert_ski}.pem"
 
-        # Salva nella cartella archivio della RootCA
-        archive_dir = os.path.join(base_dir, "root_ca/subordinates")
+        # Salva nella cartella archivio della RootCA usando self.base_dir
+        archive_dir = os.path.join(self.base_dir, "subordinates")
         os.makedirs(archive_dir, exist_ok=True)
         archive_path = os.path.join(archive_dir, cert_filename)
 

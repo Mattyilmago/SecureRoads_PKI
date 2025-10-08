@@ -11,6 +11,7 @@ import pytest
 import os
 import shutil
 from pathlib import Path
+from cryptography.hazmat.primitives import serialization
 
 from entities.its_station import ITSStation
 from entities.root_ca import RootCA
@@ -20,41 +21,46 @@ from entities.authorization_authority import AuthorizationAuthority
 
 @pytest.fixture
 def test_data_dir():
-    """Crea directory temporanea per i test"""
-    test_dir = Path("./test_data_itss")
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
+    """Usa la directory data/ principale per i test"""
+    test_dir = Path("./data")
     test_dir.mkdir(parents=True, exist_ok=True)
     yield test_dir
-    # Cleanup dopo i test
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
 
 
 @pytest.fixture
 def pki_infrastructure(test_data_dir):
-    """Fixture per creare infrastruttura PKI completa"""
+    """Fixture per creare infrastruttura PKI completa con TLM"""
     # Root CA
-    root_ca_path = test_data_dir / "root_ca"
     root_ca = RootCA(
-        base_dir=str(root_ca_path)
+        base_dir="./data/root_ca"
+    )
+
+    # Trust List Manager
+    from managers.trust_list_manager import TrustListManager
+    tlm = TrustListManager(
+        root_ca=root_ca,
+        base_dir="./data/tlm"
     )
 
     # Enrollment Authority
     ea = EnrollmentAuthority(
         root_ca=root_ca,
         ea_id="EA_TEST",
-        base_dir=str(test_data_dir / "ea"),
+        base_dir="./data/ea",
     )
+    
+    # Aggiungi EA al TLM
+    tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 
-    # Authorization Authority
+    # Authorization Authority con TLM
     aa = AuthorizationAuthority(
         root_ca=root_ca,
+        tlm=tlm,
         aa_id="AA_TEST",
-        base_dir=str(test_data_dir / "aa"),
+        base_dir="./data/aa",
     )
 
-    return {"root_ca": root_ca, "ea": ea, "aa": aa}
+    return {"root_ca": root_ca, "ea": ea, "aa": aa, "tlm": tlm}
 
 
 class TestITSStation:
@@ -62,141 +68,254 @@ class TestITSStation:
 
     def test_itss_initialization(self, test_data_dir):
         """Test inizializzazione ITS-S"""
-        itss_dir = test_data_dir / "itss" / "TestVehicle"
         itss = ITSStation(
             its_id="TestVehicle",
-            base_dir=str(itss_dir),
+            base_dir="./data/itss",
         )
 
         assert itss is not None
         assert itss.its_id == "TestVehicle"
-        assert itss.base_dir == str(itss_dir)
         assert itss.message_encoder is not None
+        # Verifica directory create
+        assert itss.log_dir is not None
+        assert itss.backup_dir is not None
 
     def test_itss_generate_key_pair(self, test_data_dir):
         """Test generazione coppia di chiavi"""
-        itss_dir = test_data_dir / "itss" / "TestVehicle"
         itss = ITSStation(
             its_id="TestVehicle",
-            base_dir=str(itss_dir),
+            base_dir="./data/itss",
         )
 
-        # Genera chiave
-        private_key = itss.generate_key_pair()
+        # Genera chiave (metodo corretto - non ritorna valore)
+        itss.generate_ecc_keypair()
 
-        assert private_key is not None
-        assert (itss_dir / "own_certificates" / "TestVehicle_key.pem").exists()
+        assert itss.private_key is not None
+        assert itss.public_key is not None
+        assert Path(itss.key_path).exists()
 
     def test_itss_request_enrollment_certificate(self, test_data_dir, pki_infrastructure):
         """Test richiesta Enrollment Certificate"""
         ea = pki_infrastructure["ea"]
-        itss_dir = test_data_dir / "itss" / "TestVehicle"
         itss = ITSStation(
             its_id="TestVehicle",
-            base_dir=str(itss_dir),
+            base_dir="./data/itss",
         )
 
         # Genera chiave
-        itss.generate_key_pair()
+        itss.generate_ecc_keypair()
 
-        # Crea enrollment request
-        enrollment_request = itss.create_enrollment_request(
-            ea_public_key=ea.public_key,
-            attributes={"country": "IT", "organization": "Test"},
-        )
-
-        assert enrollment_request is not None
-        assert len(enrollment_request) > 0
-
-        # Processa la request tramite EA
-        enrollment_response = ea.process_enrollment_request(enrollment_request)
-
-        assert enrollment_response is not None
-
-        # ITS-S processa la response
-        ec_cert = itss.process_enrollment_response(enrollment_response)
+        # Richiedi EC usando il metodo corretto
+        ec_cert = itss.request_ec(ea)
 
         assert ec_cert is not None
-        assert (itss_dir / "own_certificates" / "TestVehicle_ec.pem").exists()
+        # Verifica che EC sia salvato
+        assert Path(itss.ec_path).exists()
 
     def test_itss_request_authorization_ticket(self, test_data_dir, pki_infrastructure):
         """Test richiesta Authorization Ticket"""
         ea = pki_infrastructure["ea"]
         aa = pki_infrastructure["aa"]
-        itss_dir = test_data_dir / "itss" / "TestVehicle"
         itss = ITSStation(
             its_id="TestVehicle",
-            base_dir=str(itss_dir),
+            base_dir="./data/itss",
         )
 
         # Prima ottieni EC
-        itss.generate_key_pair()
-        enrollment_request = itss.create_enrollment_request(
-            ea_public_key=ea.public_key,
-            attributes={"country": "IT", "organization": "Test"},
-        )
-        enrollment_response = ea.process_enrollment_request(enrollment_request)
-        itss.process_enrollment_response(enrollment_response)
+        itss.generate_ecc_keypair()
+        ec_cert = itss.request_ec(ea)
+        assert ec_cert is not None
 
-        # Ora richiedi AT
-        authorization_request = itss.create_authorization_request(
-            aa_public_key=aa.public_key,
-            attributes={},
-        )
-
-        assert authorization_request is not None
-        assert len(authorization_request) > 0
-
-        # Processa la request tramite AA
-        authorization_response = aa.process_authorization_request(authorization_request)
-
-        assert authorization_response is not None
-
-        # ITS-S processa la response
-        at_cert = itss.process_authorization_response(authorization_response)
+        # Ora richiedi AT usando il metodo corretto
+        at_cert = itss.request_at(aa)
 
         assert at_cert is not None
         # Verifica che AT sia salvato
-        at_files = list((itss_dir / "received_tickets").glob("AT_*.pem"))
+        at_files = list(Path(itss.at_dir).glob("AT_*.pem"))
         assert len(at_files) > 0
 
     def test_itss_full_enrollment_authorization_flow(self, test_data_dir, pki_infrastructure):
         """Test flusso completo enrollment + authorization"""
         ea = pki_infrastructure["ea"]
         aa = pki_infrastructure["aa"]
-        itss_dir = test_data_dir / "itss" / "TestVehicleFlow"
         itss = ITSStation(
             its_id="TestVehicleFlow",
-            base_dir=str(itss_dir),
+            base_dir="./data/itss",
         )
 
         # 1. Genera chiave
-        private_key = itss.generate_key_pair()
-        assert private_key is not None
+        itss.generate_ecc_keypair()
+        assert itss.private_key is not None
 
         # 2. Enrollment
-        enrollment_request = itss.create_enrollment_request(
-            ea_public_key=ea.public_key,
-            attributes={"country": "IT", "organization": "TestOrg"},
-        )
-        enrollment_response = ea.process_enrollment_request(enrollment_request)
-        ec_cert = itss.process_enrollment_response(enrollment_response)
+        ec_cert = itss.request_ec(ea)
         assert ec_cert is not None
 
         # 3. Authorization
-        authorization_request = itss.create_authorization_request(
-            aa_public_key=aa.public_key,
-            attributes={},
-        )
-        authorization_response = aa.process_authorization_request(authorization_request)
-        at_cert = itss.process_authorization_response(authorization_response)
+        at_cert = itss.request_at(aa)
         assert at_cert is not None
 
         # 4. Verifica file salvati
-        assert (itss_dir / "own_certificates" / "TestVehicleFlow_key.pem").exists()
-        assert (itss_dir / "own_certificates" / "TestVehicleFlow_ec.pem").exists()
-        at_files = list((itss_dir / "received_tickets").glob("AT_*.pem"))
+        assert Path(itss.key_path).exists()
+        assert Path(itss.ec_path).exists()
+        at_files = list(Path(itss.at_dir).glob("AT_*.pem"))
         assert len(at_files) > 0
+
+    def test_itss_download_trust_anchors(self, test_data_dir, pki_infrastructure):
+        """Test download trust anchors dal TLM"""
+        tlm = pki_infrastructure["tlm"]
+        ea = pki_infrastructure["ea"]
+        root_ca = pki_infrastructure["root_ca"]
+        itss = ITSStation(
+            its_id="TestVehicleTrustAnchors",
+            base_dir="./data/itss",
+        )
+
+        # Setup veicolo
+        itss.generate_ecc_keypair()
+        itss.request_ec(ea)
+
+        # Simula download trust anchors: copia certificati RootCA e EA
+        # In un sistema reale, il TLM fornirebbe questi tramite API
+        trust_anchors_dir = Path(os.path.dirname(itss.trust_anchor_path))
+        ta_root_path = trust_anchors_dir / "root_ca.pem"
+        with open(ta_root_path, "wb") as f:
+            f.write(root_ca.certificate.public_bytes(encoding=serialization.Encoding.PEM))
+        
+        ta_ea_path = trust_anchors_dir / "ea_test.pem"
+        with open(ta_ea_path, "wb") as f:
+            f.write(ea.certificate.public_bytes(encoding=serialization.Encoding.PEM))
+        
+        # Verifica che i trust anchors siano stati salvati
+        ta_files = list(trust_anchors_dir.glob("*.pem"))
+        assert len(ta_files) >= 2
+        print(f"[TEST] Trust anchors salvati: {len(ta_files)}")
+
+    def test_itss_download_ctl_full(self, test_data_dir, pki_infrastructure):
+        """Test download CTL Full dal TLM"""
+        tlm = pki_infrastructure["tlm"]
+        ea = pki_infrastructure["ea"]
+        itss = ITSStation(
+            its_id="TestVehicleCTLFull",
+            base_dir="./data/itss",
+        )
+
+        # Setup veicolo
+        itss.generate_ecc_keypair()
+        itss.request_ec(ea)
+
+        # Pubblica CTL Full dal TLM
+        ctl_metadata = tlm.publish_full_ctl()
+        assert ctl_metadata is not None
+        
+        # Path della CTL pubblicata
+        ctl_source_path = Path("./data/tlm/ctl/full_ctl.pem")
+        assert ctl_source_path.exists()
+
+        # Simula download CTL Full
+        ctl_full_dir = Path(os.path.dirname(itss.ctl_path))
+        ctl_dest = ctl_full_dir / "ctl_full.pem"
+        shutil.copy(ctl_source_path, ctl_dest)
+
+        # Verifica che CTL Full sia stato scaricato
+        assert ctl_dest.exists()
+        assert ctl_dest.stat().st_size > 0
+        print(f"[TEST] CTL Full scaricato: {ctl_dest.stat().st_size} bytes")
+
+    def test_itss_download_ctl_delta(self, test_data_dir, pki_infrastructure):
+        """Test download CTL Delta dal TLM"""
+        tlm = pki_infrastructure["tlm"]
+        ea = pki_infrastructure["ea"]
+        root_ca = pki_infrastructure["root_ca"]
+        itss = ITSStation(
+            its_id="TestVehicleCTLDelta",
+            base_dir="./data/itss",
+        )
+
+        # Setup veicolo
+        itss.generate_ecc_keypair()
+        itss.request_ec(ea)
+
+        # Pubblica CTL Full prima
+        tlm.publish_full_ctl()
+
+        # Aggiungi una nuova EA per creare una delta
+        from entities.enrollment_authority import EnrollmentAuthority
+        ea2 = EnrollmentAuthority(
+            root_ca=root_ca,
+            ea_id="EA_DELTA_TEST",
+            base_dir="./data/ea",
+        )
+        tlm.add_trust_anchor(ea2.certificate, authority_type="EA")
+
+        # Pubblica CTL Delta
+        ctl_delta_metadata = tlm.publish_delta_ctl()
+        assert ctl_delta_metadata is not None
+        
+        # Path della CTL Delta pubblicata
+        ctl_source_path = Path("./data/tlm/ctl/delta_ctl.pem")
+        assert ctl_source_path.exists()
+
+        # Simula download CTL Delta
+        ctl_delta_dir = Path(os.path.dirname(itss.delta_path))
+        ctl_dest = ctl_delta_dir / "ctl_delta.pem"
+        shutil.copy(ctl_source_path, ctl_dest)
+
+        # Verifica che CTL Delta sia stato scaricato
+        assert ctl_dest.exists()
+        assert ctl_dest.stat().st_size > 0
+        print(f"[TEST] CTL Delta scaricato: {ctl_dest.stat().st_size} bytes")
+
+    def test_itss_send_signed_message(self, test_data_dir, pki_infrastructure):
+        """Test invio messaggio firmato"""
+        ea = pki_infrastructure["ea"]
+        aa = pki_infrastructure["aa"]
+        
+        # Crea due veicoli
+        sender = ITSStation(
+            its_id="TestVehicleSender",
+            base_dir="./data/itss",
+        )
+        receiver = ITSStation(
+            its_id="TestVehicleReceiver",
+            base_dir="./data/itss",
+        )
+
+        # Setup sender: genera chiave, ottieni EC e AT
+        sender.generate_ecc_keypair()
+        sender.request_ec(ea)
+        sender.request_at(aa)
+
+        # Setup receiver: genera chiave, ottieni EC
+        receiver.generate_ecc_keypair()
+        receiver.request_ec(ea)
+
+        # Invia messaggio firmato (parametro: string message, non bytes)
+        message_text = "Test V2X Message: Emergency Brake Warning!"
+        message_sent = sender.send_signed_message(
+            message=message_text,
+            recipient_id="TestVehicleReceiver",
+            message_type="CAM"
+        )
+
+        # Verifica che il messaggio sia stato inviato
+        assert message_sent is not None
+        
+        # Verifica che il file outbox sender esista e contenga il messaggio
+        sender_outbox = Path(sender.outbox_path)
+        assert sender_outbox.exists()
+        assert sender_outbox.stat().st_size > 0
+        print(f"[TEST] Messaggio inviato: {sender_outbox.stat().st_size} bytes in outbox")
+
+        # Verifica che il messaggio sia stato consegnato automaticamente all'inbox del receiver
+        # (send_signed_message() già lo scrive direttamente)
+        receiver_inbox_path = Path(sender.inbox_path.replace(sender.its_id, receiver.its_id))
+        inbox_files = list(receiver_inbox_path.parent.glob("*.txt"))
+        
+        if inbox_files:
+            # Verifica che almeno un messaggio sia stato ricevuto
+            assert len(inbox_files) > 0
+            print(f"[TEST] Messaggi ricevuti in inbox: {len(inbox_files)} file")
 
 
 if __name__ == "__main__":

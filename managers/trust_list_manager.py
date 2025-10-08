@@ -1,14 +1,16 @@
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.x509.oid import NameOID
-from datetime import datetime, timedelta, timezone
+﻿import json
 import os
-import json
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import NameOID
+
 from utils.cert_utils import (
-    get_certificate_ski,
-    get_certificate_identifier,
-    get_short_identifier,
     format_certificate_info,
+    get_certificate_identifier,
+    get_certificate_ski,
+    get_short_identifier,
 )
 
 
@@ -44,10 +46,14 @@ class TrustListManager:
         self.full_ctl_path = os.path.join(self.ctl_dir, "full_ctl.pem")
         self.delta_ctl_path = os.path.join(self.ctl_dir, "delta_ctl.pem")
         self.link_certs_dir = os.path.join(base_dir, "link_certificates/")
+        self.link_certs_json_dir = os.path.join(self.link_certs_dir, "json/")
+        self.link_certs_asn1_dir = os.path.join(self.link_certs_dir, "asn1/")
         self.metadata_path = os.path.join(self.ctl_dir, "ctl_metadata.json")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
 
         # Crea directory
-        for d in [self.ctl_dir, self.link_certs_dir]:
+        for d in [self.ctl_dir, self.link_certs_dir, self.link_certs_json_dir, self.link_certs_asn1_dir, self.log_dir, self.backup_dir]:
             os.makedirs(d, exist_ok=True)
 
         # Lista completa dei trust anchors (per Full CTL)
@@ -91,7 +97,7 @@ class TrustListManager:
         ski = get_certificate_ski(certificate)
         subject_name = certificate.subject.rfc4514_string()
         added_date = datetime.now(timezone.utc)
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
 
         print(f"[TLM] Aggiungendo trust anchor: {subject_name}")
         print(f"[TLM]   Identificatore: {cert_id}")
@@ -205,9 +211,9 @@ class TrustListManager:
             if issuer_name == anchor_subject:
                 # Verifica firma del certificato usando la chiave pubblica del trust anchor
                 try:
-                    from cryptography.hazmat.primitives.asymmetric import ec
-                    from cryptography.hazmat.backends import default_backend
                     from cryptography.exceptions import InvalidSignature
+                    from cryptography.hazmat.backends import default_backend
+                    from cryptography.hazmat.primitives.asymmetric import ec
 
                     # Ottieni chiave pubblica del trust anchor (issuer)
                     public_key = anchor["certificate"].public_key()
@@ -450,56 +456,211 @@ class TrustListManager:
 
     def _generate_link_certificate_for_authority(self, authority_cert, authority_type):
         """
-        Genera un Link Certificate che collega RootCA a questa autorità.
+        Genera un Link Certificate ETSI-compliant che collega RootCA a questa autorità.
+
+        ETSI TS 102941 Section 6.4 - ToBeSignedLinkCertificate:
+        - certificateHash: HashedId8 del certificato subordinato (SHA-256)
+        - issuerCertificate: Riferimento al certificato issuer (RootCA)
+        - expiryTime: Timestamp di scadenza del link
+        - signature: Firma digitale ECDSA della RootCA
 
         I Link Certificates permettono di:
         - Navigare la gerarchia di fiducia
-        - Validare catene di certificati
-        - Verificare relazioni tra CA
+        - Validare catene di certificati ETSI TS 103097
+        - Verificare relazioni tra CA in modo crittograficamente sicuro
 
         Args:
             authority_cert: Certificato dell'autorità (EA/AA)
             authority_type: Tipo di autorità ("EA", "AA")
         """
-        print(f"[TLM] Generando Link Certificate: RootCA -> {authority_type}")
+        import hashlib
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
 
-        # Il Link Certificate è essenzialmente una attestazione firmata
-        # che dice "RootCA certifica che questa EA/AA è fidata"
-
-        # In un'implementazione ETSI completa, questo sarebbe un certificato
-        # con extension specifiche. Per ora usiamo un approccio semplificato.
+        print(f"[TLM] Generando Link Certificate ETSI-compliant: RootCA -> {authority_type}")
 
         # Usa SKI invece di serial number per identificatori più robusti
         root_ca_ski = get_certificate_ski(self.root_ca.certificate)
         authority_ski = get_certificate_ski(authority_cert)
         authority_id = get_short_identifier(authority_cert)
 
+        # ETSI TS 102941: Calcola HashedId8 del certificato subordinato
+        # HashedId8 = primi 8 byte di SHA-256(DER-encoded certificate)
+        cert_der = authority_cert.public_bytes(serialization.Encoding.DER)
+        cert_hash_full = hashlib.sha256(cert_der).digest()
+        cert_hash_id8 = cert_hash_full[:8].hex()  # HashedId8 (16 caratteri hex)
+
+        # ETSI TS 102941: Calcola scadenza del link certificate
+        # Usa la scadenza del certificato subordinato o 1 anno, quello che è minore
+        authority_expiry = authority_cert.not_valid_after
+        one_year_from_now = datetime.now(timezone.utc) + timedelta(days=365)
+        
+        # Converti a timezone-aware se necessario
+        if authority_expiry.tzinfo is None:
+            authority_expiry = authority_expiry.replace(tzinfo=timezone.utc)
+        
+        link_expiry = min(authority_expiry, one_year_from_now)
+
+        # Prepara dati da firmare secondo ETSI TS 102941
+        # ToBeSignedLinkCertificate = {from_ski, to_ski, cert_hash, expiry}
+        data_to_sign = json.dumps(
+            {
+                "from_ski": root_ca_ski,
+                "to_ski": authority_ski,
+                "cert_hash_id8": cert_hash_id8,
+                "expiry_time": link_expiry.isoformat(),
+                "link_version": "1.0",
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+
+        # ETSI TS 102941: Firma con chiave privata RootCA usando ECDSA-SHA256
+        signature = self.root_ca.private_key.sign(data_to_sign, ec.ECDSA(hashes.SHA256()))
+
+        # Costruisci Link Certificate ETSI-compliant
         link_cert_info = {
+            # Identificatori
             "link_id": f"LINK_{root_ca_ski[:8]}_to_{authority_ski[:8]}",
+            "version": "1.0",
+            "link_certificate_format": "ETSI_TS_102941",
+            
+            # Issuer (RootCA)
             "from_ca": "RootCA",
             "from_ski": root_ca_ski,
             "from_cert_id": get_short_identifier(self.root_ca.certificate),
+            "from_serial": self.root_ca.certificate.serial_number,
+            
+            # Subject (EA/AA)
             "to_ca": authority_type,
             "to_ski": authority_ski,
             "to_cert_id": authority_id,
             "to_subject": authority_cert.subject.rfc4514_string(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "purpose": f"Certifies trust relationship RootCA -> {authority_type}",
-            # Mantieni serial numbers per backward compatibility
-            "from_serial": self.root_ca.certificate.serial_number,
             "to_serial": authority_cert.serial_number,
+            
+            # ETSI TS 102941 mandatory fields
+            "cert_hash_id8": cert_hash_id8,  # HashedId8 del subordinato
+            "expiry_time": link_expiry.isoformat(),  # Scadenza link
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            
+            # Firma digitale ECDSA
+            "signature": signature.hex(),
+            "signature_algorithm": "ECDSA-SHA256",
+            
+            # Metadata
+            "purpose": f"Certifies trust relationship RootCA -> {authority_type}",
+            "etsi_compliant": True,
         }
 
         self.link_certificates.append(link_cert_info)
+        
+        print(f"[TLM]   HashedId8: {cert_hash_id8}")
+        print(f"[TLM]   Expiry: {link_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"[TLM]   Signature: {signature.hex()[:32]}...")
 
-        # Salva link certificate su file (usa identificatori leggibili nel nome)
-        link_filename = f"link_RootCA_to_{authority_id}.json"
-        link_path = os.path.join(self.link_certs_dir, link_filename)
-
-        with open(link_path, "w") as f:
+        # Salva link certificate in due formati:
+        # 1. JSON (per debugging e compatibilità)
+        # 2. ASN.1 OER binario (ETSI-compliant)
+        
+        short_id = authority_id.replace("EnrollmentAuthority_", "").replace(
+            "AuthorizationAuthority_", ""
+        )
+        
+        # Formato JSON (leggibile) - salvato in sottocartella json/
+        link_filename_json = f"link_RootCA_to_{short_id}.json"
+        link_path_json = os.path.join(self.link_certs_json_dir, link_filename_json)
+        
+        with open(link_path_json, "w") as f:
             json.dump(link_cert_info, f, indent=2)
+        
+        print(f"[TLM] Link Certificate JSON salvato: {link_path_json}")
+        
+        # Formato ASN.1 OER (ETSI-compliant)
+        try:
+            from protocols.etsi_link_certificate import ETSILinkCertificateEncoder
+            
+            encoder = ETSILinkCertificateEncoder()
+            
+            # Codifica in ASN.1 OER
+            asn1_bytes = encoder.encode_full_link_certificate(
+                issuer_cert_der=self.root_ca.certificate.public_bytes(
+                    serialization.Encoding.DER
+                ),
+                subject_cert_der=authority_cert.public_bytes(serialization.Encoding.DER),
+                expiry_time=link_expiry,
+                private_key=self.root_ca.private_key,
+            )
+            
+            # Salva formato binario ASN.1 - salvato in sottocartella asn1/
+            link_filename_asn1 = f"link_RootCA_to_{short_id}.asn1"
+            link_path_asn1 = os.path.join(self.link_certs_asn1_dir, link_filename_asn1)
+            
+            with open(link_path_asn1, "wb") as f:
+                f.write(asn1_bytes)
+            
+            print(f"[TLM] Link Certificate ASN.1 OER salvato: {link_path_asn1}")
+            print(f"[TLM]   Dimensione: {len(asn1_bytes)} bytes")
+            
+        except Exception as e:
+            print(f"[TLM] [WARNING] Errore codifica ASN.1: {e}")
+            print(f"[TLM] Continuando con solo formato JSON...")
 
-        print(f"[TLM] Link Certificate salvato: {link_path}")
+    def verify_link_certificate(self, link_cert_data):
+        """
+        Verifica la firma di un Link Certificate secondo ETSI TS 102941.
+
+        Questo metodo è usato da ITS-S per validare catene di fiducia
+        prima di accettare certificati EC/AT.
+
+        Args:
+            link_cert_data: Dictionary contenente i dati del link certificate
+
+        Returns:
+            tuple (bool, str): (is_valid, message)
+        
+        ETSI TS 102941 Section 6.4 - Link Certificate Verification
+        """
+        from cryptography.hazmat.primitives.asymmetric import ec
+        
+        try:
+            # Verifica presenza campi obbligatori ETSI
+            required_fields = [
+                "from_ski",
+                "to_ski",
+                "cert_hash_id8",
+                "expiry_time",
+                "signature",
+            ]
+            for field in required_fields:
+                if field not in link_cert_data:
+                    return False, f"Missing required field: {field}"
+
+            # Verifica scadenza
+            expiry = datetime.fromisoformat(link_cert_data["expiry_time"])
+            if expiry < datetime.now(timezone.utc):
+                return False, f"Link certificate expired at {expiry}"
+
+            # Ricostruisci dati originali da firmare
+            data_to_verify = json.dumps(
+                {
+                    "from_ski": link_cert_data["from_ski"],
+                    "to_ski": link_cert_data["to_ski"],
+                    "cert_hash_id8": link_cert_data["cert_hash_id8"],
+                    "expiry_time": link_cert_data["expiry_time"],
+                    "link_version": link_cert_data.get("version", "1.0"),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+
+            # Verifica firma con chiave pubblica RootCA
+            signature = bytes.fromhex(link_cert_data["signature"])
+            self.root_ca.certificate.public_key().verify(
+                signature, data_to_verify, ec.ECDSA(hashes.SHA256())
+            )
+
+            return True, "Link certificate signature valid"
+
+        except Exception as e:
+            return False, f"Verification failed: {str(e)}"
 
     def _remove_link_certificates_for_ski(self, ski):
         """
@@ -531,22 +692,103 @@ class TrustListManager:
 
         Questo bundle viene distribuito agli ITS-S insieme alla CTL
         per permettere la validazione completa delle catene.
+        
+        Genera due formati:
+        1. JSON bundle (leggibile, per debugging)
+        2. ASN.1 OER bundle (ETSI-compliant, per produzione)
         """
         print(f"[TLM] === PUBBLICAZIONE LINK CERTIFICATES ===")
         print(f"[TLM] Link certificates totali: {len(self.link_certificates)}")
 
-        bundle_path = os.path.join(self.link_certs_dir, "link_certificates_bundle.json")
+        # 1. Bundle JSON (formato leggibile) - salvato in json/
+        bundle_path_json = os.path.join(self.link_certs_json_dir, "link_certificates_bundle.json")
 
         bundle_data = {
             "version": "1.0",
+            "format": "JSON",
             "issue_date": datetime.now(timezone.utc).isoformat(),
+            "total_links": len(self.link_certificates),
             "link_certificates": self.link_certificates,
         }
 
-        with open(bundle_path, "w") as f:
+        with open(bundle_path_json, "w") as f:
             json.dump(bundle_data, f, indent=2)
 
-        print(f"[TLM] Link certificates bundle salvato: {bundle_path}")
+        print(f"[TLM] Bundle JSON salvato: {bundle_path_json}")
+
+        # 2. Bundle ASN.1 OER (formato ETSI-compliant) - salvato in asn1/
+        try:
+            from protocols.etsi_link_certificate import ETSILinkCertificateEncoder
+
+            bundle_path_asn1 = os.path.join(
+                self.link_certs_asn1_dir, "link_certificates_bundle.asn1"
+            )
+
+            # Genera bundle ASN.1: [count(2) | link1_len(2) | link1 | link2_len(2) | link2 | ...]
+            encoder = ETSILinkCertificateEncoder()
+            bundle_asn1 = bytearray()
+
+            # Header: numero di link certificates (2 bytes, big-endian)
+            import struct
+
+            bundle_asn1.extend(struct.pack(">H", len(self.link_certificates)))
+
+            # Aggiungi tutti i link certificates
+            links_encoded = 0
+            for link_cert in self.link_certificates:
+                try:
+                    # Trova il certificato subordinato per questo link
+                    to_ski = link_cert["to_ski"]
+
+                    # Cerca il certificato nella lista trust anchors
+                    subject_cert = None
+                    for anchor in self.trust_anchors:
+                        if anchor["ski"] == to_ski:
+                            subject_cert = anchor["certificate"]
+                            break
+
+                    if subject_cert is None:
+                        print(
+                            f"[TLM] [WARNING] Certificato non trovato per SKI: {to_ski[:16]}..."
+                        )
+                        continue
+
+                    # Estrai expiry time
+                    expiry_time = datetime.fromisoformat(link_cert["expiry_time"])
+
+                    # Codifica link certificate completo in ASN.1 OER
+                    link_asn1 = encoder.encode_full_link_certificate(
+                        issuer_cert_der=self.root_ca.certificate.public_bytes(
+                            serialization.Encoding.DER
+                        ),
+                        subject_cert_der=subject_cert.public_bytes(
+                            serialization.Encoding.DER
+                        ),
+                        expiry_time=expiry_time,
+                        private_key=self.root_ca.private_key,
+                    )
+
+                    # Aggiungi lunghezza + dati
+                    bundle_asn1.extend(struct.pack(">H", len(link_asn1)))
+                    bundle_asn1.extend(link_asn1)
+                    links_encoded += 1
+
+                except Exception as e:
+                    print(f"[TLM] [ERROR] Errore codifica link: {e}")
+                    continue
+
+            # Salva bundle ASN.1
+            with open(bundle_path_asn1, "wb") as f:
+                f.write(bytes(bundle_asn1))
+
+            print(f"[TLM] Bundle ASN.1 OER salvato: {bundle_path_asn1}")
+            print(f"[TLM]   Link certificates codificati: {links_encoded}/{len(self.link_certificates)}")
+            print(f"[TLM]   Dimensione bundle: {len(bundle_asn1)} bytes")
+
+        except Exception as e:
+            print(f"[TLM] [WARNING] Errore creazione bundle ASN.1: {e}")
+            print(f"[TLM] Continuando con solo bundle JSON...")
+
         print(f"[TLM] === PUBBLICAZIONE COMPLETATA ===")
 
         return bundle_data

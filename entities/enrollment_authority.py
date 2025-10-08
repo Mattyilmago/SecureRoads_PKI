@@ -1,17 +1,17 @@
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import load_der_public_key
-from cryptography.hazmat.backends import default_backend
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-from cryptography.x509 import ReasonFlags
-from datetime import datetime, timedelta, timezone
-import os
+﻿import os
 import secrets
 import traceback
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_der_public_key
+from cryptography.x509 import ReasonFlags
+from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
-from utils.cert_utils import get_certificate_identifier, get_short_identifier
 
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
@@ -21,6 +21,7 @@ from protocols.etsi_message_types import (
     ResponseCode,
     compute_request_hash,
 )
+from utils.cert_utils import get_certificate_identifier, get_short_identifier
 
 
 class EnrollmentAuthority:
@@ -38,35 +39,40 @@ class EnrollmentAuthority:
         self.ea_id = ea_id
         self.ea_certificate_path = os.path.join(base_dir, "certificates/ea_certificate.pem")
         self.ea_key_path = os.path.join(base_dir, "private_keys/ea_key.pem")
-        self.root_ca_certificate_path = "./data/root_ca/certificates/root_ca_certificate.pem"
         self.ec_dir = os.path.join(base_dir, "enrollment_certificates/")
         self.crl_path = os.path.join(base_dir, "crl/ea_crl.pem")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
 
         print(f"[EA] Percorso certificato EA: {self.ea_certificate_path}")
         print(f"[EA] Percorso chiave privata EA: {self.ea_key_path}")
-        print(f"[EA] Percorso certificato Root CA: {self.root_ca_certificate_path}")
         print(f"[EA] Directory EC: {self.ec_dir}")
         print(f"[EA] Percorso CRL EA: {self.crl_path}")
 
         self.root_ca = root_ca
         self.private_key = None
         self.certificate = None
-        self.root_ca_certificate = None
+        # Use the certificate directly from RootCA instance
+        self.root_ca_certificate = root_ca.certificate
 
         print(f"[EA] Creando directory necessarie...")
         for d in [
             os.path.dirname(self.ea_certificate_path),
             os.path.dirname(self.ea_key_path),
-            os.path.dirname(self.root_ca_certificate_path),
             self.ec_dir,
             os.path.dirname(self.crl_path),
+            self.log_dir,
+            self.backup_dir,
         ]:
             os.makedirs(d, exist_ok=True)
 
         print(f"[EA] Caricando o generando chiave e certificato EA...")
         self.load_or_generate_ea()
-        print(f"[EA] Caricando certificato Root CA...")
-        self.load_root_ca_certificate()
+
+        # Log RootCA certificate info
+        print(f"[EA] Root CA certificate loaded from instance")
+        print(f"[EA] Root CA Subject: {self.root_ca_certificate.subject}")
+        print(f"[EA] Root CA Serial: {self.root_ca_certificate.serial_number}")
 
         # Inizializza CRLManager dopo aver caricato certificato e chiave privata
         print(f"[EA] Inizializzando CRLManager per EA {ea_id}...")
@@ -146,17 +152,8 @@ class EnrollmentAuthority:
         print(f"[EA] Subject: {self.certificate.subject}")
         print(f"[EA] Serial number: {self.certificate.serial_number}")
         print(
-            f"[EA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
+            f"[EA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}"
         )
-
-    # Carica il certificato della RootCa
-    def load_root_ca_certificate(self):
-        print(f"[EA] Caricando certificato Root CA da: {self.root_ca_certificate_path}")
-        with open(self.root_ca_certificate_path, "rb") as f:
-            self.root_ca_certificate = x509.load_pem_x509_certificate(f.read())
-        print("[EA] Certificato Root CA caricato con successo!")
-        print(f"[EA] Root CA Subject: {self.root_ca_certificate.subject}")
-        print(f"[EA] Root CA Serial: {self.root_ca_certificate.serial_number}")
 
     # Emette EC da una richiesta CSR
     def process_csr(self, csr_pem, its_id, attributes=None):
@@ -217,7 +214,7 @@ class EnrollmentAuthority:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         print(f"[EA] Enrollment Certificate emesso e salvato con successo!")
         print(f"[EA] Identificatore: {cert_id}")
-        print(f"[EA] Validità EC: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        print(f"[EA] Validità EC: dal {cert.not_valid_before} al {cert.not_valid_after}")
         return cert
 
     # Aggiunge un certificato alla lista dei certificati revocati

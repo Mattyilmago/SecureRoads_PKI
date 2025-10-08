@@ -1,16 +1,17 @@
-﻿from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.backends import default_backend
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-from datetime import datetime, timedelta, timezone
-import os
+﻿import os
 import secrets
 import traceback
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, ResponseCode
+from protocols.etsi_message_types import InnerAtRequest, InnerEcRequest, ResponseCode
 from utils.cert_utils import get_certificate_ski
 
 
@@ -24,12 +25,14 @@ class ITSStation:
         self.key_path = os.path.join(base_dir, f"own_certificates/{its_id}_key.pem")
         self.cert_path = os.path.join(base_dir, f"own_certificates/{its_id}_certificate.pem")
         self.ec_path = os.path.join(base_dir, f"own_certificates/{its_id}_ec.pem")
-        self.at_dir = os.path.join(base_dir, "received_tickets/")
+        self.at_dir = os.path.join(base_dir, "authorization_tickets/")
         self.trust_anchor_path = os.path.join(base_dir, "trust_anchors/trust_anchors.pem")
         self.ctl_path = os.path.join(base_dir, "ctl_full/ctl.pem")
         self.delta_path = os.path.join(base_dir, "ctl_delta/delta.pem")
         self.inbox_path = os.path.join(base_dir, f"inbox/")
         self.outbox_path = os.path.join(base_dir, f"outbox/{its_id}_outbox.txt")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
 
         for d in [
             os.path.dirname(self.key_path),
@@ -41,6 +44,8 @@ class ITSStation:
             os.path.dirname(self.delta_path),
             os.path.dirname(self.inbox_path),
             os.path.dirname(self.outbox_path),
+            self.log_dir,
+            self.backup_dir,
         ]:
             os.makedirs(d, exist_ok=True)
             print(f"[ITSS] Directory creata o già esistente: {d}")
@@ -479,7 +484,7 @@ class ITSStation:
 
             # Carica il certificato AT del mittente (cerca l'AT più recente)
             sender_base_dir = os.path.join("./data/itss/", f"{sender_id}/")
-            sender_at_dir = os.path.join(sender_base_dir, "received_tickets/")
+            sender_at_dir = os.path.join(sender_base_dir, "authorization_tickets/")
 
             if not os.path.exists(sender_at_dir):
                 print(f"[ITSS] [WARNING] Directory AT mittente {sender_id} non trovata")
@@ -506,8 +511,8 @@ class ITSStation:
             now = datetime.now(timezone.utc)
 
             # Usa le proprietà UTC che restituiscono già timezone-aware datetime
-            cert_not_after = sender_at_cert.not_valid_after_utc
-            cert_not_before = sender_at_cert.not_valid_before_utc
+            cert_not_after = sender_at_cert.not_valid_after
+            cert_not_before = sender_at_cert.not_valid_before
 
             if cert_not_after < now:
                 print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} SCADUTO")
@@ -719,9 +724,7 @@ class ITSStation:
                 print(f"[ITSS] Enrollment Certificate ricevuto:")
                 print(f"[ITSS]    Subject: {ec_cert.subject.rfc4514_string()}")
                 print(f"[ITSS]    Serial: {ec_cert.serial_number}")
-                print(
-                    f"[ITSS]    Validità: {ec_cert.not_valid_before_utc} - {ec_cert.not_valid_after_utc}"
-                )
+                print(f"[ITSS]    Validità: {ec_cert.not_valid_before} - {ec_cert.not_valid_after}")
 
                 # Salva EC
                 with open(self.ec_path, "wb") as f:
@@ -836,9 +839,7 @@ class ITSStation:
                 print(f"[ITSS] Authorization Ticket ricevuto")
                 print(f"[ITSS] Subject: {at_cert.subject.rfc4514_string()}")
                 print(f"[ITSS] Serial: {at_cert.serial_number}")
-                print(
-                    f"[ITSS] Validità: {at_cert.not_valid_before_utc} - {at_cert.not_valid_after_utc}"
-                )
+                print(f"[ITSS] Validità: {at_cert.not_valid_before} - {at_cert.not_valid_after}")
                 print(f"[ITSS] Identificatore SKI: {cert_ski}")
                 print(f"[ITSS] File: {at_filename}")
                 print(f"[ITSS] Path: {at_path}")

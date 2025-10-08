@@ -77,22 +77,34 @@ SecureRoad-PKI/
 │   ├── root_ca/                    # Root Certificate Authority
 │   │   ├── certificates/           # Certificato root self-signed
 │   │   ├── private_keys/           # Chiave privata root
-│   │   ├── crl/                    # CRL Full e Delta pubblicate
+│   │   ├── crl/                    # CRL pubblicate
+│   │   │   ├── full/               # Full CRL (lista completa)
+│   │   │   └── delta/              # Delta CRL (modifiche incrementali)
+│   │   ├── logs/                   # Log audit ETSI-compliant
+│   │   ├── backup/                 # Backup disaster recovery
 │   │   └── subordinates/           # Certificati EA/AA firmati
 │   │
 │   ├── ea/                         # Enrollment Authorities
 │   │   └── EA_XXX/                 # Una cartella per ogni EA
 │   │       ├── certificates/       # Certificato EA firmato da Root
 │   │       ├── private_keys/       # Chiave privata EA
-│   │       ├── crl/                # CRL Delta pubblicate da EA
-│   │       └── enrollment_certificates/ # EC emessi ai veicoli
+│   │       ├── crl/                # CRL pubblicate
+│   │       │   ├── full/           # Full CRL
+│   │       │   └── delta/          # Delta CRL
+│   │       ├── enrollment_certificates/ # EC emessi ai veicoli
+│   │       ├── logs/               # Log audit
+│   │       └── backup/             # Backup
 │   │
 │   ├── aa/                         # Authorization Authorities
 │   │   └── AA_XXX/                 # Una cartella per ogni AA
 │   │       ├── certificates/       # Certificato AA firmato da Root
 │   │       ├── private_keys/       # Chiave privata AA
-│   │       ├── crl/                # CRL Delta pubblicate da AA
-│   │       └── authorization_tickets/ # AT emessi ai veicoli
+│   │       ├── crl/                # CRL pubblicate
+│   │       │   ├── full/           # Full CRL
+│   │       │   └── delta/          # Delta CRL
+│   │       ├── authorization_tickets/ # AT emessi ai veicoli
+│   │       ├── logs/               # Log audit
+│   │       └── backup/             # Backup
 │   │
 │   ├── itss/                       # ITS Stations (veicoli)
 │   │   └── Vehicle_XXX/            # Una cartella per ogni veicolo
@@ -102,11 +114,17 @@ SecureRoad-PKI/
 │   │       ├── ctl_delta/          # Delta CTL ricevute
 │   │       ├── inbox/              # Messaggi V2X ricevuti
 │   │       ├── outbox/             # Messaggi V2X inviati
-│   │       └── received_tickets/   # AT ricevuti da altri veicoli
+│   │       ├── authorization_tickets/  # AT ricevuti da altri veicoli
+│   │       ├── logs/               # Log audit ETSI-compliant
+│   │       └── backup/             # Backup certificati e chiavi
 │   │
 │   └── tlm/                        # Trust List Manager
 │       ├── ctl/                    # CTL Full e Delta pubblicate
-│       └── link_certificates/      # Link certificates per catene fiducia
+│       ├── link_certificates/      # Link certificates per catene fiducia
+│       │   ├── json/               # Formato JSON (debug)
+│       │   └── asn1/               # Formato ASN.1 OER (production)
+│       ├── logs/                   # Log audit
+│       └── backup/                 # Backup
 │
 ├── 📁 crypto/                      # Crittografia avanzata (TODO)
 │   └── crypto_manager.py           # Gestione AES-CCM, HashedId8, Butterfly

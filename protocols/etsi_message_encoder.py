@@ -23,37 +23,37 @@ Author: SecureRoad PKI Project
 Date: October 2025
 """
 
-import asn1tools
 import os
-from pathlib import Path
-from typing import Union, Dict, Any
-from datetime import datetime, timezone
 import time
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes, serialization
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Union
+
+import asn1tools
+from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
 )
-from cryptography import x509
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from protocols.etsi_message_types import (
+    AuthorizationValidationRequest,
+    AuthorizationValidationResponse,
+    InnerAtRequest,
+    InnerAtResponse,
     InnerEcRequest,
     InnerEcRequestSignedForPop,
     InnerEcResponse,
-    InnerAtRequest,
-    InnerAtResponse,
-    SharedAtRequest,
-    AuthorizationValidationRequest,
-    AuthorizationValidationResponse,
     ResponseCode,
-    compute_request_hash,
+    SharedAtRequest,
     compute_hashed_id8,
+    compute_request_hash,
 )
-
 
 # ============================================================================
 # ASN.1 COMPILER - Load ETSI TS 102941 Schema

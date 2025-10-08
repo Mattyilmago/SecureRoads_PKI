@@ -1,18 +1,18 @@
-﻿from cryptography.hazmat.primitives import serialization, hashes
+﻿import os
+import secrets
+import time
+import traceback
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import load_der_public_key
-from cryptography.hazmat.backends import default_backend
-from cryptography import x509
-from cryptography.x509.oid import NameOID
 from cryptography.x509 import ReasonFlags
-from datetime import datetime, timedelta, timezone
-import os
-import time
-import secrets
-import traceback
+from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
-from utils.cert_utils import get_certificate_identifier, get_short_identifier, get_certificate_ski
 
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
@@ -21,6 +21,11 @@ from protocols.etsi_message_types import (
     InnerAtResponse,
     ResponseCode,
     compute_request_hash,
+)
+from utils.cert_utils import (
+    get_certificate_identifier,
+    get_certificate_ski,
+    get_short_identifier,
 )
 
 
@@ -53,6 +58,8 @@ class AuthorizationAuthority:
         self.aa_key_path = os.path.join(base_dir, "private_keys/aa_key.pem")
         self.crl_path = os.path.join(base_dir, "crl/aa_crl.pem")
         self.ticket_dir = os.path.join(base_dir, "authorization_tickets/")
+        self.log_dir = os.path.join(base_dir, "logs/")
+        self.backup_dir = os.path.join(base_dir, "backup/")
         self.private_key = None
         self.certificate = None
         self.root_ca = root_ca
@@ -79,6 +86,8 @@ class AuthorizationAuthority:
             os.path.dirname(self.aa_key_path),
             os.path.dirname(self.crl_path),
             self.ticket_dir,
+            self.log_dir,
+            self.backup_dir,
         ]
 
         # Legacy: crea anche directory EA se specificata
@@ -208,7 +217,10 @@ class AuthorizationAuthority:
                 raise ValueError("Authorization Authority non configurata correttamente")
 
             # === VERIFICA SCADENZA ===
-            ec_expiry = ec_certificate.not_valid_after_utc
+            ec_expiry = ec_certificate.not_valid_after
+            # Rendi ec_expiry timezone-aware se necessario
+            if ec_expiry.tzinfo is None:
+                ec_expiry = ec_expiry.replace(tzinfo=timezone.utc)
             if ec_expiry < datetime.now(timezone.utc):
                 print("[AA] [ERROR] EC scaduto.")
                 return None
@@ -263,9 +275,7 @@ class AuthorizationAuthority:
         print(f"[AA] ITS-S: {its_id}")
         print(f"[AA] Identificatore SKI: {cert_ski}")
         print(f"[AA] Serial: {certificate.serial_number}")
-        print(
-            f"[AA] Validità: {certificate.not_valid_before_utc} → {certificate.not_valid_after_utc}"
-        )
+        print(f"[AA] Validità: {certificate.not_valid_before} → {certificate.not_valid_after}")
         print(f"[AA] File: {at_filename}")
         print(f"[AA] Path: {at_path}")
 
@@ -288,7 +298,7 @@ class AuthorizationAuthority:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = certificate.not_valid_after
 
         print(f"[AA] Revocando Authorization Ticket con serial: {serial_number}")
         print(f"[AA] Data di scadenza certificato: {expiry_date}")
