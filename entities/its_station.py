@@ -12,7 +12,8 @@ from cryptography.x509.oid import NameOID
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
 from protocols.etsi_message_types import InnerAtRequest, InnerEcRequest, ResponseCode
-from utils.cert_utils import get_certificate_ski
+from utils.cert_utils import get_certificate_expiry_time, get_certificate_not_before, get_certificate_ski
+from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 
 
@@ -21,7 +22,6 @@ class ITSStation:
         # sottocartelle uniche per ogni veicolo
         base_dir = os.path.join(base_dir, f"{its_id}/")
 
-        print(f"[ITSS] Inizializzazione ITS Station {its_id}")
         self.its_id = its_id
         self.key_path = os.path.join(base_dir, f"own_certificates/{its_id}_key.pem")
         self.cert_path = os.path.join(base_dir, f"own_certificates/{its_id}_certificate.pem")
@@ -34,6 +34,15 @@ class ITSStation:
         self.outbox_path = os.path.join(base_dir, f"outbox/{its_id}_outbox.txt")
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name=f"ITSS_{its_id}",
+            log_dir=self.log_dir,
+            console_output=True
+        )
+        
+        self.logger.info(f"Inizializzazione ITS Station {its_id}")
 
         dirs = [
             os.path.dirname(self.key_path),
@@ -49,7 +58,7 @@ class ITSStation:
             self.backup_dir,
         ]
         PKIFileHandler.ensure_directories(*dirs)
-        print(f"[ITSS] Directory create o già esistenti: {len(dirs)} cartelle")
+        self.logger.info(f"Directory create o già esistenti: {len(dirs)} cartelle")
 
         self.private_key = None
         self.public_key = None
@@ -59,11 +68,11 @@ class ITSStation:
         self.trust_anchors = []
 
         # Inizializza ETSI Message Encoder per messaggi conformi allo standard
-        print(f"[ITSS] Inizializzando ETSI Message Encoder (ASN.1 OER)...")
+        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 OER)...")
         self.message_encoder = ETSIMessageEncoder()
-        print(f"[ITSS] ETSI Message Encoder inizializzato!")
+        self.logger.info("ETSI Message Encoder inizializzato!")
 
-        print(f"[ITSS] Inizializzazione ITS Station {its_id} completata!")
+        self.logger.info(f"Inizializzazione ITS Station {its_id} completata!")
 
     def get_latest_at_path(self):
         """
@@ -94,18 +103,18 @@ class ITSStation:
         """
         at_path = self.get_latest_at_path()
         if not at_path:
-            print(f"[ITSS] Nessun Authorization Ticket trovato")
+            self.logger.info(f"Nessun Authorization Ticket trovato")
             return None
 
         with open(at_path, "rb") as f:
             at_cert = x509.load_pem_x509_certificate(f.read())
 
-        print(f"[ITSS] Authorization Ticket più recente caricato: {os.path.basename(at_path)}")
+        self.logger.info(f"Authorization Ticket più recente caricato: {os.path.basename(at_path)}")
         return at_cert
 
     # Genera una chiave privata ECC e la salva su file
     def generate_ecc_keypair(self):
-        print(f"[ITSS] Generazione chiave ECC privata ITS-S {self.its_id}...")
+        self.logger.info(f"Generazione chiave ECC privata ITS-S {self.its_id}...")
         self.private_key = ec.generate_private_key(ec.SECP256R1())
         self.public_key = self.private_key.public_key()
         with open(self.key_path, "wb") as f:
@@ -116,11 +125,11 @@ class ITSStation:
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
-        print(f"[ITSS] Chiave privata ECC salvata su: {self.key_path}")
+        self.logger.info(f"Chiave privata ECC salvata su: {self.key_path}")
 
     # Crea una CSR firmata con la chiave ITS-S
     def generate_csr(self):
-        print(f"[ITSS] Generazione CSR per richiesta EC...")
+        self.logger.info(f"Generazione CSR per richiesta EC...")
         if not self.private_key:
             self.generate_ecc_keypair()
         csr = (
@@ -136,22 +145,22 @@ class ITSStation:
             )
             .sign(self.private_key, hashes.SHA256())
         )
-        print(f"[ITSS] CSR generato per {self.its_id}")
+        self.logger.info(f"CSR generato per {self.its_id}")
         return csr.public_bytes(serialization.Encoding.PEM)
 
     # Invia la CSR all''EA e salva l''EC ricevuto
     def request_ec(self, ea_obj):
-        print(f"[ITSS] Richiesta Enrollment Certificate a EA per {self.its_id}...")
+        self.logger.info(f"Richiesta Enrollment Certificate a EA per {self.its_id}...")
         csr_pem = self.generate_csr()
         ec_certificate = ea_obj.process_csr(csr_pem, self.its_id)
         if ec_certificate:
             with open(self.ec_path, "wb") as f:
                 f.write(ec_certificate.public_bytes(serialization.Encoding.PEM))
             self.ec_certificate = ec_certificate
-            print(f"[ITSS] Enrollment Certificate ricevuto e salvato: {self.ec_path}")
+            self.logger.info(f"Enrollment Certificate ricevuto e salvato: {self.ec_path}")
             return ec_certificate
         else:
-            print(f"[ITSS] Fallita la richiesta EC per {self.its_id}")
+            self.logger.info(f"Fallita la richiesta EC per {self.its_id}")
             return None
 
     # Invia EC all''AA per ottenere AT
@@ -164,14 +173,14 @@ class ITSStation:
             permissions: Lista dei permessi richiesti (es. ["CAM", "DENM"])
             region: Regione per cui vale l''AT (es. "EU")
         """
-        print(f"[ITSS] Richiesta Authorization Ticket a AA per {self.its_id}...")
+        self.logger.info(f"Richiesta Authorization Ticket a AA per {self.its_id}...")
         if permissions:
-            print(f"[ITSS] Permessi richiesti: {permissions}")
+            self.logger.info(f"Permessi richiesti: {permissions}")
         if region:
-            print(f"[ITSS] Regione richiesta: {region}")
+            self.logger.info(f"Regione richiesta: {region}")
 
         if not self.ec_certificate:
-            print("[ITSS] EC non presente, impossibile richiedere AT.")
+            self.logger.info("EC non presente, impossibile richiedere AT.")
             return None
         ec_bytes = self.ec_certificate.public_bytes(serialization.Encoding.PEM)
 
@@ -183,20 +192,20 @@ class ITSStation:
             at_filename = f"AT_{cert_ski}.pem"
             at_path = os.path.join(self.at_dir, at_filename)
 
-            print(f"[ITSS] ========================================")
-            print(f"[ITSS] Authorization Ticket ricevuto")
-            print(f"[ITSS] Identificatore SKI: {cert_ski}")
-            print(f"[ITSS] File: {at_filename}")
-            print(f"[ITSS] Path: {at_path}")
+            self.logger.info(f"========================================")
+            self.logger.info(f"Authorization Ticket ricevuto")
+            self.logger.info(f"Identificatore SKI: {cert_ski}")
+            self.logger.info(f"File: {at_filename}")
+            self.logger.info(f"Path: {at_path}")
 
             with open(at_path, "wb") as f:
                 f.write(at_certificate.public_bytes(serialization.Encoding.PEM))
             self.at_certificate = at_certificate
 
-            print(f"[ITSS] Authorization Ticket salvato con successo!")
-            print(f"[ITSS] ========================================")
+            self.logger.info(f"Authorization Ticket salvato con successo!")
+            self.logger.info(f"========================================")
         else:
-            print(f"[ITSS] Fallita la richiesta AT per {self.its_id}")
+            self.logger.info(f"Fallita la richiesta AT per {self.its_id}")
 
         return at_certificate
 
@@ -208,14 +217,14 @@ class ITSStation:
         Args:
             anchors_list: Lista di certificati trust anchor
         """
-        print(f"[ITSS] Aggiornamento trust anchors per {self.its_id}...")
+        self.logger.info(f"Aggiornamento trust anchors per {self.its_id}...")
         self.trust_anchors = anchors_list
 
         # Salva tutti gli anchors in un file PEM
         with open(self.trust_anchor_path, "wb") as f:
             for anchor in anchors_list:
                 f.write(anchor.public_bytes(serialization.Encoding.PEM))
-        print(f"[ITSS] Trust anchors salvati su: {self.trust_anchor_path}")
+        self.logger.info(f"Trust anchors salvati su: {self.trust_anchor_path}")
 
     # Valida una catena di certificati usando i trust anchors
     def validate_certificate_chain(self, certificate):
@@ -228,10 +237,10 @@ class ITSStation:
         Returns:
             bool: True se la validazione ha successo, False altrimenti
         """
-        print(f"[ITSS] Validazione certificato per {self.its_id}...")
+        self.logger.info(f"Validazione certificato per {self.its_id}...")
 
         if not self.trust_anchors:
-            print("[ITSS] Nessun trust anchor disponibile per la validazione")
+            self.logger.info("Nessun trust anchor disponibile per la validazione")
             return False
 
         # Validazione semplificata: controlla se il certificato è firmato da uno dei trust anchors
@@ -239,26 +248,26 @@ class ITSStation:
             try:
                 # Verifica la firma (semplificata)
                 if certificate.issuer == anchor.subject:
-                    print(f"[ITSS] Certificato validato con successo contro trust anchor")
+                    self.logger.info(f"Certificato validato con successo contro trust anchor")
                     return True
             except Exception as e:
-                print(f"[ITSS] Errore durante la validazione: {e}")
+                self.logger.info(f"Errore durante la validazione: {e}")
                 continue
 
-        print(f"[ITSS] Validazione certificato fallita")
+        self.logger.info(f"Validazione certificato fallita")
         return False
 
     # Aggiorna la CTL (Certificate Trust List) e la delta.
     def update_ctl(self, ctl_pem, delta_pem=None):
-        print(f"[ITSS] Aggiornamento CTL completo per {self.its_id}...")
+        self.logger.info(f"Aggiornamento CTL completo per {self.its_id}...")
         with open(self.ctl_path, "wb") as f:
             f.write(ctl_pem)
-        print(f"[ITSS] CTL completo salvato su: {self.ctl_path}")
+        self.logger.info(f"CTL completo salvato su: {self.ctl_path}")
         if delta_pem:
-            print(f"[ITSS] Aggiornamento CTL delta per {self.its_id}...")
+            self.logger.info(f"Aggiornamento CTL delta per {self.its_id}...")
             with open(self.delta_path, "wb") as f:
                 f.write(delta_pem)
-            print(f"[ITSS] CTL delta salvato su: {self.delta_path}")
+            self.logger.info(f"CTL delta salvato su: {self.delta_path}")
 
     def update_crl_from_tlm(self, tlm_obj=None, aa_id=None):
         """
@@ -272,37 +281,37 @@ class ITSStation:
         Returns:
             bool: True se l'aggiornamento ha successo, False altrimenti
         """
-        print(f"[ITSS] [REFRESH] Aggiornamento CRL/CTL dal TLM per {self.its_id}...")
+        self.logger.info(f"[REFRESH] Aggiornamento CRL/CTL dal TLM per {self.its_id}...")
 
         try:
             if tlm_obj:
                 # === CASO 1: Sistema con TLM centralizzato (RACCOMANDATO ETSI) ===
-                print(f"[ITSS] Scaricando CTL completo + Delta dal TLM...")
+                self.logger.info(f"Scaricando CTL completo + Delta dal TLM...")
 
                 # Ottieni il CTL completo (contiene lista di tutte le EA/AA fidate)
                 ctl_full = tlm_obj.get_full_ctl()
                 if ctl_full:
                     self.update_ctl(ctl_full)
-                    print(f"[ITSS] [OK] CTL Full aggiornato dal TLM")
+                    self.logger.info(f"[OK] CTL Full aggiornato dal TLM")
 
                 # Ottieni Delta CTL (solo le modifiche dall'ultimo aggiornamento)
                 ctl_delta = tlm_obj.get_delta_ctl()
                 if ctl_delta:
                     self.update_ctl(ctl_full, ctl_delta)
-                    print(f"[ITSS] [OK] Delta CTL aggiornato dal TLM")
+                    self.logger.info(f"[OK] Delta CTL aggiornato dal TLM")
 
                 # Scarica CRL di tutte le AA fidate
                 trusted_aa_list = tlm_obj.get_trusted_aa_list()
                 for aa in trusted_aa_list:
                     aa_crl_path = f"./data/aa/{aa}/crl/full_crl.pem"
                     # In produzione: scaricare via V2X/HTTP dal TLM
-                    print(f"[ITSS] [OK] CRL aggiornata per AA: {aa}")
+                    self.logger.info(f"[OK] CRL aggiornata per AA: {aa}")
 
                 return True
 
             elif aa_id:
                 # === CASO 2: Aggiornamento CRL singola AA (legacy) ===
-                print(f"[ITSS] Scaricando CRL per AA specifica: {aa_id}...")
+                self.logger.info(f"Scaricando CRL per AA specifica: {aa_id}...")
 
                 # Percorso CRL dell'AA
                 aa_crl_path = f"./data/aa/{aa_id}/crl/full_crl.pem"
@@ -319,20 +328,20 @@ class ITSStation:
                         crl = x509.load_pem_x509_crl(f.read())
 
                     crl_age = datetime.now(timezone.utc) - crl.last_update_utc
-                    print(f"[ITSS] CRL ricaricata per {aa_id}")
-                    print(f"[ITSS] CRL age: {int(crl_age.total_seconds())}s")
-                    print(f"[ITSS] [OK] CRL aggiornata per AA: {aa_id}")
+                    self.logger.info(f"CRL ricaricata per {aa_id}")
+                    self.logger.info(f"CRL age: {int(crl_age.total_seconds())}s")
+                    self.logger.info(f"[OK] CRL aggiornata per AA: {aa_id}")
                     return True
                 else:
-                    print(f"[ITSS] [WARNING] CRL non disponibile per AA: {aa_id}")
+                    self.logger.info(f"[WARNING] CRL non disponibile per AA: {aa_id}")
                     return False
 
             else:
                 # === CASO 3: Scansione automatica di tutte le AA disponibili ===
-                print(f"[ITSS] Aggiornamento automatico CRL per tutte le AA disponibili...")
+                self.logger.info(f"Aggiornamento automatico CRL per tutte le AA disponibili...")
 
                 if not os.path.exists("./data/aa/"):
-                    print(f"[ITSS] [WARNING] Nessuna directory AA trovata")
+                    self.logger.info(f"[WARNING] Nessuna directory AA trovata")
                     return False
 
                 aa_dirs = [
@@ -346,11 +355,11 @@ class ITSStation:
                     if self.update_crl_from_tlm(aa_id=aa_dir):
                         updated_count += 1
 
-                print(f"[ITSS] [OK] Aggiornate {updated_count}/{len(aa_dirs)} CRL")
+                self.logger.info(f"[OK] Aggiornate {updated_count}/{len(aa_dirs)} CRL")
                 return updated_count > 0
 
         except Exception as e:
-            print(f"[ITSS] [ERROR] Errore aggiornamento CRL/CTL: {e}")
+            self.logger.info(f"[ERROR] Errore aggiornamento CRL/CTL: {e}")
             return False
 
     # Firma e invia un messaggio (CAM/DENM non crittati) a un altro ITS-S, scrivendolo nell''outbox.
@@ -363,11 +372,11 @@ class ITSStation:
             recipient_id: L''ID del destinatario
             message_type: Il tipo di messaggio V2X (CAM, DENM, CPM, VAM, etc.)
         """
-        print(f"[ITSS] Invio messaggio firmato da {self.its_id} a {recipient_id}...")
-        print(f"[ITSS] Tipo messaggio: {message_type}")
+        self.logger.info(f"Invio messaggio firmato da {self.its_id} a {recipient_id}...")
+        self.logger.info(f"Tipo messaggio: {message_type}")
 
         if not self.private_key or not self.at_certificate:
-            print("[ITSS] Serve chiave privata e AT per firmare il messaggio!")
+            self.logger.info("Serve chiave privata e AT per firmare il messaggio!")
             return False
         signature = self.private_key.sign(message.encode(), ec.ECDSA(hashes.SHA256()))
         outbox_message = f"To: {recipient_id}\nFrom: {self.its_id}\nType: {message_type}\nMessage: {message}\nSignature: {signature.hex()}\n---\n"
@@ -382,14 +391,14 @@ class ITSStation:
         recipient_inbox_dir = os.path.join(recipient_base_dir, "inbox")
         recipient_inbox_file = os.path.join(recipient_inbox_dir, f"{self.its_id}_inbox.txt")
 
-        print(f"[ITSS] Percorso inbox destinatario: {recipient_inbox_file}")
+        self.logger.info(f"Percorso inbox destinatario: {recipient_inbox_file}")
         os.makedirs(recipient_inbox_dir, exist_ok=True)
         with open(recipient_inbox_file, "a") as f:
             f.write(
                 f"From: {self.its_id}\nType: {message_type}\nMessage: {message}\nSignature: {signature.hex()}\n---\n"
             )
 
-        print(f"[ITSS] Messaggio {message_type} firmato inviato e salvato su: {self.outbox_path}")
+        self.logger.info(f"Messaggio {message_type} firmato inviato e salvato su: {self.outbox_path}")
         return True
 
     # Legge i messaggi (CAM/DENM non crittati) ricevuti dall''inbox.
@@ -403,17 +412,17 @@ class ITSStation:
         Returns:
             Lista di messaggi ricevuti (validati se validate=True)
         """
-        print(f"[ITSS] Ricezione messaggi per {self.its_id}...")
+        self.logger.info(f"Ricezione messaggi per {self.its_id}...")
 
         # Controlla se la cartella inbox esiste
         if not os.path.exists(self.inbox_path):
-            print(f"[ITSS] Cartella inbox non esistente per {self.its_id}.")
+            self.logger.info(f"Cartella inbox non esistente per {self.its_id}.")
             return []
 
         # Controlla se la cartella inbox è vuota
         inbox_files = os.listdir(self.inbox_path)
         if not inbox_files:
-            print(f"[ITSS] Nessun messaggio in arrivo per {self.its_id}.")
+            self.logger.info(f"Nessun messaggio in arrivo per {self.its_id}.")
             return []
 
         messages = []
@@ -421,7 +430,7 @@ class ITSStation:
         for filename in inbox_files:
             file_path = os.path.join(self.inbox_path, filename)
             if os.path.isfile(file_path) and filename.endswith(".txt"):
-                print(f"[ITSS] Leggendo file: {filename}")
+                self.logger.info(f"Leggendo file: {filename}")
                 try:
                     with open(file_path, "r") as f:
                         content = f.read()
@@ -439,11 +448,11 @@ class ITSStation:
                             messages.extend(message_blocks)
 
                 except Exception as e:
-                    print(f"[ITSS] Errore nella lettura del file {filename}: {e}")
+                    self.logger.info(f"Errore nella lettura del file {filename}: {e}")
 
-        print(f"[ITSS] Messaggi ricevuti totali: {len(messages)}")
+        self.logger.info(f"Messaggi ricevuti totali: {len(messages)}")
         if validate:
-            print(f"[ITSS] Messaggi validati: {len(messages)}")
+            self.logger.info(f"Messaggi validati: {len(messages)}")
         return messages
 
     def validate_message_signature(self, message_block):
@@ -480,7 +489,7 @@ class ITSStation:
                     signature_hex = line.split(":", 1)[1].strip()
 
             if not all([sender_id, message_content, signature_hex]):
-                print(f"[ITSS] [ERROR] Messaggio malformato da {sender_id}")
+                self.logger.info(f"[ERROR] Messaggio malformato da {sender_id}")
                 return False
 
             # Carica il certificato AT del mittente (cerca l'AT più recente)
@@ -488,13 +497,13 @@ class ITSStation:
             sender_at_dir = os.path.join(sender_base_dir, "authorization_tickets/")
 
             if not os.path.exists(sender_at_dir):
-                print(f"[ITSS] [WARNING] Directory AT mittente {sender_id} non trovata")
+                self.logger.info(f"[WARNING] Directory AT mittente {sender_id} non trovata")
                 return False
 
             # Cerca tutti gli AT del mittente
             sender_at_files = [f for f in os.listdir(sender_at_dir) if f.endswith(".pem")]
             if not sender_at_files:
-                print(f"[ITSS] [WARNING] Nessun certificato AT per mittente {sender_id}")
+                self.logger.info(f"[WARNING] Nessun certificato AT per mittente {sender_id}")
                 # In un sistema reale, potresti richiedere il certificato via V2X
                 return False
 
@@ -502,7 +511,7 @@ class ITSStation:
             sender_at_files.sort(key=lambda f: os.path.getmtime(os.path.join(sender_at_dir, f)))
             sender_at_path = os.path.join(sender_at_dir, sender_at_files[-1])
 
-            print(f"[ITSS] Caricamento AT mittente: {sender_at_files[-1]}")
+            self.logger.info(f"Caricamento AT mittente: {sender_at_files[-1]}")
 
             # Carica certificato AT del mittente
             with open(sender_at_path, "rb") as f:
@@ -511,16 +520,16 @@ class ITSStation:
             # === VERIFICA 1: Validità temporale del certificato ===
             now = datetime.now(timezone.utc)
 
-            # Usa le proprietà UTC che restituiscono già timezone-aware datetime
-            cert_not_after = sender_at_cert.not_valid_after
-            cert_not_before = sender_at_cert.not_valid_before
+            # Usa le utility functions per ottenere datetime UTC-aware
+            cert_not_after = get_certificate_expiry_time(sender_at_cert)
+            cert_not_before = get_certificate_not_before(sender_at_cert)
 
             if cert_not_after < now:
-                print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} SCADUTO")
+                self.logger.info(f"[ERROR] Certificato AT mittente {sender_id} SCADUTO")
                 return False
 
             if cert_not_before > now:
-                print(f"[ITSS] [ERROR] Certificato AT mittente {sender_id} NON ANCORA VALIDO")
+                self.logger.info(f"[ERROR] Certificato AT mittente {sender_id} NON ANCORA VALIDO")
                 return False
 
             # === VERIFICA 2: Firma digitale ===
@@ -532,9 +541,9 @@ class ITSStation:
                 sender_public_key.verify(
                     signature_bytes, message_content.encode(), ec.ECDSA(hashes.SHA256())
                 )
-                print(f"[ITSS] [OK] Firma valida da {sender_id} (tipo: {message_type})")
+                self.logger.info(f"[OK] Firma valida da {sender_id} (tipo: {message_type})")
             except Exception as e:
-                print(f"[ITSS] [ERROR] Firma NON valida da {sender_id}: {e}")
+                self.logger.info(f"[ERROR] Firma NON valida da {sender_id}: {e}")
                 return False
 
             # === VERIFICA 3: Check CRL (se disponibile) ===
@@ -571,7 +580,7 @@ class ITSStation:
                     aa_dirs = matching_aa + fuzzy_match + other_aa
 
                     if matching_aa:
-                        print(f"[ITSS] --> AA corretto identificato: {matching_aa[0]}")
+                        self.logger.info(f"--> AA corretto identificato: {matching_aa[0]}")
 
                 crl_checked = False
                 for aa_dir in aa_dirs:
@@ -587,25 +596,25 @@ class ITSStation:
                             max_crl_age = timedelta(minutes=10)
 
                             if crl_age > max_crl_age:
-                                print(
-                                    f"[ITSS] [WARNING] CRL obsoleta (età: {int(crl_age.total_seconds())}s, "
+                                self.logger.warning(
+                                    f"CRL obsoleta (età: {int(crl_age.total_seconds())}s, "
                                     f"max: {int(max_crl_age.total_seconds())}s)"
                                 )
-                                print(f"[ITSS] [REFRESH] Aggiornamento automatico Delta CRL...")
+                                self.logger.info(f"[REFRESH] Aggiornamento automatico Delta CRL...")
 
                                 # Scarica nuovo Delta CRL
                                 if self.update_crl_from_tlm(aa_id=aa_dir):
                                     # Ricarica la CRL aggiornata
                                     with open(crl_path, "rb") as f_updated:
                                         crl = x509.load_pem_x509_crl(f_updated.read())
-                                    print(f"[ITSS] [OK] CRL aggiornata con successo")
+                                    self.logger.info(f"[OK] CRL aggiornata con successo")
                                 else:
-                                    print(
-                                        f"[ITSS] [WARNING] Impossibile aggiornare CRL, uso versione locale"
+                                    self.logger.warning(
+                                        "Impossibile aggiornare CRL, uso versione locale"
                                     )
                             else:
-                                print(
-                                    f"[ITSS] [OK] CRL aggiornata (età: {int(crl_age.total_seconds())}s)"
+                                self.logger.info(
+                                    f"[OK] CRL aggiornata (età: {int(crl_age.total_seconds())}s)"
                                 )
 
                             # Verifica se il certificato è revocato
@@ -614,8 +623,8 @@ class ITSStation:
                             )
 
                             if revoked_cert:
-                                print(
-                                    f"[ITSS] [ERROR] Certificato AT mittente {sender_id} REVOCATO"
+                                self.logger.error(
+                                    f"Certificato AT mittente {sender_id} REVOCATO"
                                 )
                                 return False
 
@@ -626,16 +635,16 @@ class ITSStation:
                             pass
 
                 if crl_checked:
-                    print(f"[ITSS] [OK] Certificato AT mittente {sender_id} NON revocato")
+                    self.logger.info(f"[OK] Certificato AT mittente {sender_id} NON revocato")
                 else:
-                    print(f"[ITSS] [WARNING] Impossibile verificare CRL per {sender_id}")
+                    self.logger.info(f"[WARNING] Impossibile verificare CRL per {sender_id}")
 
             # Tutte le verifiche passate
-            print(f"[ITSS] [✓] Messaggio da {sender_id} VALIDO")
+            self.logger.info(f"[✓] Messaggio da {sender_id} VALIDO")
             return True
 
         except Exception as e:
-            print(f"[ITSS] [ERROR] Errore nella verifica del messaggio: {e}")
+            self.logger.info(f"[ERROR] Errore nella verifica del messaggio: {e}")
             traceback.print_exc()
             return False
 
@@ -661,14 +670,14 @@ class ITSStation:
         Returns:
             Enrollment Certificate X.509 ricevuto
         """
-        print(f"\n[ITSS] Richiesta Enrollment Certificate ETSI per {self.its_id}...")
+        self.logger.info(f"\nRichiesta Enrollment Certificate ETSI per {self.its_id}...")
 
         # Genera chiavi se non esistono
         if not self.private_key:
             self.generate_ecc_keypair()
 
         # 1. Crea InnerEcRequest
-        print(f"[ITSS] Creazione InnerEcRequest...")
+        self.logger.info(f"Creazione InnerEcRequest...")
         inner_request = InnerEcRequest(
             itsId=self.its_id,
             publicKeys={
@@ -681,7 +690,7 @@ class ITSStation:
         )
 
         # 2. Encode e cripta request
-        print(f"[ITSS] Encoding e crittografia EnrollmentRequest (ASN.1 OER + ECIES)...")
+        self.logger.info(f"Encoding e crittografia EnrollmentRequest (ASN.1 OER + ECIES)...")
         enrollment_request_bytes = self.message_encoder.encode_enrollment_request(
             inner_request=inner_request,
             private_key=self.private_key,
@@ -689,9 +698,9 @@ class ITSStation:
             ea_certificate=ea_certificate,
         )
 
-        print(f"[ITSS] EnrollmentRequest creata: {len(enrollment_request_bytes)} bytes")
-        print(f"[ITSS]    Encoding: ASN.1 OER (ISO/IEC 8825-7)")
-        print(f"[ITSS]    Encryption: ECIES (ECDH + AES-128-GCM)")
+        self.logger.info(f"EnrollmentRequest creata: {len(enrollment_request_bytes)} bytes")
+        self.logger.info(f"   Encoding: ASN.1 OER (ISO/IEC 8825-7)")
+        self.logger.info(f"   Encryption: ECIES (ECDH + AES-128-GCM)")
 
         return enrollment_request_bytes
 
@@ -705,41 +714,41 @@ class ITSStation:
         Returns:
             Enrollment Certificate X.509 se successo, None se errore
         """
-        print(f"\n[ITSS] Ricevuta EnrollmentResponse ETSI: {len(response_bytes)} bytes")
+        self.logger.info(f"\nRicevuta EnrollmentResponse ETSI: {len(response_bytes)} bytes")
 
         try:
             # Decripta e decodifica response
-            print(f"[ITSS] Decrittazione EnrollmentResponse...")
+            self.logger.info(f"Decrittazione EnrollmentResponse...")
             response = self.message_encoder.decode_enrollment_response(
                 response_bytes, self.private_key
             )
 
-            print(f"[ITSS] Response decrittata con successo!")
-            print(f"[ITSS]    Response Code: {response.responseCode}")
-            print(f"[ITSS]    Certificate Received: {response.certificate is not None}")
+            self.logger.info(f"Response decrittata con successo!")
+            self.logger.info(f"   Response Code: {response.responseCode}")
+            self.logger.info(f"   Certificate Received: {response.certificate is not None}")
 
             if response.is_success():
                 # Carica certificato
                 ec_cert = x509.load_der_x509_certificate(response.certificate, default_backend())
 
-                print(f"[ITSS] Enrollment Certificate ricevuto:")
-                print(f"[ITSS]    Subject: {ec_cert.subject.rfc4514_string()}")
-                print(f"[ITSS]    Serial: {ec_cert.serial_number}")
-                print(f"[ITSS]    Validità: {ec_cert.not_valid_before} - {ec_cert.not_valid_after}")
+                self.logger.info(f"Enrollment Certificate ricevuto:")
+                self.logger.info(f"   Subject: {ec_cert.subject.rfc4514_string()}")
+                self.logger.info(f"   Serial: {ec_cert.serial_number}")
+                self.logger.info(f"   Validità: {get_certificate_not_before(ec_cert)} - {get_certificate_expiry_time(ec_cert)}")
 
                 # Salva EC
                 with open(self.ec_path, "wb") as f:
                     f.write(ec_cert.public_bytes(serialization.Encoding.PEM))
                 self.ec_certificate = ec_cert
 
-                print(f"[ITSS] EC salvato in: {self.ec_path}")
+                self.logger.info(f"EC salvato in: {self.ec_path}")
                 return ec_cert
             else:
-                print(f"[ITSS] [ERROR] Enrollment fallito: {response.responseCode}")
+                self.logger.info(f"[ERROR] Enrollment fallito: {response.responseCode}")
                 return None
 
         except Exception as e:
-            print(f"[ITSS] [ERROR] Errore durante processing EnrollmentResponse: {e}")
+            self.logger.info(f"[ERROR] Errore durante processing EnrollmentResponse: {e}")
             traceback.print_exc()
             return None
 
@@ -763,20 +772,20 @@ class ITSStation:
             bytes: AuthorizationRequest ASN.1 OER encoded
             bytes: HMAC key (da salvare per decrittare response)
         """
-        print(f"\n[ITSS] Richiesta Authorization Ticket ETSI per {self.its_id}...")
+        self.logger.info(f"\nRichiesta Authorization Ticket ETSI per {self.its_id}...")
 
         # Verifica che abbiamo EC
         if not self.ec_certificate:
-            print(f"[ITSS] [ERROR] Errore: Enrollment Certificate non presente!")
-            print(f"[ITSS]    Prima richiedi EC con request_ec_etsi()")
+            self.logger.info(f"[ERROR] Errore: Enrollment Certificate non presente!")
+            self.logger.info(f"   Prima richiedi EC con request_ec_etsi()")
             return None, None
 
         # 1. Genera HMAC key per unlinkability
         hmac_key = secrets.token_bytes(32)
-        print(f"[ITSS] HMAC key generata per unlinkability: {len(hmac_key)} bytes")
+        self.logger.info(f"HMAC key generata per unlinkability: {len(hmac_key)} bytes")
 
         # 2. Crea InnerAtRequest
-        print(f"[ITSS] Creazione InnerAtRequest...")
+        self.logger.info(f"Creazione InnerAtRequest...")
         inner_request = InnerAtRequest(
             publicKeys={
                 "verification": self.public_key.public_bytes(
@@ -789,7 +798,7 @@ class ITSStation:
         )
 
         # 3. Encode e cripta request (allega EC)
-        print(f"[ITSS] Encoding e crittografia AuthorizationRequest (ASN.1 OER + ECIES)...")
+        self.logger.info(f"Encoding e crittografia AuthorizationRequest (ASN.1 OER + ECIES)...")
         auth_request_bytes = self.message_encoder.encode_authorization_request(
             inner_request=inner_request,
             enrollment_certificate=self.ec_certificate,
@@ -797,11 +806,11 @@ class ITSStation:
             aa_certificate=aa_certificate,
         )
 
-        print(f"[ITSS] AuthorizationRequest creata: {len(auth_request_bytes)} bytes")
-        print(f"[ITSS]    Encoding: ASN.1 OER (ISO/IEC 8825-7)")
-        print(f"[ITSS]    Encryption: ECIES (ECDH + AES-128-GCM)")
-        print(f"[ITSS]    EC allegato: Yes")
-        print(f"[ITSS]    HMAC key embedded: Yes (unlinkability)")
+        self.logger.info(f"AuthorizationRequest creata: {len(auth_request_bytes)} bytes")
+        self.logger.info(f"   Encoding: ASN.1 OER (ISO/IEC 8825-7)")
+        self.logger.info(f"   Encryption: ECIES (ECDH + AES-128-GCM)")
+        self.logger.info(f"   EC allegato: Yes")
+        self.logger.info(f"   HMAC key embedded: Yes (unlinkability)")
 
         return auth_request_bytes, hmac_key
 
@@ -816,16 +825,16 @@ class ITSStation:
         Returns:
             Authorization Ticket X.509 se successo, None se errore
         """
-        print(f"\n[ITSS] Ricevuta AuthorizationResponse ETSI: {len(response_bytes)} bytes")
+        self.logger.info(f"\nRicevuta AuthorizationResponse ETSI: {len(response_bytes)} bytes")
 
         try:
             # Decripta e decodifica response con hmacKey
-            print(f"[ITSS] Decrittazione AuthorizationResponse con HMAC key...")
+            self.logger.info(f"Decrittazione AuthorizationResponse con HMAC key...")
             response = self.message_encoder.decode_authorization_response(response_bytes, hmac_key)
 
-            print(f"[ITSS] Response decrittata con successo!")
-            print(f"[ITSS]    Response Code: {response.responseCode}")
-            print(f"[ITSS]    Certificate Received: {response.certificate is not None}")
+            self.logger.info(f"Response decrittata con successo!")
+            self.logger.info(f"   Response Code: {response.responseCode}")
+            self.logger.info(f"   Certificate Received: {response.certificate is not None}")
 
             if response.is_success():
                 # Carica certificato
@@ -836,28 +845,28 @@ class ITSStation:
                 at_filename = f"AT_{cert_ski}.pem"
                 at_path = os.path.join(self.at_dir, at_filename)
 
-                print(f"[ITSS] ========================================")
-                print(f"[ITSS] Authorization Ticket ricevuto")
-                print(f"[ITSS] Subject: {at_cert.subject.rfc4514_string()}")
-                print(f"[ITSS] Serial: {at_cert.serial_number}")
-                print(f"[ITSS] Validità: {at_cert.not_valid_before} - {at_cert.not_valid_after}")
-                print(f"[ITSS] Identificatore SKI: {cert_ski}")
-                print(f"[ITSS] File: {at_filename}")
-                print(f"[ITSS] Path: {at_path}")
+                self.logger.info(f"========================================")
+                self.logger.info(f"Authorization Ticket ricevuto")
+                self.logger.info(f"Subject: {at_cert.subject.rfc4514_string()}")
+                self.logger.info(f"Serial: {at_cert.serial_number}")
+                self.logger.info(f"Validità: {get_certificate_not_before(at_cert)} - {get_certificate_expiry_time(at_cert)}")
+                self.logger.info(f"Identificatore SKI: {cert_ski}")
+                self.logger.info(f"File: {at_filename}")
+                self.logger.info(f"Path: {at_path}")
 
                 # Salva AT
                 with open(at_path, "wb") as f:
                     f.write(at_cert.public_bytes(serialization.Encoding.PEM))
                 self.at_certificate = at_cert
 
-                print(f"[ITSS] AT salvato con successo!")
-                print(f"[ITSS] ========================================")
+                self.logger.info(f"AT salvato con successo!")
+                self.logger.info(f"========================================")
                 return at_cert
             else:
-                print(f"[ITSS] [ERROR] Authorization fallito: {response.responseCode}")
+                self.logger.info(f"[ERROR] Authorization fallito: {response.responseCode}")
                 return None
 
         except Exception as e:
-            print(f"[ITSS] [ERROR] Errore durante processing AuthorizationResponse: {e}")
+            self.logger.info(f"[ERROR] Errore durante processing AuthorizationResponse: {e}")
             traceback.print_exc()
             return None

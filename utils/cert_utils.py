@@ -3,6 +3,16 @@ Certificate utility functions for PKI operations.
 
 Provides helper functions for certificate SKI extraction, identifier generation,
 and temporal information handling.
+
+NOTA IMPORTANTE - Gestione Datetime con cryptography:
+-----------------------------------------------------
+La libreria cryptography restituisce datetime NAIVE (senza timezone) dai certificati.
+Tutte le funzioni di questa utility normalizzano automaticamente in UTC-aware.
+
+- not_valid_before → datetime NAIVE
+- not_valid_after → datetime NAIVE
+
+Usa sempre get_cert_valid_from() e get_cert_valid_to() per ottenere datetime UTC-aware.
 """
 
 from cryptography import x509

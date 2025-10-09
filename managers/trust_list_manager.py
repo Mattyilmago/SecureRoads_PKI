@@ -8,10 +8,12 @@ from cryptography.x509.oid import NameOID
 
 from utils.cert_utils import (
     format_certificate_info,
+    get_certificate_expiry_time,
     get_certificate_identifier,
     get_certificate_ski,
     get_short_identifier,
 )
+from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 
 
@@ -36,6 +38,13 @@ class TrustListManager:
         self.metadata_path = os.path.join(self.ctl_dir, "ctl_metadata.json")
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name="TrustListManager",
+            log_dir=self.log_dir,
+            console_output=True
+        )
 
         # Crea directory
         PKIFileHandler.ensure_directories(
@@ -67,10 +76,10 @@ class TrustListManager:
         # Carica metadata se esistono
         self.load_metadata()
 
-        print(f"[TLM] TrustListManager inizializzato")
-        print(f"[TLM] CTL Number attuale: {self.ctl_number}")
-        print(f"[TLM] Base CTL Number: {self.base_ctl_number}")
-        print(f"[TLM] Trust anchors caricati: {len(self.trust_anchors)}")
+        self.logger.info(f"TrustListManager inizializzato")
+        self.logger.info(f"CTL Number attuale: {self.ctl_number}")
+        self.logger.info(f"Base CTL Number: {self.base_ctl_number}")
+        self.logger.info(f"Trust anchors caricati: {len(self.trust_anchors)}")
 
     def add_trust_anchor(self, certificate, authority_type="UNKNOWN"):
         """Adds a trusted CA to the Certificate Trust List."""
@@ -79,17 +88,17 @@ class TrustListManager:
         ski = get_certificate_ski(certificate)
         subject_name = certificate.subject.rfc4514_string()
         added_date = datetime.now(timezone.utc)
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = get_certificate_expiry_time(certificate)
 
-        print(f"[TLM] Aggiungendo trust anchor: {subject_name}")
-        print(f"[TLM]   Identificatore: {cert_id}")
-        print(f"[TLM]   SKI: {ski[:16]}...")
-        print(f"[TLM]   Tipo: {authority_type}")
-        print(f"[TLM]   Scadenza: {expiry_date}")
+        self.logger.info(f"Aggiungendo trust anchor: {subject_name}")
+        self.logger.info(f"  Identificatore: {cert_id}")
+        self.logger.info(f"  SKI: {ski[:16]}...")
+        self.logger.info(f"  Tipo: {authority_type}")
+        self.logger.info(f"  Scadenza: {expiry_date}")
 
         # Controlla se già presente (usa SKI per confronto)
         if any(anchor["ski"] == ski for anchor in self.trust_anchors):
-            print(f"[TLM] Trust anchor già presente nella lista")
+            self.logger.info(f"Trust anchor già presente nella lista")
             return
 
         trust_anchor_entry = {
@@ -108,8 +117,8 @@ class TrustListManager:
         self.trust_anchors.append(trust_anchor_entry)
         self.delta_additions.append(trust_anchor_entry)
 
-        print(f"[TLM] Trust anchor aggiunto. Totale: {len(self.trust_anchors)}")
-        print(f"[TLM] Aggiunte delta pending: {len(self.delta_additions)}")
+        self.logger.info(f"Trust anchor aggiunto. Totale: {len(self.trust_anchors)}")
+        self.logger.info(f"Aggiunte delta pending: {len(self.delta_additions)}")
 
         # Genera automaticamente link certificate per questa CA
         self._generate_link_certificate_for_authority(certificate, authority_type)
@@ -131,10 +140,10 @@ class TrustListManager:
         cert_id = get_certificate_identifier(certificate)
         subject_name = certificate.subject.rfc4514_string()
 
-        print(f"[TLM] Rimozione trust anchor: {subject_name}")
-        print(f"[TLM]   Identificatore: {cert_id}")
-        print(f"[TLM]   SKI: {ski[:16]}...")
-        print(f"[TLM]   Motivo: {reason}")
+        self.logger.info(f"Rimozione trust anchor: {subject_name}")
+        self.logger.info(f"  Identificatore: {cert_id}")
+        self.logger.info(f"  SKI: {ski[:16]}...")
+        self.logger.info(f"  Motivo: {reason}")
 
         # Trova e rimuovi dalla lista completa (usa SKI per confronto)
         found = None
@@ -144,7 +153,7 @@ class TrustListManager:
                 break
 
         if not found:
-            print(f"[TLM] Trust anchor non trovato nella lista")
+            self.logger.info(f"Trust anchor non trovato nella lista")
             return
 
         self.trust_anchors.remove(found)
@@ -161,8 +170,8 @@ class TrustListManager:
         }
         self.delta_removals.append(removal_entry)
 
-        print(f"[TLM] Trust anchor rimosso. Totale: {len(self.trust_anchors)}")
-        print(f"[TLM] Rimozioni delta pending: {len(self.delta_removals)}")
+        self.logger.info(f"Trust anchor rimosso. Totale: {len(self.trust_anchors)}")
+        self.logger.info(f"Rimozioni delta pending: {len(self.delta_removals)}")
 
         # Rimuovi anche i link certificates associati
         self._remove_link_certificates_for_ski(ski)
@@ -209,7 +218,7 @@ class TrustListManager:
                     return True, f"Signed by trusted CA: {anchor_subject}"
                 except (InvalidSignature, Exception) as e:
                     # Firma non valida o errore nella verifica
-                    print(f"[TLM] [WARNING] Firma non valida per {certificate.subject}: {e}")
+                    self.logger.info(f"[WARNING] Firma non valida per {certificate.subject}: {e}")
                     pass
 
         return False, "No trusted issuer found"
@@ -231,7 +240,7 @@ class TrustListManager:
         Args:
             validity_days: Giorni di validità della CTL
         """
-        print(f"[TLM] === GENERAZIONE FULL CTL ===")
+        self.logger.info(f"=== GENERAZIONE FULL CTL ===")
 
         # Incrementa CTL number
         self.ctl_number += 1
@@ -241,8 +250,8 @@ class TrustListManager:
         # Pulisce trust anchors scaduti
         self._cleanup_expired_trust_anchors()
 
-        print(f"[TLM] CTL Number: {self.ctl_number}")
-        print(f"[TLM] Trust anchors attivi: {len(self.trust_anchors)}")
+        self.logger.info(f"CTL Number: {self.ctl_number}")
+        self.logger.info(f"Trust anchors attivi: {len(self.trust_anchors)}")
 
         # Crea struttura CTL
         ctl_data = {
@@ -266,7 +275,7 @@ class TrustListManager:
 
         for anchor in self.trust_anchors:
             cert = anchor["certificate"]
-            print(f"[TLM]   {anchor['authority_type']}: {anchor['subject_name']}")
+            self.logger.info(f"  {anchor['authority_type']}: {anchor['subject_name']}")
 
             # Aggiungi a metadata (usa cert_id e SKI invece di solo serial)
             ctl_data["trust_anchors"].append(
@@ -295,14 +304,14 @@ class TrustListManager:
         with open(self.full_ctl_path, "w") as f:
             f.writelines(ctl_content)
 
-        print(f"[TLM] Full CTL salvata: {self.full_ctl_path}")
+        self.logger.info(f"Full CTL salvata: {self.full_ctl_path}")
 
         # Salva anche metadata JSON
         metadata_ctl_path = self.full_ctl_path.replace(".pem", "_metadata.json")
         with open(metadata_ctl_path, "w") as f:
             json.dump(ctl_data, f, indent=2)
 
-        print(f"[TLM] Metadata CTL salvati: {metadata_ctl_path}")
+        self.logger.info(f"Metadata CTL salvati: {metadata_ctl_path}")
 
         # Reset delta changes (tutto è ora nella Full CTL)
         self.delta_additions = []
@@ -311,7 +320,7 @@ class TrustListManager:
         # Salva metadata manager
         self.save_metadata()
 
-        print(f"[TLM] === FULL CTL PUBBLICATA ===")
+        self.logger.info(f"=== FULL CTL PUBBLICATA ===")
         return ctl_data
 
     def publish_delta_ctl(self, validity_days=7):
@@ -331,20 +340,20 @@ class TrustListManager:
         Args:
             validity_days: Giorni di validità della Delta CTL
         """
-        print(f"[TLM] === GENERAZIONE DELTA CTL ===")
+        self.logger.info(f"=== GENERAZIONE DELTA CTL ===")
 
         # Controlla se ci sono modifiche
         if not self.delta_additions and not self.delta_removals:
-            print(f"[TLM] Nessuna modifica, Delta CTL non necessaria")
+            self.logger.info(f"Nessuna modifica, Delta CTL non necessaria")
             return None
 
         # Incrementa CTL number
         self.ctl_number += 1
 
-        print(f"[TLM] CTL Number: {self.ctl_number}")
-        print(f"[TLM] Base CTL Number: {self.base_ctl_number}")
-        print(f"[TLM] Aggiunte: {len(self.delta_additions)}")
-        print(f"[TLM] Rimozioni: {len(self.delta_removals)}")
+        self.logger.info(f"CTL Number: {self.ctl_number}")
+        self.logger.info(f"Base CTL Number: {self.base_ctl_number}")
+        self.logger.info(f"Aggiunte: {len(self.delta_additions)}")
+        self.logger.info(f"Rimozioni: {len(self.delta_removals)}")
 
         # Crea struttura Delta CTL
         delta_ctl_data = {
@@ -374,7 +383,7 @@ class TrustListManager:
             delta_content.append(f"\n### TO BE ADDED ###\n")
             for anchor in self.delta_additions:
                 cert = anchor["certificate"]
-                print(f"[TLM]   + {anchor['authority_type']}: {anchor['subject_name']}")
+                self.logger.info(f"  + {anchor['authority_type']}: {anchor['subject_name']}")
 
                 delta_ctl_data["to_be_added"].append(
                     {
@@ -398,7 +407,7 @@ class TrustListManager:
         if self.delta_removals:
             delta_content.append(f"\n### TO BE REMOVED ###\n")
             for removal in self.delta_removals:
-                print(f"[TLM]   - {removal['cert_id']} ({removal['reason']})")
+                self.logger.info(f"  - {removal['cert_id']} ({removal['reason']})")
 
                 delta_ctl_data["to_be_removed"].append(
                     {
@@ -421,19 +430,19 @@ class TrustListManager:
         with open(self.delta_ctl_path, "w") as f:
             f.writelines(delta_content)
 
-        print(f"[TLM] Delta CTL salvata: {self.delta_ctl_path}")
+        self.logger.info(f"Delta CTL salvata: {self.delta_ctl_path}")
 
         # Salva metadata JSON
         metadata_delta_path = self.delta_ctl_path.replace(".pem", "_metadata.json")
         with open(metadata_delta_path, "w") as f:
             json.dump(delta_ctl_data, f, indent=2)
 
-        print(f"[TLM] Metadata Delta CTL salvati: {metadata_delta_path}")
+        self.logger.info(f"Metadata Delta CTL salvati: {metadata_delta_path}")
 
         # Salva metadata manager
         self.save_metadata()
 
-        print(f"[TLM] === DELTA CTL PUBBLICATA ===")
+        self.logger.info(f"=== DELTA CTL PUBBLICATA ===")
         return delta_ctl_data
 
     def _generate_link_certificate_for_authority(self, authority_cert, authority_type):
@@ -459,7 +468,7 @@ class TrustListManager:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import ec
 
-        print(f"[TLM] Generando Link Certificate ETSI-compliant: RootCA -> {authority_type}")
+        self.logger.info(f"Generando Link Certificate ETSI-compliant: RootCA -> {authority_type}")
 
         # Usa SKI invece di serial number per identificatori più robusti
         root_ca_ski = get_certificate_ski(self.root_ca.certificate)
@@ -474,10 +483,8 @@ class TrustListManager:
 
         # ETSI TS 102941: Calcola scadenza del link certificate
         # Usa la scadenza del certificato subordinato o 1 anno, quello che è minore
-        authority_expiry = authority_cert.not_valid_after_utc
+        authority_expiry = get_certificate_expiry_time(authority_cert)
         one_year_from_now = datetime.now(timezone.utc) + timedelta(days=365)
-
-        # not_valid_after_utc is already timezone-aware
 
         link_expiry = min(authority_expiry, one_year_from_now)
 
@@ -528,9 +535,9 @@ class TrustListManager:
 
         self.link_certificates.append(link_cert_info)
 
-        print(f"[TLM]   HashedId8: {cert_hash_id8}")
-        print(f"[TLM]   Expiry: {link_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"[TLM]   Signature: {signature.hex()[:32]}...")
+        self.logger.info(f"  HashedId8: {cert_hash_id8}")
+        self.logger.info(f"  Expiry: {link_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info(f"  Signature: {signature.hex()[:32]}...")
 
         # Salva link certificate in due formati:
         # 1. JSON (per debugging e compatibilità)
@@ -547,7 +554,7 @@ class TrustListManager:
         with open(link_path_json, "w") as f:
             json.dump(link_cert_info, f, indent=2)
 
-        print(f"[TLM] Link Certificate JSON salvato: {link_path_json}")
+        self.logger.info(f"Link Certificate JSON salvato: {link_path_json}")
 
         # Formato ASN.1 OER (ETSI-compliant)
         try:
@@ -570,12 +577,12 @@ class TrustListManager:
             with open(link_path_asn1, "wb") as f:
                 f.write(asn1_bytes)
 
-            print(f"[TLM] Link Certificate ASN.1 OER salvato: {link_path_asn1}")
-            print(f"[TLM]   Dimensione: {len(asn1_bytes)} bytes")
+            self.logger.info(f"Link Certificate ASN.1 OER salvato: {link_path_asn1}")
+            self.logger.info(f"  Dimensione: {len(asn1_bytes)} bytes")
 
         except Exception as e:
-            print(f"[TLM] [WARNING] Errore codifica ASN.1: {e}")
-            print(f"[TLM] Continuando con solo formato JSON...")
+            self.logger.info(f"[WARNING] Errore codifica ASN.1: {e}")
+            self.logger.info(f"Continuando con solo formato JSON...")
 
     def verify_link_certificate(self, link_cert_data):
         """
@@ -642,7 +649,7 @@ class TrustListManager:
         Args:
             ski: Subject Key Identifier del certificato
         """
-        print(f"[TLM] Rimozione link certificates per SKI: {ski[:16]}...")
+        self.logger.info(f"Rimozione link certificates per SKI: {ski[:16]}...")
 
         # Rimuovi dalla lista in memoria (usa SKI per confronto)
         self.link_certificates = [link for link in self.link_certificates if link["to_ski"] != ski]
@@ -655,7 +662,7 @@ class TrustListManager:
                     link_data = json.load(f)
                     if link_data.get("to_ski") == ski:
                         os.remove(file_path)
-                        print(f"[TLM] Link certificate rimosso: {filename}")
+                        self.logger.info(f"Link certificate rimosso: {filename}")
             except (json.JSONDecodeError, FileNotFoundError):
                 pass
 
@@ -670,8 +677,8 @@ class TrustListManager:
         1. JSON bundle (leggibile, per debugging)
         2. ASN.1 OER bundle (ETSI-compliant, per produzione)
         """
-        print(f"[TLM] === PUBBLICAZIONE LINK CERTIFICATES ===")
-        print(f"[TLM] Link certificates totali: {len(self.link_certificates)}")
+        self.logger.info(f"=== PUBBLICAZIONE LINK CERTIFICATES ===")
+        self.logger.info(f"Link certificates totali: {len(self.link_certificates)}")
 
         # 1. Bundle JSON (formato leggibile) - salvato in json/
         bundle_path_json = os.path.join(self.link_certs_json_dir, "link_certificates_bundle.json")
@@ -687,7 +694,7 @@ class TrustListManager:
         with open(bundle_path_json, "w") as f:
             json.dump(bundle_data, f, indent=2)
 
-        print(f"[TLM] Bundle JSON salvato: {bundle_path_json}")
+        self.logger.info(f"Bundle JSON salvato: {bundle_path_json}")
 
         # 2. Bundle ASN.1 OER (formato ETSI-compliant) - salvato in asn1/
         try:
@@ -721,7 +728,7 @@ class TrustListManager:
                             break
 
                     if subject_cert is None:
-                        print(f"[TLM] [WARNING] Certificato non trovato per SKI: {to_ski[:16]}...")
+                        self.logger.info(f"[WARNING] Certificato non trovato per SKI: {to_ski[:16]}...")
                         continue
 
                     # Estrai expiry time
@@ -743,24 +750,24 @@ class TrustListManager:
                     links_encoded += 1
 
                 except Exception as e:
-                    print(f"[TLM] [ERROR] Errore codifica link: {e}")
+                    self.logger.info(f"[ERROR] Errore codifica link: {e}")
                     continue
 
             # Salva bundle ASN.1
             with open(bundle_path_asn1, "wb") as f:
                 f.write(bytes(bundle_asn1))
 
-            print(f"[TLM] Bundle ASN.1 OER salvato: {bundle_path_asn1}")
-            print(
-                f"[TLM]   Link certificates codificati: {links_encoded}/{len(self.link_certificates)}"
+            self.logger.info(f"Bundle ASN.1 OER salvato: {bundle_path_asn1}")
+            self.logger.info(
+                f"  Link certificates codificati: {links_encoded}/{len(self.link_certificates)}"
             )
-            print(f"[TLM]   Dimensione bundle: {len(bundle_asn1)} bytes")
+            self.logger.info(f"  Dimensione bundle: {len(bundle_asn1)} bytes")
 
         except Exception as e:
-            print(f"[TLM] [WARNING] Errore creazione bundle ASN.1: {e}")
-            print(f"[TLM] Continuando con solo bundle JSON...")
+            self.logger.info(f"[WARNING] Errore creazione bundle ASN.1: {e}")
+            self.logger.info(f"Continuando con solo bundle JSON...")
 
-        print(f"[TLM] === PUBBLICAZIONE COMPLETATA ===")
+        self.logger.info(f"=== PUBBLICAZIONE COMPLETATA ===")
 
         return bundle_data
 
@@ -777,8 +784,8 @@ class TrustListManager:
         Args:
             itss_list: Lista di oggetti ITSStation
         """
-        print(f"[TLM] === DISTRIBUZIONE CTL A ITS-S ===")
-        print(f"[TLM] ITS-S destinatari: {len(itss_list)}")
+        self.logger.info(f"=== DISTRIBUZIONE CTL A ITS-S ===")
+        self.logger.info(f"ITS-S destinatari: {len(itss_list)}")
 
         # Carica Full CTL
         ctl_data = self.get_ctl_for_download()
@@ -794,13 +801,13 @@ class TrustListManager:
 
                 shutil.copy2(self.full_ctl_path, itss_ctl_path)
 
-                print(f"[TLM] CTL distribuita a: {itss.its_id}")
+                self.logger.info(f"CTL distribuita a: {itss.its_id}")
                 distributed += 1
             except Exception as e:
-                print(f"[TLM] Errore distribuzione a {itss.its_id}: {e}")
+                self.logger.info(f"Errore distribuzione a {itss.its_id}: {e}")
 
-        print(f"[TLM] Distribuzione completata: {distributed}/{len(itss_list)} ITS-S")
-        print(f"[TLM] === DISTRIBUZIONE TERMINATA ===")
+        self.logger.info(f"Distribuzione completata: {distributed}/{len(itss_list)} ITS-S")
+        self.logger.info(f"=== DISTRIBUZIONE TERMINATA ===")
 
     def get_ctl_for_download(self):
         """
@@ -813,7 +820,7 @@ class TrustListManager:
             dict con metadata e percorso file CTL
         """
         if not os.path.exists(self.full_ctl_path):
-            print(f"[TLM] Full CTL non disponibile")
+            self.logger.info(f"Full CTL non disponibile")
             return None
 
         metadata_path = self.full_ctl_path.replace(".pem", "_metadata.json")
@@ -826,9 +833,9 @@ class TrustListManager:
             "last_update": self.last_full_ctl_time.isoformat() if self.last_full_ctl_time else None,
         }
 
-        print(f"[TLM] CTL disponibile per download:")
-        print(f"[TLM]   CTL Number: {ctl_info['ctl_number']}")
-        print(f"[TLM]   Trust Anchors: {ctl_info['trust_anchors_count']}")
+        self.logger.info(f"CTL disponibile per download:")
+        self.logger.info(f"  CTL Number: {ctl_info['ctl_number']}")
+        self.logger.info(f"  Trust Anchors: {ctl_info['trust_anchors_count']}")
 
         return ctl_info
 
@@ -853,14 +860,14 @@ class TrustListManager:
                 if expiry_date > now:
                     filtered.append(anchor)
                 else:
-                    print(f"[TLM] Rimozione trust anchor scaduto: {anchor['subject_name']}")
+                    self.logger.info(f"Rimozione trust anchor scaduto: {anchor['subject_name']}")
 
         self.trust_anchors = filtered
 
         removed = old_count - len(self.trust_anchors)
         if removed > 0:
-            print(f"[TLM] Pulizia: rimossi {removed} trust anchors scaduti")
-            print(f"[TLM] Trust anchors attivi rimasti: {len(self.trust_anchors)}")
+            self.logger.info(f"Pulizia: rimossi {removed} trust anchors scaduti")
+            self.logger.info(f"Trust anchors attivi rimasti: {len(self.trust_anchors)}")
 
     def load_full_ctl(self):
         """
@@ -872,16 +879,16 @@ class TrustListManager:
         metadata_path = self.full_ctl_path.replace(".pem", "_metadata.json")
 
         if not os.path.exists(metadata_path):
-            print(f"[TLM] Full CTL metadata non trovati")
+            self.logger.info(f"Full CTL metadata non trovati")
             return None
 
         with open(metadata_path, "r") as f:
             ctl_data = json.load(f)
 
-        print(f"[TLM] Full CTL caricata:")
-        print(f"[TLM]   CTL Number: {ctl_data['ctl_number']}")
-        print(f"[TLM]   Trust Anchors: {len(ctl_data['trust_anchors'])}")
-        print(f"[TLM]   Issue Date: {ctl_data['issue_date']}")
+        self.logger.info(f"Full CTL caricata:")
+        self.logger.info(f"  CTL Number: {ctl_data['ctl_number']}")
+        self.logger.info(f"  Trust Anchors: {len(ctl_data['trust_anchors'])}")
+        self.logger.info(f"  Issue Date: {ctl_data['issue_date']}")
 
         return ctl_data
 
@@ -895,17 +902,17 @@ class TrustListManager:
         metadata_path = self.delta_ctl_path.replace(".pem", "_metadata.json")
 
         if not os.path.exists(metadata_path):
-            print(f"[TLM] Delta CTL metadata non trovati")
+            self.logger.info(f"Delta CTL metadata non trovati")
             return None
 
         with open(metadata_path, "r") as f:
             delta_data = json.load(f)
 
-        print(f"[TLM] Delta CTL caricata:")
-        print(f"[TLM]   CTL Number: {delta_data['ctl_number']}")
-        print(f"[TLM]   Base CTL Number: {delta_data['base_ctl_number']}")
-        print(f"[TLM]   Aggiunte: {len(delta_data['to_be_added'])}")
-        print(f"[TLM]   Rimozioni: {len(delta_data['to_be_removed'])}")
+        self.logger.info(f"Delta CTL caricata:")
+        self.logger.info(f"  CTL Number: {delta_data['ctl_number']}")
+        self.logger.info(f"  Base CTL Number: {delta_data['base_ctl_number']}")
+        self.logger.info(f"  Aggiunte: {len(delta_data['to_be_added'])}")
+        self.logger.info(f"  Rimozioni: {len(delta_data['to_be_removed'])}")
 
         return delta_data
 
@@ -930,14 +937,14 @@ class TrustListManager:
         with open(self.metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"[TLM] Metadata salvati: {self.metadata_path}")
+        self.logger.info(f"Metadata salvati: {self.metadata_path}")
 
     def load_metadata(self):
         """
         Carica metadata TLM da file JSON.
         """
         if not os.path.exists(self.metadata_path):
-            print(f"[TLM] Nessun metadata esistente, inizializzo nuovo")
+            self.logger.info(f"Nessun metadata esistente, inizializzo nuovo")
             return
 
         try:
@@ -951,12 +958,12 @@ class TrustListManager:
             if last_full:
                 self.last_full_ctl_time = datetime.fromisoformat(last_full)
 
-            print(f"[TLM] Metadata caricati con successo")
-            print(f"[TLM]   CTL Number: {self.ctl_number}")
-            print(f"[TLM]   Base CTL Number: {self.base_ctl_number}")
+            self.logger.info(f"Metadata caricati con successo")
+            self.logger.info(f"  CTL Number: {self.ctl_number}")
+            self.logger.info(f"  Base CTL Number: {self.base_ctl_number}")
 
         except Exception as e:
-            print(f"[TLM] Errore caricamento metadata: {e}")
+            self.logger.info(f"Errore caricamento metadata: {e}")
 
     def get_statistics(self):
         """

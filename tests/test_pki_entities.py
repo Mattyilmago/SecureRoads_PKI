@@ -42,9 +42,8 @@ class TestRootCA:
         """Test RootCA certificate validity"""
         cert = root_ca.certificate
         now = datetime.now(timezone.utc)
-        # Use UTC-aware datetime properties
-        valid_from = cert.not_valid_before_utc
-        valid_to = cert.not_valid_after_utc
+        valid_from = cert.not_valid_before.replace(tzinfo=timezone.utc)
+        valid_to = cert.not_valid_after.replace(tzinfo=timezone.utc)
         assert valid_from <= now
         assert valid_to > now
 

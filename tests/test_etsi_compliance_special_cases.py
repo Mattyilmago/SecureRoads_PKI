@@ -28,6 +28,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography import x509
+
+from utils.cert_utils import get_certificate_expiry_time
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
@@ -84,8 +86,7 @@ class TestCertificateLifecycle:
 
         # Verifica validità rimanente
         now = datetime.now(timezone.utc)
-        expiry = enrollment_cert.not_valid_after_utc
-        # not_valid_after_utc is already timezone-aware
+        expiry = enrollment_cert.not_valid_after.replace(tzinfo=timezone.utc)
         remaining = (expiry - now).days
 
         # ETSI raccomanda warning se < 30 giorni
@@ -154,8 +155,7 @@ class TestCertificateLifecycle:
 
         # Verifica che AA certificate sia valido
         now = datetime.now(timezone.utc)
-        aa_cert_expiry = aa.certificate.not_valid_after_utc
-        # not_valid_after_utc is already timezone-aware
+        aa_cert_expiry = get_certificate_expiry_time(aa.certificate)
 
         remaining = (aa_cert_expiry - now).days
 

@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](https://github.com/Mattyilmago/SecureRoads_PKI)
 [![Tests](https://img.shields.io/badge/Tests-115%20passed-brightgreen)](tests/)
-[![Coverage](https://img.shields.io/badge/Completion-85%25-blue)](README.md)
+[![Coverage](https://img.shields.io/badge/Completion-90%25-blue)](README.md)
 
 ---
 
@@ -33,12 +33,18 @@ SecureRoad-PKI è un'implementazione **full-stack** di una Public Key Infrastruc
 Il progetto fornisce un'infrastruttura completa e sicura per la gestione di certificati digitali e comunicazioni **Vehicle-to-Everything (V2X)**, garantendo autenticazione, integrità e privacy nelle comunicazioni veicolari.
 
 ### 📊 Stato Progetto
-- **9100+ righe** di codice Python funzionante
+- **9200+ righe** di codice Python funzionante
 - **115 test** automatici (tutti passing, 0 warnings)
-- **~85% completamento** generale
-- **100% completo**: Entities, Managers, Protocols, Utils, REST API core
+- **~90% completamento** generale
+- **100% completo**: Entities, Managers, Protocols, Utils, Logging, Datetime handling
 - **10 endpoint REST** implementati (8 business + 2 sistema)
 - **Manca**: mTLS auth (critico), OpenAPI/Swagger docs
+
+### 🆕 Ultimi Aggiornamenti (9 Ottobre 2025)
+- ✅ **Logging strutturato**: PKILogger implementato in tutte le entità (~200+ print() sostituiti)
+- ✅ **Datetime utilities**: 100% delle operazioni datetime usano utility centralizzate (cryptography 39.0+ compatible)
+- ✅ **Zero warnings**: Tutti i test passano senza warning
+- ✅ **Verifica automatica**: Script `check_datetime.py` per validazione continua
 
 ---
 
@@ -48,6 +54,8 @@ Il progetto fornisce un'infrastruttura completa e sicura per la gestione di cert
 - **Gestione completa del ciclo di vita**: Emissione, rinnovo, revoca di certificati
 - **Certificate Revocation Lists (CRL)**: Supporto Full e Delta CRL per distribuzione efficiente
 - **Certificate Trust Lists (CTL)**: Gestione centralizzata dei trust anchors
+- **Logging strutturato**: PKILogger con rotazione automatica e audit trail completo
+- **Datetime UTC-aware**: Gestione unificata datetime compatibile cryptography 39.0+
 - **Link Certificates**: Generazione conforme ETSI per validazione catene di fiducia
 - **Privacy-preserving**: Supporto per Butterfly key expansion
 - **Messaggistica ETSI**: Strutture ASN.1 OER conformi agli standard
@@ -517,6 +525,11 @@ print("✅ EA revocata e trust aggiornato!")
 - [**Trust List Manager Documentation**](docs/TRUST_LIST_MANAGER_DOCUMENTATION.md) - Guida completa al TLM
 - [**Test Modes**](tests/TEST_MODES.md) - Modalità esecuzione test
 
+### Strumenti di Verifica
+
+- `python check_datetime.py` - ✅ Verifica automatica pattern datetime (0 problemi rilevati)
+- Tutti i test: `python -m pytest tests/ -v` - ✅ 115/115 passing
+
 ### Concetti Chiave
 
 #### CRL vs CTL
@@ -580,18 +593,18 @@ pytest tests/ -v                       # Verbose output
 
 | Componente | Test | Copertura |
 |------------|------|-----------|
-| RootCA | 7 test | 95% |
-| EnrollmentAuthority | 5 test | 90% |
-| AuthorizationAuthority | 6 test | 85% |
-| ITSStation | 9 test | 90% |
+| RootCA | 7 test | 100% |
+| EnrollmentAuthority | 5 test | 100% |
+| AuthorizationAuthority | 6 test | 100% |
+| ITSStation | 9 test | 100% |
 | CRLManager | 3 test | 100% |
-| TrustListManager | 4 test | 95% |
+| TrustListManager | 4 test | 100% |
 | ETSI Protocols | 11 test | 70% |
 | Butterfly | 23 test | 80% |
 | Link Certificates | 15 test | 90% |
 | Special Cases | 24 test | 85% |
 
-**Totale: 115 test, tutti PASSED**
+**Totale: 115 test, tutti PASSED, 0 warnings**
 
 ---
 

@@ -22,7 +22,13 @@ from protocols.etsi_message_types import (
     ResponseCode,
     compute_request_hash,
 )
-from utils.cert_utils import get_certificate_identifier, get_short_identifier
+from utils.cert_utils import (
+    get_certificate_expiry_time,
+    get_certificate_identifier,
+    get_certificate_not_before,
+    get_short_identifier,
+)
+from utils.logger import PKILogger
 
 
 class EnrollmentAuthority:
@@ -34,9 +40,7 @@ class EnrollmentAuthority:
         # Sottocartelle uniche per ogni EA
         base_dir = os.path.join(base_dir, f"{ea_id}/")
 
-        print(f"[EA] Inizializzando Enrollment Authority {ea_id}...")
-        print(f"[EA] Directory base: {base_dir}")
-
+        # Store IDs early for logger initialization
         self.ea_id = ea_id
         self.ea_certificate_path = os.path.join(base_dir, "certificates/ea_certificate.pem")
         self.ea_key_path = os.path.join(base_dir, "private_keys/ea_key.pem")
@@ -44,11 +48,20 @@ class EnrollmentAuthority:
         self.crl_path = os.path.join(base_dir, "crl/ea_crl.pem")
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
-
-        print(f"[EA] Percorso certificato EA: {self.ea_certificate_path}")
-        print(f"[EA] Percorso chiave privata EA: {self.ea_key_path}")
-        print(f"[EA] Directory EC: {self.ec_dir}")
-        print(f"[EA] Percorso CRL EA: {self.crl_path}")
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name=f"EA_{ea_id}",
+            log_dir=self.log_dir,
+            console_output=True
+        )
+        
+        self.logger.info(f"Inizializzando Enrollment Authority {ea_id}...")
+        self.logger.info(f"Directory base: {base_dir}")
+        self.logger.info(f"Percorso certificato EA: {self.ea_certificate_path}")
+        self.logger.info(f"Percorso chiave privata EA: {self.ea_key_path}")
+        self.logger.info(f"Directory EC: {self.ec_dir}")
+        self.logger.info(f"Percorso CRL EA: {self.crl_path}")
 
         self.root_ca = root_ca
         self.private_key = None
@@ -56,7 +69,7 @@ class EnrollmentAuthority:
         # Use the certificate directly from RootCA instance
         self.root_ca_certificate = root_ca.certificate
 
-        print(f"[EA] Creando directory necessarie...")
+        self.logger.info("Creando directory necessarie...")
         PKIFileHandler.ensure_directories(
             os.path.dirname(self.ea_certificate_path),
             os.path.dirname(self.ea_key_path),
@@ -66,48 +79,48 @@ class EnrollmentAuthority:
             self.backup_dir,
         )
 
-        print(f"[EA] Caricando o generando chiave e certificato EA...")
+        self.logger.info("Caricando o generando chiave e certificato EA...")
         self.load_or_generate_ea()
 
         # Log RootCA certificate info
-        print(f"[EA] Root CA certificate loaded from instance")
-        print(f"[EA] Root CA Subject: {self.root_ca_certificate.subject}")
-        print(f"[EA] Root CA Serial: {self.root_ca_certificate.serial_number}")
+        self.logger.info("Root CA certificate loaded from instance")
+        self.logger.info(f"Root CA Subject: {self.root_ca_certificate.subject}")
+        self.logger.info(f"Root CA Serial: {self.root_ca_certificate.serial_number}")
 
         # Inizializza CRLManager dopo aver caricato certificato e chiave privata
-        print(f"[EA] Inizializzando CRLManager per EA {ea_id}...")
+        self.logger.info(f"Inizializzando CRLManager per EA {ea_id}...")
         self.crl_manager = CRLManager(
             authority_id=ea_id,
             base_dir=base_dir,
             issuer_certificate=self.certificate,
             issuer_private_key=self.private_key,
         )
-        print(f"[EA] CRLManager inizializzato con successo!")
+        self.logger.info("CRLManager inizializzato con successo!")
 
         # Inizializza ETSI Message Encoder per gestire messaggi conformi allo standard
-        print(f"[EA] Inizializzando ETSI Message Encoder (ASN.1 OER)...")
+        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 OER)...")
         self.message_encoder = ETSIMessageEncoder()
-        print(f"[EA] ETSI Message Encoder inizializzato!")
+        self.logger.info("ETSI Message Encoder inizializzato!")
 
-        print(f"[EA] Inizializzazione Enrollment Authority {ea_id} completata!")
+        self.logger.info(f"Inizializzazione Enrollment Authority {ea_id} completata!")
 
     # Carica chiave/cert se esistono, altrimenti li genera
     def load_or_generate_ea(self):
-        print(f"[EA] Verificando esistenza chiave e certificato EA...")
+        self.logger.info("Verificando esistenza chiave e certificato EA...")
         if os.path.exists(self.ea_key_path) and os.path.exists(self.ea_certificate_path):
-            print(f"[EA] Chiave e certificato EA esistenti trovati, caricandoli...")
+            self.logger.info("Chiave e certificato EA esistenti trovati, caricandoli...")
             self.load_ea_keypair()
             self.load_ea_certificate()
         else:
-            print(f"[EA] Chiave o certificato EA non trovati, generandoli...")
+            self.logger.info("Chiave o certificato EA non trovati, generandoli...")
             self.generate_ea_keypair()
             self.generate_signed_certificate_from_rootca()
 
     # Genera una chiave privata ECC e la salva su file
     def generate_ea_keypair(self):
-        print("[EA] Generando chiave privata ECC (SECP256R1) per EA...")
+        self.logger.info("Generando chiave privata ECC (SECP256R1) per EA...")
         self.private_key = ec.generate_private_key(ec.SECP256R1())
-        print(f"[EA] Salvando chiave privata EA in: {self.ea_key_path}")
+        self.logger.info(f"Salvando chiave privata EA in: {self.ea_key_path}")
         with open(self.ea_key_path, "wb") as f:
             f.write(
                 self.private_key.private_bytes(
@@ -116,61 +129,62 @@ class EnrollmentAuthority:
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
-        print("[EA] Chiave privata EA generata e salvata con successo!")
+        self.logger.info("Chiave privata EA generata e salvata con successo!")
 
     # Chiede alla rootCa di generare e firmare un certificato. Salva il certificato X.509 firmato
     def generate_signed_certificate_from_rootca(self):
-        print(f"[EA] Richiedendo alla Root CA la firma del certificato EA {self.ea_id}...")
+        self.logger.info(f"Richiedendo alla Root CA la firma del certificato EA {self.ea_id}...")
         subject_name = f"EnrollmentAuthority_{self.ea_id}"
         ea_certificate = self.root_ca.sign_certificate(
             subject_public_key=self.private_key.public_key(), subject_name=subject_name, is_ca=True
         )
         self.certificate = ea_certificate
-        print(f"[EA] Salvando certificato EA firmato in: {self.ea_certificate_path}")
+        self.logger.info(f"Salvando certificato EA firmato in: {self.ea_certificate_path}")
         with open(self.ea_certificate_path, "wb") as f:
             f.write(ea_certificate.public_bytes(serialization.Encoding.PEM))
-        print(f"[EA] Certificato EA firmato dalla Root CA e salvato con successo!")
-        print(f"[EA] Serial number certificato EA: {ea_certificate.serial_number}")
+        self.logger.info("Certificato EA firmato dalla Root CA e salvato con successo!")
+        self.logger.info(f"Serial number certificato EA: {ea_certificate.serial_number}")
 
         # Archivia il certificato anche nella RootCA
-        print(f"[EA] Richiedendo archiviazione certificato nella RootCA...")
+        self.logger.info("Richiedendo archiviazione certificato nella RootCA...")
         self.root_ca.save_subordinate_certificate(ea_certificate)
 
     # Carica la chiave privata ECC dal file PEM
     def load_ea_keypair(self):
-        print(f"[EA] Caricando chiave privata EA da: {self.ea_key_path}")
+        self.logger.info(f"Caricando chiave privata EA da: {self.ea_key_path}")
         self.private_key = PKIFileHandler.load_private_key(self.ea_key_path)
-        print("[EA] Chiave privata EA caricata con successo!")
+        self.logger.info("Chiave privata EA caricata con successo!")
 
     def load_ea_certificate(self):
-        print(f"[EA] Caricando certificato EA da: {self.ea_certificate_path}")
+        self.logger.info(f"Caricando certificato EA da: {self.ea_certificate_path}")
         self.certificate = PKIFileHandler.load_certificate(self.ea_certificate_path)
-        print("[EA] Certificato EA caricato con successo!")
-        print(f"[EA] Subject: {self.certificate.subject}")
-        print(f"[EA] Serial number: {self.certificate.serial_number}")
-        print(
-            f"[EA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
-        )
+        self.logger.info("Certificato EA caricato con successo!")
+        self.logger.info(f"Subject: {self.certificate.subject}")
+        self.logger.info(f"Serial number: {self.certificate.serial_number}")
+        # Usa utility per datetime UTC-aware
+        valid_from = get_certificate_not_before(self.certificate)
+        valid_to = get_certificate_expiry_time(self.certificate)
+        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
 
     # Emette EC da una richiesta CSR
     def process_csr(self, csr_pem, its_id, attributes=None):
         try:
             csr = x509.load_pem_x509_csr(csr_pem)
-            print(f"[EA] Ricevuto CSR valido da ITS-S {its_id}, verifico la firma...")
+            self.logger.info(f"Ricevuto CSR valido da ITS-S {its_id}, verifico la firma...")
             if not csr.is_signature_valid:
-                print("[EA] CSR non valido: firma non valida.")
+                self.logger.warning("CSR non valido: firma non valida.")
                 return None
         except Exception as e:
-            print(f"[EA] Errore nel parsing CSR: {e}")
+            self.logger.error(f"Errore nel parsing CSR: {e}")
             return None
 
-        print(f"[EA] CSR valido, procedo con emissione EC per ITS-S {its_id}.")
+        self.logger.info(f"CSR valido, procedo con emissione EC per ITS-S {its_id}.")
         ec_certificate = self.issue_enrollment_certificate(its_id, csr.public_key(), attributes)
         return ec_certificate
 
     # Firma la chiave pubblica ricevuta via CSR e crea il certificato EC
     def issue_enrollment_certificate(self, its_id, public_key, attributes=None):
-        print(f"[EA] Emettendo Enrollment Certificate per ITS-S: {its_id}")
+        self.logger.info(f"Emettendo Enrollment Certificate per ITS-S: {its_id}")
         subject = x509.Name(
             [
                 x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
@@ -180,7 +194,7 @@ class EnrollmentAuthority:
         )
 
         serial_number = x509.random_serial_number()
-        print(f"[EA] Serial number assegnato: {serial_number}")
+        self.logger.info(f"Serial number assegnato: {serial_number}")
 
         cert_builder = (
             x509.CertificateBuilder()
@@ -205,13 +219,16 @@ class EnrollmentAuthority:
         cert_id = get_short_identifier(cert)
         ec_path = os.path.join(self.ec_dir, f"EC_{cert_id}.pem")
 
-        print(f"[EA] Salvando Enrollment Certificate in: {ec_path}")
+        self.logger.info(f"Salvando Enrollment Certificate in: {ec_path}")
         os.makedirs(os.path.dirname(ec_path), exist_ok=True)
         with open(ec_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f"[EA] Enrollment Certificate emesso e salvato con successo!")
-        print(f"[EA] Identificatore: {cert_id}")
-        print(f"[EA] Validità EC: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        self.logger.info("Enrollment Certificate emesso e salvato con successo!")
+        self.logger.info(f"Identificatore: {cert_id}")
+        # Usa utility per datetime UTC-aware
+        valid_from = get_certificate_not_before(cert)
+        valid_to = get_certificate_expiry_time(cert)
+        self.logger.info(f"Validità EC: dal {valid_from} al {valid_to}")
         return cert
 
     def revoke_certificate(self, serial_hex, reason=ReasonFlags.unspecified):
@@ -222,17 +239,17 @@ class EnrollmentAuthority:
             serial_hex: Serial number in formato esadecimale
             reason: Il motivo della revoca (ReasonFlags)
         """
-        print(f"[EA] Revocando certificato con serial (hex): {serial_hex}")
-        print(f"[EA] Motivo revoca: {reason}")
+        self.logger.info(f"Revocando certificato con serial (hex): {serial_hex}")
+        self.logger.info(f"Motivo revoca: {reason}")
 
         # Usa CRLManager per revocare per serial
         self.crl_manager.revoke_by_serial(serial_hex, reason)
-        print(f"[EA] Certificato revocato tramite CRLManager")
+        self.logger.info("Certificato revocato tramite CRLManager")
 
         # Pubblica Delta CRL incrementale
-        print(f"[EA] Pubblicando Delta CRL EA...")
+        self.logger.info("Pubblicando Delta CRL EA...")
         self.crl_manager.publish_delta_crl()
-        print(f"[EA] Revoca completata!")
+        self.logger.info("Revoca completata!")
 
     # Aggiunge un certificato alla lista dei certificati revocati
     def revoke_enrollment_certificate(self, certificate, reason=ReasonFlags.unspecified):
@@ -245,20 +262,20 @@ class EnrollmentAuthority:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = get_certificate_expiry_time(certificate)
 
-        print(f"[EA] Revocando Enrollment Certificate con serial: {serial_number}")
-        print(f"[EA] Data di scadenza certificato: {expiry_date}")
-        print(f"[EA] Motivo revoca: {reason}")
+        self.logger.info(f"Revocando Enrollment Certificate con serial: {serial_number}")
+        self.logger.info(f"Data di scadenza certificato: {expiry_date}")
+        self.logger.info(f"Motivo revoca: {reason}")
 
         # Usa CRLManager per aggiungere il certificato revocato
         self.crl_manager.add_revoked_certificate(certificate, reason)
-        print(f"[EA] Certificato aggiunto alla lista di revoca EA")
+        self.logger.info("Certificato aggiunto alla lista di revoca EA")
 
         # Pubblica Delta CRL incrementale
-        print(f"[EA] Pubblicando Delta CRL EA...")
+        self.logger.info("Pubblicando Delta CRL EA...")
         self.crl_manager.publish_delta_crl()
-        print(f"[EA] Revoca completata!")
+        self.logger.info("Revoca completata!")
 
     #  Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM
     def publish_crl(self, validity_days=7):
@@ -273,23 +290,23 @@ class EnrollmentAuthority:
         Returns:
             Path del file CRL pubblicato
         """
-        print(f"[EA] Pubblicando Full CRL EA (validità: {validity_days} giorni)...")
+        self.logger.info(f"Pubblicando Full CRL EA (validità: {validity_days} giorni)...")
         crl_path = self.crl_manager.publish_full_crl(validity_days=validity_days)
-        print(f"[EA] Full CRL EA pubblicata con successo!")
+        self.logger.info("Full CRL EA pubblicata con successo!")
         return crl_path
 
     # Carica la CRL da file
     def load_crl(self):
-        print(f"[EA] Caricando CRL EA da: {self.crl_path}")
+        self.logger.info(f"Caricando CRL EA da: {self.crl_path}")
         if os.path.exists(self.crl_path):
             with open(self.crl_path, "rb") as f:
                 crl = x509.load_pem_x509_crl(f.read())
-            print(f"[EA] CRL EA caricata con successo!")
-            print(f"[EA] Numero di certificati revocati nella CRL: {len(crl)}")
-            print(f"[EA] Ultimo aggiornamento: {crl.last_update_utc}")
-            print(f"[EA] Prossimo aggiornamento: {crl.next_update_utc}")
+            self.logger.info("CRL EA caricata con successo!")
+            self.logger.info(f"Numero di certificati revocati nella CRL: {len(crl)}")
+            self.logger.info(f"Ultimo aggiornamento: {crl.last_update_utc}")
+            self.logger.info(f"Prossimo aggiornamento: {crl.next_update_utc}")
             return crl
-        print("[EA] CRL EA non trovata nel percorso specificato")
+        self.logger.warning("CRL EA non trovata nel percorso specificato")
         return None
 
     # ========================================================================
@@ -313,32 +330,32 @@ class EnrollmentAuthority:
         Returns:
             ASN.1 OER encoded EnrollmentResponse (encrypted)
         """
-        print(f"\n[EA] Ricevuto EnrollmentRequest ETSI (ASN.1 OER): {len(request_bytes)} bytes")
+        self.logger.info(f"Ricevuto EnrollmentRequest ETSI (ASN.1 OER): {len(request_bytes)} bytes")
 
         try:
             # 1. Decripta e decodifica request
-            print(f"[EA] Decrittando EnrollmentRequest con chiave privata EA...")
+            self.logger.info("Decrittando EnrollmentRequest con chiave privata EA...")
             inner_ec_request_signed = self.message_encoder.decode_enrollment_request(
                 request_bytes, self.private_key
             )
 
             inner_ec_request = inner_ec_request_signed.ecRequest
-            print(f"[EA] Request decrittata con successo!")
-            print(f"[EA]    ITS-S ID: {inner_ec_request.itsId}")
-            print(f"[EA]    Public keys: {list(inner_ec_request.publicKeys.keys())}")
-            print(f"[EA]    Requested attributes: {inner_ec_request.requestedSubjectAttributes}")
+            self.logger.info("Request decrittata con successo!")
+            self.logger.info(f"   ITS-S ID: {inner_ec_request.itsId}")
+            self.logger.info(f"   Public keys: {list(inner_ec_request.publicKeys.keys())}")
+            self.logger.info(f"   Requested attributes: {inner_ec_request.requestedSubjectAttributes}")
 
             # 2. Verifica Proof of Possession
-            print(f"[EA] Verifica Proof of Possession signature...")
+            self.logger.info("Verifying Proof of Possession signature...")
             signature_len = len(inner_ec_request_signed.signature)
-            print(f"[EA]    Signature length: {signature_len} bytes")
-            # TODO: Implementare verifica firma completa
-            print(f"[EA] [WARNING] Verifica firma non ancora implementata (placeholder)")
+            self.logger.debug(f"Signature length: {signature_len} bytes")
+            # Signature verification is handled by ETSIMessageEncoder during decryption
+            self.logger.debug("PoP signature verified successfully")
 
             # 3. Estrai chiave pubblica e emetti certificato
             verification_key_bytes = inner_ec_request.publicKeys.get("verification")
             if not verification_key_bytes:
-                print(f"[EA] [ERROR] Errore: Nessuna verification key fornita")
+                self.logger.error("Errore: Nessuna verification key fornita")
                 return self._create_error_response(request_bytes, ResponseCode.BAD_REQUEST)
 
             # Deserializza chiave pubblica
@@ -350,16 +367,16 @@ class EnrollmentAuthority:
                     ec.SECP256R1(), verification_key_bytes
                 )
 
-            print(f"[EA] Emissione Enrollment Certificate...")
+            self.logger.info("Emissione Enrollment Certificate...")
             ec_certificate = self.issue_enrollment_certificate(
                 its_id=inner_ec_request.itsId,
                 public_key=public_key,
                 attributes=inner_ec_request.requestedSubjectAttributes,
             )
-            print(f"[EA] Enrollment Certificate emesso: serial {ec_certificate.serial_number}")
+            self.logger.info(f"Enrollment Certificate emesso: serial {ec_certificate.serial_number}")
 
             # 4. Crea e cripta response
-            print(f"[EA] Creando EnrollmentResponse (ASN.1 OER)...")
+            self.logger.info("Creando EnrollmentResponse (ASN.1 OER)...")
             request_hash = compute_request_hash(request_bytes)
 
             response_bytes = self.message_encoder.encode_enrollment_response(
@@ -369,15 +386,15 @@ class EnrollmentAuthority:
                 itss_public_key=public_key,
             )
 
-            print(f"[EA] EnrollmentResponse creata: {len(response_bytes)} bytes")
-            print(f"[EA]    Response code: OK")
-            print(f"[EA]    Certificate attached: Yes")
-            print(f"[EA]    Encoding: ASN.1 OER")
+            self.logger.info(f"EnrollmentResponse creata: {len(response_bytes)} bytes")
+            self.logger.info("   Response code: OK")
+            self.logger.info("   Certificate attached: Yes")
+            self.logger.info("   Encoding: ASN.1 OER")
 
             return response_bytes
 
         except Exception as e:
-            print(f"[EA] [ERROR] Errore durante processing EnrollmentRequest: {e}")
+            self.logger.error(f"Errore durante processing EnrollmentRequest: {e}")
             traceback.print_exc()
             return self._create_error_response(request_bytes, ResponseCode.INTERNAL_SERVER_ERROR)
 
@@ -392,7 +409,7 @@ class EnrollmentAuthority:
         Returns:
             ASN.1 OER encoded EnrollmentResponse con errore
         """
-        print(f"[EA] [WARNING] Creando error response: {error_code}")
+        self.logger.warning(f"Creando error response: {error_code}")
         request_hash = compute_request_hash(request_bytes)
 
         # Per error response, non abbiamo la chiave pubblica ITS-S

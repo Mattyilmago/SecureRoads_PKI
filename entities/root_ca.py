@@ -9,10 +9,13 @@ from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
 from utils.cert_utils import (
+    get_certificate_expiry_time,
     get_certificate_identifier,
+    get_certificate_not_before,
     get_certificate_ski,
     get_short_identifier,
 )
+from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 
 
@@ -24,16 +27,24 @@ class RootCA:
         self.crl_path = os.path.join(base_dir, "crl/root_ca_crl.pem")
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
-        print(f"[RootCA] Inizializzando Root CA...")
-        print(f"[RootCA] Percorso certificato: {self.ca_certificate_path}")
-        print(f"[RootCA] Percorso chiave privata: {self.ca_key_path}")
-        print(f"[RootCA] Percorso CRL: {self.crl_path}")
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name="RootCA",
+            log_dir=self.log_dir,
+            console_output=True
+        )
+        
+        self.logger.info("Inizializzando Root CA...")
+        self.logger.info(f"Percorso certificato: {self.ca_certificate_path}")
+        self.logger.info(f"Percorso chiave privata: {self.ca_key_path}")
+        self.logger.info(f"Percorso CRL: {self.crl_path}")
 
         self.private_key = None
         self.certificate = None
 
         # Assicura che le directory esistano
-        print(f"[RootCA] Creando directory necessarie...")
+        self.logger.info("Creando directory necessarie...")
         PKIFileHandler.ensure_directories(
             os.path.dirname(self.ca_certificate_path),
             os.path.dirname(self.ca_key_path),
@@ -43,38 +54,38 @@ class RootCA:
         )
 
         # Prova a caricare chiave/cert
-        print(f"[RootCA] Caricando o generando chiave e certificato...")
+        self.logger.info("Caricando o generando chiave e certificato...")
         self.load_or_generate_ca()
 
         # Inizializza CRLManager dopo aver caricato certificato e chiave privata
-        print(f"[RootCA] Inizializzando CRLManager per RootCA...")
+        self.logger.info("Inizializzando CRLManager per RootCA...")
         self.crl_manager = CRLManager(
             authority_id="RootCA",
             base_dir=base_dir,
             issuer_certificate=self.certificate,
             issuer_private_key=self.private_key,
         )
-        print(f"[RootCA] CRLManager inizializzato con successo!")
+        self.logger.info("CRLManager inizializzato con successo!")
 
-        print(f"[RootCA] Inizializzazione completata!")
+        self.logger.info("Inizializzazione completata!")
 
     # Carica chiave/cert se esistono, altrimenti li genera
     def load_or_generate_ca(self):
-        print(f"[RootCA] Verificando esistenza chiave e certificato...")
+        self.logger.info("Verificando esistenza chiave e certificato...")
         if os.path.exists(self.ca_key_path) and os.path.exists(self.ca_certificate_path):
-            print(f"[RootCA] Chiave e certificato esistenti trovati, caricandoli...")
+            self.logger.info("Chiave e certificato esistenti trovati, caricandoli...")
             self.load_ca_keypair()
             self.load_certificate()
         else:
-            print(f"[RootCA] Chiave o certificato non trovati, generandoli da zero...")
+            self.logger.info("Chiave o certificato non trovati, generandoli da zero...")
             self.generate_ca_keypair()
             self.generate_self_signed_certificate()
 
     # Genera una chiave privata ECC e la salva su file
     def generate_ca_keypair(self):
-        print(f"[RootCA] Generando chiave privata ECC (SECP256R1)...")
+        self.logger.info("Generando chiave privata ECC (SECP256R1)...")
         self.private_key = ec.generate_private_key(ec.SECP256R1())
-        print(f"[RootCA] Salvando chiave privata in: {self.ca_key_path}")
+        self.logger.info(f"Salvando chiave privata in: {self.ca_key_path}")
         with open(self.ca_key_path, "wb") as f:
             f.write(
                 self.private_key.private_bytes(
@@ -83,11 +94,11 @@ class RootCA:
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
-        print(f"[RootCA] Chiave privata generata e salvata con successo!")
+        self.logger.info("Chiave privata generata e salvata con successo!")
 
     # Genera e salva un certificato X.509 self-signed per la Root CA
     def generate_self_signed_certificate(self):
-        print(f"[RootCA] Generando certificato self-signed...")
+        self.logger.info("Generando certificato self-signed...")
         subject = issuer = x509.Name(
             [
                 x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
@@ -95,7 +106,7 @@ class RootCA:
                 x509.NameAttribute(NameOID.COMMON_NAME, "RootCA"),
             ]
         )
-        print(f"[RootCA] Subject/Issuer: C=IT, O=Test RootCA, CN=RootCA")
+        self.logger.info("Subject/Issuer: C=IT, O=Test RootCA, CN=RootCA")
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
@@ -116,33 +127,37 @@ class RootCA:
         )
 
         self.certificate = cert
-        print(f"[RootCA] Certificato generato con serial number: {cert.serial_number}")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
-        print(f"[RootCA] Salvando certificato in: {self.ca_certificate_path}")
+        self.logger.info(f"Certificate generated with serial number: {cert.serial_number}")
+        # Usa utility per datetime UTC-aware
+        valid_from = get_certificate_not_before(cert)
+        valid_to = get_certificate_expiry_time(cert)
+        self.logger.info(f"Validity: from {valid_from} to {valid_to}")
+        self.logger.info(f"Saving certificate to: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f"[RootCA] Certificato self-signed generato e salvato con successo!")
+        self.logger.info("Certificato self-signed generato e salvato con successo!")
 
     # Carica la chiave privata ECC dal file PEM
     def load_ca_keypair(self):
-        print(f"[RootCA] Caricando chiave privata da: {self.ca_key_path}")
+        self.logger.info(f"Caricando chiave privata da: {self.ca_key_path}")
         self.private_key = PKIFileHandler.load_private_key(self.ca_key_path)
-        print(f"[RootCA] Chiave privata caricata con successo!")
+        self.logger.info("Chiave privata caricata con successo!")
 
     def load_certificate(self):
-        print(f"[RootCA] Caricando certificato da: {self.ca_certificate_path}")
+        self.logger.info(f"Caricando certificato da: {self.ca_certificate_path}")
         self.certificate = PKIFileHandler.load_certificate(self.ca_certificate_path)
-        print(f"[RootCA] Certificato caricato con successo!")
-        print(f"[RootCA] Subject: {self.certificate.subject}")
-        print(f"[RootCA] Serial number: {self.certificate.serial_number}")
-        print(
-            f"[RootCA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
-        )
+        self.logger.info("Certificato caricato con successo!")
+        self.logger.info(f"Subject: {self.certificate.subject}")
+        self.logger.info(f"Serial number: {self.certificate.serial_number}")
+        # Usa utility per datetime UTC-aware
+        valid_from = get_certificate_not_before(self.certificate)
+        valid_to = get_certificate_expiry_time(self.certificate)
+        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
 
     # Firma un certificato subordinato (EA/AA)
     def sign_certificate(self, subject_public_key, subject_name, is_ca=False):
-        print(f"[RootCA] Firmando certificato per: {subject_name}")
-        print(f"[RootCA] Tipo certificato: {'CA' if is_ca else 'End Entity'}")
+        self.logger.info(f"Firmando certificato per: {subject_name}")
+        self.logger.info(f"Tipo certificato: {'CA' if is_ca else 'End Entity'}")
 
         subject = x509.Name(
             [
@@ -153,7 +168,7 @@ class RootCA:
         )
 
         serial_number = x509.random_serial_number()
-        print(f"[RootCA] Serial number assegnato: {serial_number}")
+        self.logger.info(f"Serial number assegnato: {serial_number}")
 
         cert = (
             x509.CertificateBuilder()
@@ -170,8 +185,11 @@ class RootCA:
             .sign(self.private_key, hashes.SHA256())
         )
 
-        print(f"[RootCA] Certificato firmato con successo!")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
+        self.logger.info("Certificato firmato con successo!")
+        # Usa utility per datetime UTC-aware
+        valid_from = get_certificate_not_before(cert)
+        valid_to = get_certificate_expiry_time(cert)
+        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
         return cert
 
     # Salva certificato subordinato su file
@@ -218,20 +236,20 @@ class RootCA:
         os.makedirs(archive_dir, exist_ok=True)
         archive_path = os.path.join(archive_dir, cert_filename)
 
-        print(f"[RootCA] ========================================")
-        print(f"[RootCA] Archiviando certificato subordinato")
-        print(f"[RootCA] Tipo: {authority_type}")
-        print(f"[RootCA] Subject: {subject}")
-        print(f"[RootCA] Identificatore SKI: {cert_ski}")
-        print(f"[RootCA] Serial: {serial_number}")
-        print(f"[RootCA] File: {cert_filename}")
-        print(f"[RootCA] Path completo: {archive_path}")
+        self.logger.info("=" * 50)
+        self.logger.info("Archiviando certificato subordinato")
+        self.logger.info(f"Tipo: {authority_type}")
+        self.logger.info(f"Subject: {subject}")
+        self.logger.info(f"Identificatore SKI: {cert_ski}")
+        self.logger.info(f"Serial: {serial_number}")
+        self.logger.info(f"File: {cert_filename}")
+        self.logger.info(f"Path completo: {archive_path}")
 
         with open(archive_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-        print(f"[RootCA] Certificato archiviato con successo!")
-        print(f"[RootCA] ========================================")
+        self.logger.info("Certificato archiviato con successo!")
+        self.logger.info("=" * 50)
 
     # Aggiunge un seriale alla lista dei certificati revocati
     def revoke_certificate(self, certificate, reason=ReasonFlags.unspecified):
@@ -244,14 +262,14 @@ class RootCA:
         """
         serial_number = certificate.serial_number
 
-        print(f"[RootCA] Revocando certificato con serial number: {serial_number}")
-        print(f"[RootCA] Motivo revoca: {reason}")
+        self.logger.info(f"Revocando certificato con serial number: {serial_number}")
+        self.logger.info(f"Motivo revoca: {reason}")
 
         # Aggiungi al CRLManager invece che alla lista locale
         self.crl_manager.add_revoked_certificate(certificate, reason)
 
         # Mantieni anche nella lista locale per retrocompatibilità (se necessario)
-        expiry_date = certificate.not_valid_after
+        expiry_date = get_certificate_expiry_time(certificate)
         self.revoked.append(
             {
                 "serial_number": serial_number,
@@ -261,8 +279,8 @@ class RootCA:
             }
         )
 
-        print(f"[RootCA] Certificato aggiunto alla lista di revoca")
-        print(f"[RootCA] Revoca completata!")
+        self.logger.info("Certificato aggiunto alla lista di revoca")
+        self.logger.info("Revoca completata!")
 
     # Genera e pubblica una Full CRL usando il CRLManager
     def publish_full_crl(self, validity_days=7):
@@ -275,9 +293,9 @@ class RootCA:
         Returns:
             La CRL generata
         """
-        print(f"[RootCA] Pubblicando Full CRL...")
+        self.logger.info("Pubblicando Full CRL...")
         crl = self.crl_manager.publish_full_crl(validity_days=validity_days)
-        print(f"[RootCA] Full CRL pubblicata con successo!")
+        self.logger.info("Full CRL pubblicata con successo!")
         return crl
 
     # Genera e pubblica una Delta CRL usando il CRLManager
@@ -291,17 +309,17 @@ class RootCA:
         Returns:
             La Delta CRL generata o None se non ci sono nuove revoche
         """
-        print(f"[RootCA] Pubblicando Delta CRL...")
+        self.logger.info("Pubblicando Delta CRL...")
         crl = self.crl_manager.publish_delta_crl(validity_hours=validity_hours)
         if crl:
-            print(f"[RootCA] Delta CRL pubblicata con successo!")
+            self.logger.info("Delta CRL pubblicata con successo!")
         else:
-            print(f"[RootCA] Nessuna nuova revoca, Delta CRL non necessaria")
+            self.logger.info("Nessuna nuova revoca, Delta CRL non necessaria")
         return crl
 
     def publish_crl(self):
-        """Pubblica una Full CRL (wrapper per retrocompatibilità)."""
-        print(f"[RootCA] Pubblicazione Full CRL via metodo legacy")
+        """Pubblica una Full CRL (wrapper method for backward compatibility)."""
+        self.logger.info("Publishing Full CRL via wrapper method")
         return self.publish_full_crl()
 
     # Carica la Full CRL da file
@@ -312,7 +330,7 @@ class RootCA:
         Returns:
             La Full CRL o None se non esiste
         """
-        print(f"[RootCA] Caricando Full CRL...")
+        self.logger.info("Caricando Full CRL...")
         return self.crl_manager.load_full_crl()
 
     # Carica la Delta CRL da file
@@ -323,12 +341,12 @@ class RootCA:
         Returns:
             La Delta CRL o None se non esiste
         """
-        print(f"[RootCA] Caricando Delta CRL...")
+        self.logger.info("Caricando Delta CRL...")
         return self.crl_manager.load_delta_crl()
 
     def load_crl(self):
         """Carica la Full CRL (wrapper per retrocompatibilità)."""
-        print(f"[RootCA] Caricamento Full CRL via metodo legacy")
+        self.logger.info("Caricamento Full CRL via metodo legacy")
         return self.load_full_crl()
 
     # Ottiene statistiche sul CRL Manager
@@ -339,11 +357,11 @@ class RootCA:
         Returns:
             dict con statistiche (crl_number, certificati revocati, delta pending, ecc.)
         """
-        print(f"[RootCA] Recuperando statistiche CRL...")
+        self.logger.info("Recuperando statistiche CRL...")
         stats = self.crl_manager.get_statistics()
-        print(f"[RootCA] Statistiche CRL:")
-        print(f"[RootCA]   CRL Number attuale: {stats['crl_number']}")
-        print(f"[RootCA]   Base CRL Number: {stats['base_crl_number']}")
-        print(f"[RootCA]   Certificati revocati totali: {stats['total_revoked']}")
-        print(f"[RootCA]   Revoche delta pending: {stats['delta_pending']}")
+        self.logger.info("Statistiche CRL:")
+        self.logger.info(f"  CRL Number attuale: {stats['crl_number']}")
+        self.logger.info(f"  Base CRL Number: {stats['base_crl_number']}")
+        self.logger.info(f"  Certificati revocati totali: {stats['total_revoked']}")
+        self.logger.info(f"  Revoche delta pending: {stats['delta_pending']}")
         return stats

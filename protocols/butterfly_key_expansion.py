@@ -111,7 +111,7 @@ def derive_ecc_key_pair_from_seed(seed: bytes) -> Tuple[ec.EllipticCurvePrivateK
         raise ValueError(f"Seed deve essere 32 bytes, ricevuto {len(seed)}")
 
     # Genera chiave privata da seed
-    # NOTA: In produzione usa un KDF più robusto o HSM
+    # Production note: Use HSM or more robust KDF in production environments
     private_value = int.from_bytes(seed, "big")
 
     # Crea chiave privata ECC

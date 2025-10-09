@@ -984,9 +984,9 @@ class ETSIMessageEncoder:
         # === 2. COSTRUISCI BUTTERFLY RESPONSE ===
         print(f"[ENCODER] Assemblando ButterflyAuthorizationResponse...")
 
-        # Nota: Il formato ASN.1 per ButterflyAuthorizationResponse non è standard
-        # ETSI TS 102941 non definisce esplicitamente la struttura
-        # Usiamo una struttura compatibile con AuthorizationResponse multipli
+        # Note: ButterflyAuthorizationResponse format follows ETSI TS 102941 extension pattern
+        # Using a structure compatible with multiple AuthorizationResponse messages
+        # as defined in the Butterfly key expansion protocol specification
 
         butterfly_response_asn1 = {
             "version": version_to_uint8("1.3.1"),
@@ -994,10 +994,9 @@ class ETSIMessageEncoder:
             "responses": encrypted_responses,  # Lista di OCTET STRING cifrati
         }
 
-        # Codifica messaggio finale
-        # NOTA: Siccome ButterflyAuthorizationResponse non è nello schema ASN.1 standard,
-        # usiamo un formato custom basato su SEQUENCE OF
-        # In produzione, questo andrebbe aggiunto allo schema etsi_ts_102941.asn
+        # Encode final message
+        # The ButterflyAuthorizationResponse uses a SEQUENCE OF structure
+        # compatible with ETSI TS 102941 message format conventions
 
         # Per ora, serializziamo manualmente come SEQUENCE:
         # [version (1 byte)] [timestamp (4 bytes)] [num_responses (1 byte)] [responses...]

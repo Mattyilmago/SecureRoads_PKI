@@ -6,7 +6,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509 import ReasonFlags
 
-from utils.cert_utils import get_certificate_identifier, get_certificate_ski
+from utils.cert_utils import get_certificate_expiry_time, get_certificate_identifier, get_certificate_ski
+from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 
 
@@ -30,6 +31,13 @@ class CRLManager:
         self.metadata_path = os.path.join(self.crl_dir, "crl_metadata.json")
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name=f"CRLManager_{authority_id}",
+            log_dir=self.log_dir,
+            console_output=True
+        )
 
         # Crea directory
         PKIFileHandler.ensure_directories(
@@ -55,9 +63,9 @@ class CRLManager:
         # Carica Full CRL metadata per ricostruire lista certificati revocati
         self.load_full_crl_metadata()
 
-        print(f"[CRLManager] Inizializzato per {authority_id}")
-        print(f"[CRLManager] CRL Number attuale: {self.crl_number}")
-        print(f"[CRLManager] Base CRL Number: {self.base_crl_number}")
+        self.logger.info(f"Inizializzato per {authority_id}")
+        self.logger.info(f"CRL Number attuale: {self.crl_number}")
+        self.logger.info(f"Base CRL Number: {self.base_crl_number}")
 
     def add_revoked_certificate(self, certificate, reason=ReasonFlags.unspecified):
         """
@@ -75,23 +83,22 @@ class CRLManager:
         serial_number = certificate.serial_number
         ski = get_certificate_ski(certificate)
         cert_id = get_certificate_identifier(certificate)
-        # Use UTC-aware datetime properties
-        expiry_date = certificate.not_valid_after_utc
+        expiry_date = get_certificate_expiry_time(certificate)
 
         revocation_date = datetime.now(timezone.utc)
 
-        print(f"[CRLManager] Aggiungendo certificato revocato:")
-        print(f"[CRLManager]   Identificatore: {cert_id}")
-        print(f"[CRLManager]   SKI: {ski[:16]}...")
-        print(f"[CRLManager]   Serial: {serial_number}")
-        print(f"[CRLManager]   Motivo: {reason}")
-        print(f"[CRLManager]   Data scadenza: {expiry_date}")
+        self.logger.info(f"Aggiungendo certificato revocato:")
+        self.logger.info(f"  Identificatore: {cert_id}")
+        self.logger.info(f"  SKI: {ski[:16]}...")
+        self.logger.info(f"  Serial: {serial_number}")
+        self.logger.info(f"  Motivo: {reason}")
+        self.logger.info(f"  Data scadenza: {expiry_date}")
 
         # Controlla se già revocato (usa SKI per confronto, con backward compatibility)
         for entry in self.revoked_certificates:
             # Prova prima con SKI (nuovo), poi con serial_number (vecchio)
             if entry.get("ski") == ski or entry.get("serial_number") == serial_number:
-                print(f"[CRLManager] Certificato già presente nella lista revocati")
+                self.logger.info(f"Certificato già presente nella lista revocati")
                 return
 
         # Log revocation
@@ -118,10 +125,10 @@ class CRLManager:
         self.revoked_certificates.append(revoked_entry)
         self.delta_revocations.append(revoked_entry)
 
-        print(
-            f"[CRLManager] Certificato aggiunto. Totale revocati: {len(self.revoked_certificates)}"
+        self.logger.info(
+            f"Certificato aggiunto. Totale revocati: {len(self.revoked_certificates)}"
         )
-        print(f"[CRLManager] Revoche delta pending: {len(self.delta_revocations)}")
+        self.logger.info(f"Revoche delta pending: {len(self.delta_revocations)}")
 
     def revoke_by_serial(self, serial_number, reason=ReasonFlags.unspecified):
         """
@@ -144,13 +151,13 @@ class CRLManager:
         # Imposta una data di scadenza di default (1 anno da ora)
         expiry_date = datetime.now(timezone.utc) + timedelta(days=365)
 
-        print(f"[CRLManager] Aggiungendo revoca per serial: {serial_number}")
-        print(f"[CRLManager]   Motivo: {reason}")
+        self.logger.info(f"Aggiungendo revoca per serial: {serial_number}")
+        self.logger.info(f"  Motivo: {reason}")
 
         # Controlla se già revocato
         for entry in self.revoked_certificates:
             if entry.get("serial_number") == serial_number:
-                print(f"[CRLManager] Serial già presente nella lista revocati")
+                self.logger.info(f"Serial già presente nella lista revocati")
                 return
 
         # Log revocation
@@ -175,8 +182,8 @@ class CRLManager:
         self.revoked_certificates.append(revoked_entry)
         self.delta_revocations.append(revoked_entry)
 
-        print(f"[CRLManager] Serial aggiunto. Totale revocati: {len(self.revoked_certificates)}")
-        print(f"[CRLManager] Revoche delta pending: {len(self.delta_revocations)}")
+        self.logger.info(f"Serial aggiunto. Totale revocati: {len(self.revoked_certificates)}")
+        self.logger.info(f"Revoche delta pending: {len(self.delta_revocations)}")
 
     def publish_full_crl(self, validity_days=7):
         """
@@ -191,7 +198,7 @@ class CRLManager:
         Args:
             validity_days: Giorni di validità della CRL
         """
-        print(f"[CRLManager] === GENERAZIONE FULL CRL ===")
+        self.logger.info(f"=== GENERAZIONE FULL CRL ===")
 
         # Incrementa CRL number
         self.crl_number += 1
@@ -201,8 +208,8 @@ class CRLManager:
         # Pulisce certificati scaduti prima di pubblicare
         self._cleanup_expired_certificates()
 
-        print(f"[CRLManager] CRL Number: {self.crl_number}")
-        print(f"[CRLManager] Certificati revocati: {len(self.revoked_certificates)}")
+        self.logger.info(f"CRL Number: {self.crl_number}")
+        self.logger.info(f"Certificati revocati: {len(self.revoked_certificates)}")
 
         # Crea CRL builder
         builder = x509.CertificateRevocationListBuilder()
@@ -215,8 +222,8 @@ class CRLManager:
 
         # Aggiunge tutti i certificati revocati
         for entry in self.revoked_certificates:
-            print(
-                f"[CRLManager]   Serial: {entry['serial_number']}, "
+            self.logger.info(
+                f"  Serial: {entry['serial_number']}, "
                 f"Revocato: {entry['revocation_date']}, "
                 f"Scade: {entry['expiry_date']}, "
                 f"Motivo: {entry['reason']}"
@@ -238,7 +245,7 @@ class CRLManager:
         with open(self.full_crl_path, "wb") as f:
             f.write(crl.public_bytes(serialization.Encoding.PEM))
 
-        print(f"[CRLManager] Full CRL salvata: {self.full_crl_path}")
+        self.logger.info(f"Full CRL salvata: {self.full_crl_path}")
 
         # Salva metadata Full CRL (snapshot completo)
         self.save_full_crl_metadata(validity_days)
@@ -260,7 +267,7 @@ class CRLManager:
         )
         self.backup_crl("full")
 
-        print(f"[CRLManager] === FULL CRL PUBBLICATA ===")
+        self.logger.info(f"=== FULL CRL PUBBLICATA ===")
         return self.full_crl_path
 
     def publish_delta_crl(self, validity_hours=24):
@@ -276,19 +283,19 @@ class CRLManager:
         Args:
             validity_hours: Ore di validità della Delta CRL
         """
-        print(f"[CRLManager] === GENERAZIONE DELTA CRL ===")
+        self.logger.info(f"=== GENERAZIONE DELTA CRL ===")
 
         # Controlla se ci sono nuove revoche
         if not self.delta_revocations:
-            print(f"[CRLManager] Nessuna nuova revoca, Delta CRL non necessaria")
+            self.logger.info(f"Nessuna nuova revoca, Delta CRL non necessaria")
             return None
 
         # Incrementa CRL number
         self.crl_number += 1
 
-        print(f"[CRLManager] CRL Number: {self.crl_number}")
-        print(f"[CRLManager] Base CRL Number: {self.base_crl_number}")
-        print(f"[CRLManager] Nuove revoche dal Full CRL: {len(self.delta_revocations)}")
+        self.logger.info(f"CRL Number: {self.crl_number}")
+        self.logger.info(f"Base CRL Number: {self.base_crl_number}")
+        self.logger.info(f"Nuove revoche dal Full CRL: {len(self.delta_revocations)}")
 
         # Crea CRL builder
         builder = x509.CertificateRevocationListBuilder()
@@ -308,8 +315,8 @@ class CRLManager:
 
         # Aggiunge SOLO le nuove revoche
         for entry in self.delta_revocations:
-            print(
-                f"[CRLManager]   Serial: {entry['serial_number']}, "
+            self.logger.info(
+                f"  Serial: {entry['serial_number']}, "
                 f"Revocato: {entry['revocation_date']}, "
                 f"Motivo: {entry['reason']}"
             )
@@ -330,7 +337,7 @@ class CRLManager:
         with open(self.delta_crl_path, "wb") as f:
             f.write(crl.public_bytes(serialization.Encoding.PEM))
 
-        print(f"[CRLManager] Delta CRL salvata: {self.delta_crl_path}")
+        self.logger.info(f"Delta CRL salvata: {self.delta_crl_path}")
 
         # Salva metadata Delta CRL (snapshot modifiche)
         self.save_delta_crl_metadata(validity_hours / 24)  # Converti ore in giorni
@@ -350,7 +357,7 @@ class CRLManager:
         )
         self.backup_crl("delta")
 
-        print(f"[CRLManager] === DELTA CRL PUBBLICATA ===")
+        self.logger.info(f"=== DELTA CRL PUBBLICATA ===")
         return crl
 
     def _cleanup_expired_certificates(self):
@@ -374,8 +381,8 @@ class CRLManager:
 
         removed = old_count - len(self.revoked_certificates)
         if removed > 0:
-            print(f"[CRLManager] Pulizia: rimossi {removed} certificati scaduti")
-            print(f"[CRLManager] Certificati attivi rimasti: {len(self.revoked_certificates)}")
+            self.logger.info(f"Pulizia: rimossi {removed} certificati scaduti")
+            self.logger.info(f"Certificati attivi rimasti: {len(self.revoked_certificates)}")
 
     def load_full_crl(self):
         """
@@ -385,16 +392,16 @@ class CRLManager:
             x509.CertificateRevocationList o None se non esiste
         """
         if not os.path.exists(self.full_crl_path):
-            print(f"[CRLManager] Full CRL non trovata")
+            self.logger.info(f"Full CRL non trovata")
             return None
 
         with open(self.full_crl_path, "rb") as f:
             crl = x509.load_pem_x509_crl(f.read())
 
-        print(f"[CRLManager] Full CRL caricata:")
-        print(f"[CRLManager]   Certificati revocati: {len(crl)}")
-        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update_utc}")
-        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update_utc}")
+        self.logger.info(f"Full CRL caricata:")
+        self.logger.info(f"  Certificati revocati: {len(crl)}")
+        self.logger.info(f"  Ultimo aggiornamento: {crl.last_update_utc}")
+        self.logger.info(f"  Prossimo aggiornamento: {crl.next_update_utc}")
 
         return crl
 
@@ -406,16 +413,16 @@ class CRLManager:
             x509.CertificateRevocationList o None se non esiste
         """
         if not os.path.exists(self.delta_crl_path):
-            print(f"[CRLManager] Delta CRL non trovata")
+            self.logger.info(f"Delta CRL non trovata")
             return None
 
         with open(self.delta_crl_path, "rb") as f:
             crl = x509.load_pem_x509_crl(f.read())
 
-        print(f"[CRLManager] Delta CRL caricata:")
-        print(f"[CRLManager]   Nuove revoche: {len(crl)}")
-        print(f"[CRLManager]   Ultimo aggiornamento: {crl.last_update_utc}")
-        print(f"[CRLManager]   Prossimo aggiornamento: {crl.next_update_utc}")
+        self.logger.info(f"Delta CRL caricata:")
+        self.logger.info(f"  Nuove revoche: {len(crl)}")
+        self.logger.info(f"  Ultimo aggiornamento: {crl.last_update_utc}")
+        self.logger.info(f"  Prossimo aggiornamento: {crl.next_update_utc}")
 
         return crl
 
@@ -442,14 +449,14 @@ class CRLManager:
         with open(self.metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"[CRLManager] Metadata salvati: {self.metadata_path}")
+        self.logger.info(f"Metadata salvati: {self.metadata_path}")
 
     def load_metadata(self):
         """
         Carica metadata CRL da file JSON.
         """
         if not os.path.exists(self.metadata_path):
-            print(f"[CRLManager] Nessun metadata esistente, inizializzo nuovo")
+            self.logger.info(f"Nessun metadata esistente, inizializzo nuovo")
             return
 
         try:
@@ -463,12 +470,12 @@ class CRLManager:
             if last_full:
                 self.last_full_crl_time = datetime.fromisoformat(last_full)
 
-            print(f"[CRLManager] Metadata caricati con successo")
-            print(f"[CRLManager]   CRL Number: {self.crl_number}")
-            print(f"[CRLManager]   Base CRL Number: {self.base_crl_number}")
+            self.logger.info(f"Metadata caricati con successo")
+            self.logger.info(f"  CRL Number: {self.crl_number}")
+            self.logger.info(f"  Base CRL Number: {self.base_crl_number}")
 
         except Exception as e:
-            print(f"[CRLManager] Errore caricamento metadata: {e}")
+            self.logger.info(f"Errore caricamento metadata: {e}")
 
     def get_statistics(self):
         """
@@ -530,7 +537,7 @@ class CRLManager:
         with open(full_metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"[CRLManager] Metadata Full CRL salvati: {full_metadata_path}")
+        self.logger.info(f"Metadata Full CRL salvati: {full_metadata_path}")
 
     def save_delta_crl_metadata(self, validity_days=7):
         """
@@ -572,7 +579,7 @@ class CRLManager:
         with open(delta_metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"[CRLManager] Metadata Delta CRL salvati: {delta_metadata_path}")
+        self.logger.info(f"Metadata Delta CRL salvati: {delta_metadata_path}")
 
     def load_full_crl_metadata(self):
         """
@@ -584,7 +591,7 @@ class CRLManager:
         full_metadata_path = self.full_crl_path.replace(".pem", "_metadata.json")
 
         if not os.path.exists(full_metadata_path):
-            print(f"[CRLManager] Nessun metadata Full CRL esistente")
+            self.logger.info(f"Nessun metadata Full CRL esistente")
             return
 
         try:
@@ -607,12 +614,12 @@ class CRLManager:
                     }
                 )
 
-            print(
-                f"[CRLManager] Full CRL metadata caricati: {len(self.revoked_certificates)} certificati revocati"
+            self.logger.info(
+                f"Full CRL metadata caricati: {len(self.revoked_certificates)} certificati revocati"
             )
 
         except Exception as e:
-            print(f"[CRLManager] Errore caricamento Full CRL metadata: {e}")
+            self.logger.info(f"Errore caricamento Full CRL metadata: {e}")
 
     def log_operation(self, operation, details):
         """
@@ -636,9 +643,9 @@ class CRLManager:
         try:
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_entry) + "\n")
-            print(f"[CRLManager] Operazione loggata: {operation}")
+            self.logger.info(f"Operazione loggata: {operation}")
         except Exception as e:
-            print(f"[CRLManager] Errore logging: {e}")
+            self.logger.info(f"Errore logging: {e}")
 
     def backup_crl(self, crl_type="full"):
         """
@@ -663,9 +670,9 @@ class CRLManager:
                 import shutil
 
                 shutil.copy2(source, backup_path)
-                print(f"[CRLManager] Backup creato: {backup_path}")
+                self.logger.info(f"Backup creato: {backup_path}")
 
                 # Log backup operation
                 self.log_operation("BACKUP_CRL", {"crl_type": crl_type, "backup_path": backup_path})
         except Exception as e:
-            print(f"[CRLManager] Errore creazione backup: {e}")
+            self.logger.info(f"Errore creazione backup: {e}")
