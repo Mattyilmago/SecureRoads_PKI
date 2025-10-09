@@ -57,7 +57,8 @@ class AuthorizationAuthority:
 
         # Logger initialization (must be before any logger calls)
         self.log_dir = os.path.join(base_dir, "logs")
-        self.logger = PKILogger.get_logger(name=f"AA_{aa_id}", log_dir=self.log_dir, console_output=True)
+        # aa_id contiene già il prefisso "AA_"
+        self.logger = PKILogger.get_logger(name=aa_id, log_dir=self.log_dir, console_output=True)
 
         self.logger.info("=" * 80)
         self.logger.info(f"*** INIZIO INIZIALIZZAZIONE AUTHORIZATION AUTHORITY {aa_id} ***")

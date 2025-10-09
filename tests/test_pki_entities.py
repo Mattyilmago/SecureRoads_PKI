@@ -25,6 +25,7 @@ from entities.authorization_authority import AuthorizationAuthority
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.root_ca import RootCA
 from managers.trust_list_manager import TrustListManager
+from utils.cert_utils import get_certificate_not_before, get_certificate_expiry_time
 
 # Fixture root_ca, ea, aa sono ora in conftest.py
 
@@ -42,8 +43,8 @@ class TestRootCA:
         """Test RootCA certificate validity"""
         cert = root_ca.certificate
         now = datetime.now(timezone.utc)
-        valid_from = cert.not_valid_before.replace(tzinfo=timezone.utc)
-        valid_to = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        valid_from = get_certificate_not_before(cert)
+        valid_to = get_certificate_expiry_time(cert)
         assert valid_from <= now
         assert valid_to > now
 

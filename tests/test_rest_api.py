@@ -89,7 +89,7 @@ class TestEAEndpoints:
         """Test enrollment requires auth or rejects empty body"""
         with ea_app.test_client() as client:
             response = client.post(
-                "/enrollment/request",
+                "/api/enrollment/request",
                 headers={"Content-Type": "application/octet-stream"},
             )
             assert response.status_code in [400, 401]
@@ -98,7 +98,7 @@ class TestEAEndpoints:
         """Test enrollment rejects wrong content type"""
         with ea_app.test_client() as client:
             response = client.post(
-                "/enrollment/request",
+                "/api/enrollment/request",
                 headers={
                     "Authorization": "Bearer test-api-key-123",
                     "Content-Type": "application/json",
@@ -110,7 +110,7 @@ class TestEAEndpoints:
     def test_crl_full_endpoint_exists(self, ea_app):
         """Test CRL endpoint exists"""
         with ea_app.test_client() as client:
-            response = client.get("/crl/full")
+            response = client.get("/api/crl/full")
             assert response.status_code in [200, 404]
 
     def test_404_error_handling(self, ea_app):
@@ -143,7 +143,7 @@ class TestAAEndpoints:
         """Test authorization requires auth or rejects empty body"""
         with aa_app.test_client() as client:
             response = client.post(
-                "/authorization/request",
+                "/api/authorization/request",
                 headers={"Content-Type": "application/octet-stream"},
             )
             assert response.status_code in [400, 401]
@@ -152,7 +152,7 @@ class TestAAEndpoints:
         """Test butterfly endpoint exists"""
         with aa_app.test_client() as client:
             response = client.post(
-                "/authorization/request/butterfly",
+                "/api/authorization/request/butterfly",
                 headers={
                     "Authorization": "Bearer test-api-key-456",
                     "Content-Type": "application/octet-stream",

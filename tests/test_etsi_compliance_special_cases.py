@@ -86,7 +86,7 @@ class TestCertificateLifecycle:
 
         # Verifica validità rimanente
         now = datetime.now(timezone.utc)
-        expiry = enrollment_cert.not_valid_after.replace(tzinfo=timezone.utc)
+        expiry = get_certificate_expiry_time(enrollment_cert)
         remaining = (expiry - now).days
 
         # ETSI raccomanda warning se < 30 giorni

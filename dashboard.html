@@ -1,0 +1,1959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureRoad PKI - Control Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            padding: 30px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .status-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .status-card h3 {
+            color: #667eea;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .status-card .value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .status-card.success .value {
+            color: #10b981;
+        }
+
+        .status-card.warning .value {
+            color: #f59e0b;
+        }
+
+        .status-card.error .value {
+            color: #ef4444;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 1200px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .entity-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .entity-item {
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .entity-item:hover {
+            background: #f3f4f6;
+            transform: translateX(5px);
+        }
+
+        .entity-item h4 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .entity-item p {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .entity-item .status {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+
+        .entity-item .status.online {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .entity-item .status.offline {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .test-results {
+            display: grid;
+            gap: 10px;
+        }
+
+        .test-category {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .test-category h4 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .test-badge {
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+
+        .test-badge.passed {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .endpoint-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .endpoint-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: #f9fafb;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .method {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+            font-size: 0.85em;
+        }
+
+        .method.GET {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .method.POST {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .method.DELETE {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .endpoint-path {
+            color: #666;
+        }
+
+        .action-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            transition: all 0.3s;
+            text-align: center;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(16, 185, 129, 0.4);
+        }
+
+        .btn-info {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-info:hover {
+            background: #2563eb;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(59, 130, 246, 0.4);
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .metric-item {
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .metric-item .label {
+            font-size: 0.85em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .metric-item .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .log-viewer {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .log-line {
+            margin-bottom: 5px;
+            padding: 3px 0;
+        }
+
+        .log-line.info {
+            color: #10b981;
+        }
+
+        .log-line.warning {
+            color: #f59e0b;
+        }
+
+        .log-line.error {
+            color: #ef4444;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .feature-card {
+            background: #f9fafb;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border-top: 3px solid #667eea;
+        }
+
+        .feature-card .icon {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .feature-card h4 {
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .feature-card .check {
+            color: #10b981;
+            font-size: 1.5em;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🔐 SecureRoad PKI Control Panel</h1>
+            <p>ETSI TS 102941 Compliant - Real-time Monitoring Dashboard</p>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar" id="statusBar">
+            <div class="status-card success">
+                <h3>System Status</h3>
+                <div class="value" id="systemStatus">Loading...</div>
+            </div>
+            <div class="status-card success">
+                <h3>Active Instances</h3>
+                <div class="value" id="activeInstancesTotal">0</div>
+            </div>
+            <div class="status-card">
+                <h3>Total Tests</h3>
+                <div class="value" id="totalTests">130</div>
+            </div>
+            <div class="status-card success">
+                <h3>Tests Passing</h3>
+                <div class="value" id="passingTests">130</div>
+            </div>
+            <div class="status-card">
+                <h3>API Endpoints</h3>
+                <div class="value" id="totalEndpoints">18</div>
+            </div>
+            <div class="status-card">
+                <h3>Uptime</h3>
+                <div class="value" id="uptime">0s</div>
+            </div>
+            <div class="status-card">
+                <h3>Requests/sec</h3>
+                <div class="value" id="requestsPerSec">0.0</div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- PKI Entities Panel -->
+            <div class="panel">
+                <h2>🏢 PKI Entities</h2>
+                <div class="entity-list">
+                    <div class="entity-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;" onclick="checkEntity('RootCA', 'http://localhost:8443')">
+                                <h4>Root CA</h4>
+                                <p>Root Certificate Authority - Trust Anchor</p>
+                                <span class="status offline" id="status-rootca">Checking...</span>
+                            </div>
+                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('RootCA', 8443); event.stopPropagation();">
+                                ▶️ Start
+                            </button>
+                        </div>
+                    </div>
+                    <div class="entity-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;" onclick="checkEntity('EA', 'http://localhost:5000')">
+                                <h4>Enrollment Authority (EA)</h4>
+                                <p>Issues Enrollment Certificates to ITS Stations</p>
+                                <span class="status offline" id="status-ea">Checking...</span>
+                            </div>
+                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('EA', 5000); event.stopPropagation();">
+                                ▶️ Start
+                            </button>
+                        </div>
+                    </div>
+                    <div class="entity-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;" onclick="checkEntity('AA', 'http://localhost:5001')">
+                                <h4>Authorization Authority (AA)</h4>
+                                <p>Issues Authorization Tickets for V2X</p>
+                                <span class="status offline" id="status-aa">Checking...</span>
+                            </div>
+                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('AA', 5001); event.stopPropagation();">
+                                ▶️ Start
+                            </button>
+                        </div>
+                    </div>
+                    <div class="entity-item">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div style="flex: 1;" onclick="checkEntity('TLM', 'http://localhost:5002')">
+                                <h4>Trust List Manager (TLM)</h4>
+                                <p>Distributes Certificate Trust Lists</p>
+                                <span class="status offline" id="status-tlm">Checking...</span>
+                            </div>
+                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('TLM', 5002); event.stopPropagation();">
+                                ▶️ Start
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Entity Generator Section -->
+                <div style="margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; color: white;">
+                    <h3 style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                        🏗️ Bulk Entity Generator
+                    </h3>
+                    <p style="font-size: 0.9em; opacity: 0.9; margin-bottom: 15px;">
+                        Generate multiple PKI entities at once
+                    </p>
+                    <button class="btn btn-success" style="width: 100%; background: white; color: #667eea; font-weight: bold;" onclick="showEntityGeneratorForm()">
+                        ➕ Generate Multiple Entities
+                    </button>
+                </div>
+            </div>
+
+            <!-- Active Instances Panel -->
+            <div class="panel">
+                <h2>🔌 Active Instances</h2>
+                <p style="color: #666; margin-bottom: 15px; font-size: 0.9em;">Real-time monitoring of all running PKI entities</p>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                    <!-- EA Instances -->
+                    <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 20px; border-radius: 10px; color: white;">
+                        <h3 style="font-size: 1.1em; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            📝 Enrollment Authority
+                        </h3>
+                        <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 10px;" id="instanceCount-EA">0</div>
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 10px;">Active Instances</div>
+                        <div id="instanceList-EA" style="font-size: 0.85em; opacity: 0.95; max-height: 150px; overflow-y: auto;">
+                            <div style="padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px; margin-bottom: 5px;">
+                                Scanning...
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AA Instances -->
+                    <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 20px; border-radius: 10px; color: white;">
+                        <h3 style="font-size: 1.1em; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            🎫 Authorization Authority
+                        </h3>
+                        <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 10px;" id="instanceCount-AA">0</div>
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 10px;">Active Instances</div>
+                        <div id="instanceList-AA" style="font-size: 0.85em; opacity: 0.95; max-height: 150px; overflow-y: auto;">
+                            <div style="padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px; margin-bottom: 5px;">
+                                Scanning...
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TLM Instances -->
+                    <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 20px; border-radius: 10px; color: white;">
+                        <h3 style="font-size: 1.1em; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            📋 Trust List Manager
+                        </h3>
+                        <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 10px;" id="instanceCount-TLM">0</div>
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 10px;">Active Instances</div>
+                        <div id="instanceList-TLM" style="font-size: 0.85em; opacity: 0.95; max-height: 150px; overflow-y: auto;">
+                            <div style="padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px; margin-bottom: 5px;">
+                                Scanning...
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RootCA Instances -->
+                    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); padding: 20px; border-radius: 10px; color: white;">
+                        <h3 style="font-size: 1.1em; margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            🏛️ Root CA
+                        </h3>
+                        <div style="font-size: 2.5em; font-weight: bold; margin-bottom: 10px;" id="instanceCount-RootCA">0</div>
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 10px;">Active Instances</div>
+                        <div id="instanceList-RootCA" style="font-size: 0.85em; opacity: 0.95; max-height: 150px; overflow-y: auto;">
+                            <div style="padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px; margin-bottom: 5px;">
+                                Scanning...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- API Testing Panel -->
+            <div class="panel">
+                <h2>🧪 Interactive API Testing</h2>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 15px;">
+                    
+                    <!-- EA Tests -->
+                    <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #10b981;">
+                        <h3 style="color: #10b981; margin-bottom: 15px;">📝 Enrollment Authority</h3>
+                        <button class="btn btn-success" style="width: 100%; margin-bottom: 10px;" onclick="testEnrollmentSimple()">
+                            🚗 Request Enrollment Certificate
+                        </button>
+                        <button class="btn btn-info" style="width: 100%;" onclick="testEnrollmentETSI()">
+                            📄 Request EC (ETSI Format)
+                        </button>
+                    </div>
+
+                    <!-- AA Tests -->
+                    <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6;">
+                        <h3 style="color: #3b82f6; margin-bottom: 15px;">🎫 Authorization Authority</h3>
+                        <button class="btn btn-primary" style="width: 100%; margin-bottom: 10px;" onclick="testAuthorizationSingle()">
+                            🎟️ Request Authorization Ticket
+                        </button>
+                        <button class="btn btn-primary" style="width: 100%;" onclick="testAuthorizationButterfly()">
+                            🦋 Butterfly Batch Request (5 ATs)
+                        </button>
+                    </div>
+
+                    <!-- CRL Tests -->
+                    <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #f59e0b;">
+                        <h3 style="color: #f59e0b; margin-bottom: 15px;">📜 Certificate Revocation</h3>
+                        <button class="btn btn-info" style="width: 100%; margin-bottom: 10px;" onclick="testCRLFull()">
+                            📋 Get Full CRL
+                        </button>
+                        <button class="btn btn-info" style="width: 100%;" onclick="testCRLDelta()">
+                            🔄 Get Delta CRL
+                        </button>
+                    </div>
+
+                    <!-- Trust List Tests -->
+                    <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+                        <h3 style="color: #8b5cf6; margin-bottom: 15px;">🔗 Trust List Manager</h3>
+                        <button class="btn btn-info" style="width: 100%; margin-bottom: 10px;" onclick="testTrustListFull()">
+                            📋 Get Full Trust List
+                        </button>
+                        <button class="btn btn-info" style="width: 100%;" onclick="testTrustListDelta()">
+                            🔄 Get Delta Trust List
+                        </button>
+                    </div>
+
+                </div>
+
+                <!-- API Response Viewer -->
+                <div style="margin-top: 25px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="color: #667eea; margin: 0;">📊 API Response</h3>
+                        <button id="toggleFullResponseBtn" class="btn btn-info" style="display: none; padding: 6px 12px; font-size: 0.85em;" onclick="toggleFullResponse()">
+                            � Show Full Response
+                        </button>
+                    </div>
+                    <div id="apiResponse" style="background: #1f2937; color: #10b981; padding: 20px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 0.9em; max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">
+                        <span style="color: #6b7280;">Click a test button above to see the API response...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Test Results Panel -->
+            <div class="panel">
+                <h2>✅ Test Coverage</h2>
+                <div class="test-results">
+                    <div class="test-category">
+                        <h4>
+                            <span>PKI Entities</span>
+                            <span class="test-badge passed">20/20</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">RootCA, EA, AA, Directory Structure</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>Butterfly Key Expansion</span>
+                            <span class="test-badge passed">23/23</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">Privacy-preserving batch AT issuance</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>ETSI Compliance</span>
+                            <span class="test-badge passed">22/22</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">TS 102941 & TS 103097 conformance</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>Link Certificates</span>
+                            <span class="test-badge passed">16/16</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">ASN.1 OER encoding & verification</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>ITS Station</span>
+                            <span class="test-badge passed">9/9</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">Vehicle enrollment & authorization</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>REST API</span>
+                            <span class="test-badge passed">10/10</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">EA & AA endpoints with auth</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>mTLS Authentication</span>
+                            <span class="test-badge passed">15/15</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">Mutual TLS inter-authority auth</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>Managers (CRL/TLM)</span>
+                            <span class="test-badge passed">6/6</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">CRL & Trust List management</p>
+                    </div>
+                    <div class="test-category">
+                        <h4>
+                            <span>ETSI Protocols</span>
+                            <span class="test-badge passed">9/9</span>
+                        </h4>
+                        <p style="color: #666; font-size: 0.9em;">Message types & encoding</p>
+                        </div>
+                </div>
+            </div>
+
+            <!-- API Endpoints Panel -->
+            <div class="panel">
+                <h2>🌐 REST API Endpoints</h2>
+                <div class="endpoint-list">
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/health</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method POST">POST</span>
+                        <span class="endpoint-path">/api/enrollment/request</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method POST">POST</span>
+                        <span class="endpoint-path">/api/enrollment/request/simple</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method POST">POST</span>
+                        <span class="endpoint-path">/api/authorization/request</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method POST">POST</span>
+                        <span class="endpoint-path">/api/authorization/request/butterfly</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/crl/full</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/crl/delta</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/trust-list/full</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/trust-list/delta</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/monitoring/metrics</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/monitoring/health</span>
+                    </div>
+                    <div class="endpoint-item">
+                        <span class="method GET">GET</span>
+                        <span class="endpoint-path">/api/docs</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Real-time Metrics Panel -->
+            <div class="panel">
+                <h2>📊 Real-time Metrics</h2>
+                <div class="metrics-grid" id="metricsGrid">
+                    <div class="metric-item">
+                        <div class="label">Total Requests</div>
+                        <div class="value" id="metricTotalReq">0</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="label">Error Rate</div>
+                        <div class="value" id="metricErrorRate">0%</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="label">Avg Latency</div>
+                        <div class="value" id="metricLatency">0ms</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="label">Enrollment Reqs</div>
+                        <div class="value" id="metricEnrollment">0</div>
+                    </div>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn btn-primary" onclick="refreshMetrics()">🔄 Refresh</button>
+                    <button class="btn btn-info" onclick="openSwagger()">📖 OpenAPI Docs</button>
+                    <button class="btn btn-success" onclick="runTests()">▶️ Run Tests</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Features Overview -->
+        <div class="panel full-width">
+            <h2>🎯 Implemented Features</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="icon">🔐</div>
+                    <h4>mTLS Authentication</h4>
+                    <p>Mutual TLS with X.509 certificates</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">🦋</div>
+                    <h4>Butterfly Expansion</h4>
+                    <p>Privacy-preserving batch ATs</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">📜</div>
+                    <h4>CRL Management</h4>
+                    <p>Full & Delta CRL distribution</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">🔗</div>
+                    <h4>Link Certificates</h4>
+                    <p>ASN.1 OER ETSI-compliant</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">📊</div>
+                    <h4>Monitoring System</h4>
+                    <p>Real-time metrics & health</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">📖</div>
+                    <h4>OpenAPI/Swagger</h4>
+                    <p>Interactive API docs</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">🚀</div>
+                    <h4>Production Ready</h4>
+                    <p>130/130 tests passing</p>
+                    <div class="check">✓</div>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">🛡️</div>
+                    <h4>Security Hardening</h4>
+                    <p>API keys, CORS, Rate limiting</p>
+                    <div class="check">✓</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Log -->
+        <div class="panel full-width">
+            <h2>📝 System Log</h2>
+            <div class="log-viewer" id="logViewer">
+                <div class="log-line info">[INFO] Dashboard initialized</div>
+                <div class="log-line info">[INFO] Checking entity status...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration - MODIFY THESE TO MATCH YOUR RUNNING INSTANCES
+        // Add all ports you want to monitor for each entity type
+        // Automatically scans a wide range of ports (you can adjust these)
+        const ENTITY_PORTS = {
+            'EA': generatePortRange(5000, 5020),   // Scans ports 5000-5020 for EA instances
+            'AA': generatePortRange(5001, 5021),   // Scans ports 5001-5021 for AA instances
+            'TLM': generatePortRange(5002, 5022),  // Scans ports 5002-5022 for TLM instances
+            'RootCA': [8443]                        // RootCA (if exposed)
+        };
+
+        // Helper function to generate port ranges
+        function generatePortRange(start, end, step = 1) {
+            const ports = [];
+            for (let port = start; port <= end; port += step) {
+                ports.push(port);
+            }
+            return ports;
+        }
+
+        // Legacy single entity config (kept for compatibility)
+        const ENTITIES = {
+            'EA': 'http://localhost:5000',
+            'AA': 'http://localhost:5001',
+            'TLM': 'http://localhost:5002',
+            'RootCA': 'http://localhost:8443'
+        };
+
+        // Track active instances
+        let activeInstances = {
+            'EA': [],
+            'AA': [],
+            'TLM': [],
+            'RootCA': []
+        };
+
+        // Initialize on load
+        window.onload = function() {
+            addLog('Dashboard loaded successfully', 'info');
+            checkAllEntities();
+            scanAllInstances();  // New: scan for all active instances
+            refreshMetrics();
+            
+            // Auto-refresh every 10 seconds
+            setInterval(checkAllEntities, 10000);
+            setInterval(scanAllInstances, 10000);  // New: auto-refresh instances
+            setInterval(refreshMetrics, 10000);
+        };
+
+        // Check all entities
+        function checkAllEntities() {
+            addLog('Checking entity statuses...', 'info');
+            Object.keys(ENTITIES).forEach(entity => {
+                checkEntity(entity, ENTITIES[entity]);
+            });
+        }
+
+        // Scan all instances for all entity types (ottimizzato con richieste parallele)
+        async function scanAllInstances() {
+            addLog('Scanning for active instances...', 'info');
+            
+            // Crea array di promesse per controllare tutte le porte in parallelo
+            const scanPromises = [];
+            
+            for (const entityType of Object.keys(ENTITY_PORTS)) {
+                const ports = ENTITY_PORTS[entityType];
+                
+                // Crea una promessa per ogni tipo di entità
+                const entityScanPromise = Promise.all(
+                    ports.map(async (port) => {
+                        const baseUrl = `http://localhost:${port}`;
+                        const isActive = await checkInstanceHealth(baseUrl);
+                        
+                        if (isActive) {
+                            // Try to get entity ID from health endpoint
+                            const entityInfo = await getEntityInfo(baseUrl);
+                            return {
+                                port: port,
+                                url: baseUrl,
+                                id: entityInfo.id || `${entityType}_${port}`,
+                                uptime: entityInfo.uptime || 'N/A'
+                            };
+                        }
+                        return null;
+                    })
+                ).then(results => ({
+                    entityType,
+                    activeList: results.filter(r => r !== null)
+                }));
+                
+                scanPromises.push(entityScanPromise);
+            }
+            
+            // Attendi che tutte le scansioni siano completate
+            const allResults = await Promise.all(scanPromises);
+            
+            // Aggiorna il display per ogni tipo di entità
+            for (const {entityType, activeList} of allResults) {
+                activeInstances[entityType] = activeList;
+                updateInstanceDisplay(entityType, activeList);
+            }
+            
+            // Update total count in status bar
+            const totalActive = Object.values(activeInstances).reduce((sum, list) => sum + list.length, 0);
+            addLog(`Found ${totalActive} active instances (${allResults.length} types scanned)`, 'info');
+        }
+
+        // Check if instance is healthy (con timeout ridotto per velocità)
+        async function checkInstanceHealth(baseUrl) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 500); // Ridotto da 2000ms a 500ms
+                
+                const response = await fetch(`${baseUrl}/health`, {
+                    method: 'GET',
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                return response.ok;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        // Get entity information from health endpoint (con timeout ridotto)
+        async function getEntityInfo(baseUrl) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 500); // Ridotto da 2000ms a 500ms
+                
+                const response = await fetch(`${baseUrl}/health`, {
+                    method: 'GET',
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    return {
+                        id: data.entity_id || data.id || null,
+                        uptime: data.uptime || null
+                    };
+                }
+            } catch (error) {
+                // Silent fail
+            }
+            return {};
+        }
+
+        // Update instance display in UI
+        function updateInstanceDisplay(entityType, instances) {
+            const countEl = document.getElementById(`instanceCount-${entityType}`);
+            const listEl = document.getElementById(`instanceList-${entityType}`);
+            
+            if (!countEl || !listEl) return;
+            
+            // Update count
+            countEl.textContent = instances.length;
+            
+            // Update list
+            if (instances.length === 0) {
+                listEl.innerHTML = '<div style="padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px; opacity: 0.7;">No active instances</div>';
+            } else {
+                listEl.innerHTML = instances.map(inst => `
+                    <div style="padding: 8px; background: rgba(255,255,255,0.15); border-radius: 5px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-weight: bold;">${inst.id}</div>
+                            <div style="font-size: 0.85em; opacity: 0.8;">Port ${inst.port}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 0.8em; opacity: 0.9;">🟢 Online</div>
+                            ${inst.uptime ? `<div style="font-size: 0.75em; opacity: 0.7;">${inst.uptime}</div>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            }
+            
+            // Update total count in status bar
+            const totalActive = Object.values(activeInstances).reduce((sum, list) => sum + list.length, 0);
+            const totalEl = document.getElementById('activeInstancesTotal');
+            if (totalEl) {
+                totalEl.textContent = totalActive;
+            }
+        }
+
+        // Check specific entity
+        async function checkEntity(entityName, baseUrl) {
+            const statusId = `status-${entityName.toLowerCase()}`;
+            const statusEl = document.getElementById(statusId);
+            
+            if (!statusEl) return;
+            
+            statusEl.textContent = 'Checking...';
+            statusEl.className = 'status offline';
+
+            try {
+                const response = await fetch(`${baseUrl}/health`, { 
+                    method: 'GET',
+                    timeout: 5000 
+                });
+                
+                if (response.ok) {
+                    statusEl.textContent = 'Online';
+                    statusEl.className = 'status online';
+                    addLog(`${entityName} is online at ${baseUrl}`, 'info');
+                    
+                    // Update system status
+                    document.getElementById('systemStatus').textContent = '✓ Healthy';
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                statusEl.textContent = 'Offline';
+                statusEl.className = 'status offline';
+                addLog(`${entityName} is offline: ${error.message}`, 'warning');
+            }
+        }
+
+        // Refresh metrics
+        async function refreshMetrics() {
+            const baseUrl = 'http://localhost:5000'; // Try EA first (default port)
+            
+            try {
+                const response = await fetch(`${baseUrl}/api/monitoring/metrics`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Update status bar
+                    const uptime = Math.round(data.uptime_seconds);
+                    document.getElementById('uptime').textContent = formatUptime(uptime);
+                    document.getElementById('requestsPerSec').textContent = 
+                        data.overall.requests_per_second.toFixed(2);
+                    
+                    // Update metrics panel
+                    document.getElementById('metricTotalReq').textContent = 
+                        data.overall.total_requests;
+                    document.getElementById('metricErrorRate').textContent = 
+                        data.overall.error_rate_percent.toFixed(1) + '%';
+                    document.getElementById('metricLatency').textContent = 
+                        Math.round(data.overall.avg_latency_ms) + 'ms';
+                    document.getElementById('metricEnrollment').textContent = 
+                        data.counters.enrollment_requests || 0;
+                    
+                    addLog('Metrics refreshed successfully', 'info');
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                addLog(`Failed to fetch metrics: ${error.message}`, 'warning');
+            }
+        }
+
+        // Format uptime
+        function formatUptime(seconds) {
+            if (seconds < 60) return seconds + 's';
+            if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+            if (seconds < 86400) return Math.round(seconds / 3600) + 'h';
+            return Math.round(seconds / 86400) + 'd';
+        }
+
+        // Add log entry
+        function addLog(message, level = 'info') {
+            const logViewer = document.getElementById('logViewer');
+            const timestamp = new Date().toLocaleTimeString();
+            const levelUpper = level.toUpperCase();
+            
+            const logLine = document.createElement('div');
+            logLine.className = `log-line ${level}`;
+            logLine.textContent = `[${timestamp}] [${levelUpper}] ${message}`;
+            
+            logViewer.appendChild(logLine);
+            
+            // Keep only last 50 logs
+            while (logViewer.children.length > 50) {
+                logViewer.removeChild(logViewer.firstChild);
+            }
+            
+            // Auto-scroll to bottom
+            logViewer.scrollTop = logViewer.scrollHeight;
+        }
+
+        // Open Swagger UI
+        function openSwagger() {
+            const url = 'http://localhost:5000/api/docs';  // EA default port
+            window.open(url, '_blank');
+            addLog('Opening Swagger UI...', 'info');
+        }
+
+        // Run tests
+        function runTests() {
+            addLog('Running test suite...', 'info');
+            addLog('Execute: python -m pytest tests/ -v', 'info');
+            alert('Run in terminal:\npython -m pytest tests/ -v');
+        }
+
+        // Start entity
+        function startEntity(entityType, port) {
+            addLog(`Starting ${entityType} on port ${port}...`, 'info');
+            
+            // Build command
+            let command;
+            if (entityType === 'RootCA') {
+                command = `python start_production_server.py --entity RootCA --port ${port}`;
+            } else {
+                command = `python start_production_server.py --entity ${entityType} --port ${port}`;
+            }
+            
+            // Show instructions in modal
+            const instructions = `
+To start ${entityType}, open a NEW PowerShell terminal and run:
+
+${command}
+
+Or click "Copy Command" below and paste it in your terminal.
+
+The entity will start on port ${port}.
+After starting, refresh this dashboard to see it online! 🟢
+            `.trim();
+            
+            // Create modal
+            showStartModal(entityType, command, instructions, port);
+        }
+
+        // Show modal with start instructions
+        function showStartModal(entityType, command, instructions, port) {
+            // Remove existing modal if any
+            const existingModal = document.getElementById('startModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+            
+            // Create modal HTML
+            const modal = document.createElement('div');
+            modal.id = 'startModal';
+            modal.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.7);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 10000;
+            `;
+            
+            modal.innerHTML = `
+                <div style="background: white; padding: 30px; border-radius: 15px; max-width: 600px; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
+                    <h2 style="color: #667eea; margin-bottom: 20px;">🚀 Start ${entityType}</h2>
+                    <pre style="background: #1f2937; color: #10b981; padding: 15px; border-radius: 8px; overflow-x: auto; font-family: 'Courier New', monospace; margin: 20px 0;">${command}</pre>
+                    <p style="color: #666; margin-bottom: 20px; line-height: 1.6;">${instructions.replace(/\n/g, '<br>')}</p>
+                    <div style="display: flex; gap: 10px;">
+                        <button onclick="copyCommand('${command}')" style="flex: 1; padding: 12px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 1em;">
+                            📋 Copy Command
+                        </button>
+                        <button onclick="closeStartModal()" style="flex: 1; padding: 12px; background: #6b7280; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 1em;">
+                            ✕ Close
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            
+            // Close on background click
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeStartModal();
+                }
+            });
+        }
+
+        // Copy command to clipboard
+        function copyCommand(command) {
+            navigator.clipboard.writeText(command).then(() => {
+                addLog('Command copied to clipboard!', 'info');
+                alert('✅ Command copied! Paste it in a PowerShell terminal.');
+                closeStartModal();
+            }).catch(err => {
+                addLog('Failed to copy command', 'error');
+                alert('❌ Failed to copy. Please copy manually.');
+            });
+        }
+
+        // Close start modal
+        function closeStartModal() {
+            const modal = document.getElementById('startModal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        // Show request form
+        function showRequestForm(title, fields, onSubmit) {
+            // Remove existing modal if any
+            const existingModal = document.getElementById('requestFormModal');
+            if (existingModal) {
+                existingModal.remove();
+            }
+            
+            // Build form HTML
+            let formHTML = '';
+            fields.forEach(field => {
+                if (field.type === 'textarea') {
+                    formHTML += `
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; color: #333; font-weight: 600; margin-bottom: 5px;">${field.label}:</label>
+                            <textarea name="${field.name}" placeholder="${field.placeholder || ''}" ${field.required ? 'required' : ''} style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 0.9em; min-height: 80px;">${field.value || ''}</textarea>
+                        </div>
+                    `;
+                } else {
+                    formHTML += `
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; color: #333; font-weight: 600; margin-bottom: 5px;">${field.label}:</label>
+                            <input type="${field.type}" name="${field.name}" value="${field.value || ''}" placeholder="${field.placeholder || ''}" ${field.required ? 'required' : ''} style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1em;">
+                        </div>
+                    `;
+                }
+            });
+            
+            // Create modal
+            const modal = document.createElement('div');
+            modal.id = 'requestFormModal';
+            modal.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.7);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 10000;
+                overflow-y: auto;
+            `;
+            
+            modal.innerHTML = `
+                <div style="background: white; padding: 30px; border-radius: 15px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.3); margin: 20px;">
+                    <h2 style="color: #667eea; margin-bottom: 20px;">🧪 ${title}</h2>
+                    <form id="apiTestForm">
+                        ${formHTML}
+                        <div style="display: flex; gap: 10px; margin-top: 25px;">
+                            <button type="submit" style="flex: 2; padding: 12px; background: #10b981; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 1em;">
+                                ▶️ Send Request
+                            </button>
+                            <button type="button" onclick="generateRandomFormData(event)" style="flex: 1; padding: 12px; background: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.9em;">
+                                🎲 Random
+                            </button>
+                            <button type="button" onclick="closeRequestForm()" style="flex: 1; padding: 12px; background: #6b7280; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 1em;">
+                                ✕ Cancel
+                            </button>
+                        </div>
+                    </form>
+                    <div style="margin-top: 15px; padding: 10px; background: #f0f9ff; border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 0.85em; color: #1e40af;">
+                        <strong>ℹ️ Tip:</strong> Click "🎲 Random" to generate valid random test data
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            
+            // Handle form submission
+            const form = document.getElementById('apiTestForm');
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // Collect form data
+                const formData = {};
+                fields.forEach(field => {
+                    const input = form.elements[field.name];
+                    formData[field.name] = input.value;
+                });
+                
+                // Close modal and execute callback
+                closeRequestForm();
+                onSubmit(formData);
+            });
+            
+            // Close on background click
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeRequestForm();
+                }
+            });
+        }
+
+        // Close request form
+        function closeRequestForm() {
+            const modal = document.getElementById('requestFormModal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        // Generate a real ECDSA P-256 key pair using Web Crypto API
+        async function generateRealPublicKey() {
+            try {
+                // Generate ECDSA key pair with P-256 curve
+                const keyPair = await window.crypto.subtle.generateKey(
+                    {
+                        name: "ECDSA",
+                        namedCurve: "P-256"
+                    },
+                    true,
+                    ["sign", "verify"]
+                );
+                
+                // Export public key in SPKI format (PEM-ready)
+                const exported = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+                
+                // Convert ArrayBuffer to base64
+                const base64 = btoa(String.fromCharCode(...new Uint8Array(exported)));
+                
+                // Format as PEM
+                const lines = base64.match(/.{1,64}/g) || [];
+                const pem = `-----BEGIN PUBLIC KEY-----\n${lines.join('\n')}\n-----END PUBLIC KEY-----`;
+                
+                return pem;
+            } catch (error) {
+                console.error('Failed to generate key:', error);
+                // Fallback to a known valid test key
+                return `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vObuVjpEDydz2BLe
+szoPSqE5RdiYwpZP40Li/hp/m47nuk2g+eFivOM1drMV7Oy2tAaDe/UfWQ==
+-----END PUBLIC KEY-----`;
+            }
+        }
+
+        // Helper: Check if string is already in PEM format
+        function isPEM(str) {
+            return str.includes('-----BEGIN') && str.includes('-----END');
+        }
+
+        // Generate random form data
+        function generateRandomFormData(event) {
+            event.preventDefault();
+            const form = document.getElementById('apiTestForm');
+            if (!form) return;
+
+            // Generate random hex string
+            function randomHex(length) {
+                let result = '';
+                const chars = '0123456789ABCDEF';
+                for (let i = 0; i < length; i++) {
+                    result += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                return result;
+            }
+
+            // Generate random vehicle ID
+            const timestamp = Date.now();
+            const randomSuffix = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+
+            // Fill form fields with random data
+            Array.from(form.elements).forEach(input => {
+                if (input.name === 'apiKey') {
+                    // Skip API key - user must provide
+                    return;
+                }
+                if (input.name === 'its_id') {
+                    input.value = `IT-VEHICLE-${timestamp}-${randomSuffix}`;
+                }
+                else if (input.name === 'canonical_id') {
+                    // Generate VIN-like canonical ID (17 chars)
+                    input.value = `VIN-${randomHex(17)}`;
+                }
+                else if (input.name === 'public_key') {
+                    // Generate a real ECDSA key pair and extract public key in PEM
+                    generateRealPublicKey().then(pem => {
+                        input.value = pem;
+                    });
+                }
+                else if (input.name === 'enrollment_certificate') {
+                    input.value = 'MOCK_EC_' + randomHex(32);
+                }
+                else if (input.name === 'permissions') {
+                    const allPerms = ['CAM', 'DENM', 'SPATEM', 'MAPEM', 'IVIM', 'SREM', 'SSEM'];
+                    const count = Math.floor(Math.random() * 3) + 2; // 2-4 permissions
+                    const selected = [];
+                    for (let i = 0; i < count; i++) {
+                        const perm = allPerms[Math.floor(Math.random() * allPerms.length)];
+                        if (!selected.includes(perm)) selected.push(perm);
+                    }
+                    input.value = selected.join(',');
+                }
+                else if (input.name === 'validity_period') {
+                    input.value = Math.floor(Math.random() * 21) + 7; // 7-27 days
+                }
+                else if (input.name === 'batch_size') {
+                    input.value = Math.floor(Math.random() * 16) + 5; // 5-20 ATs
+                }
+            });
+
+            addLog('🎲 Random test data generated', 'info');
+        }
+
+        // ========== API TESTING FUNCTIONS ==========
+
+        // Test Enrollment - Simple
+        async function testEnrollmentSimple() {
+            // Show form to customize request
+            const defaultItsId = "TestVehicle_" + Date.now();
+            // Generate a real public key in PEM format
+            const defaultPubKey = await generateRealPublicKey();
+            
+            showRequestForm('Enrollment Certificate Request', [
+                { label: 'API Key', name: 'apiKey', type: 'password', placeholder: 'Enter EA API Key', required: true },
+                { label: 'ITS ID (Logical ID - can change)', name: 'its_id', type: 'text', value: defaultItsId, required: true },
+                { label: 'Canonical ID (Permanent HW ID - immutable)', name: 'canonical_id', type: 'text', value: "VIN-" + defaultItsId, required: true },
+                { label: 'Public Key (PEM Format)', name: 'public_key', type: 'textarea', value: defaultPubKey, required: true }
+            ], async (formData) => {
+                showApiLoading('Testing Enrollment Certificate request...');
+                addLog('Testing EA: POST /api/enrollment/request/simple', 'info');
+
+                // Use public key as-is (already in PEM format from form or generated)
+                const requestBody = {
+                    "its_id": formData.its_id,
+                    "canonical_id": formData.canonical_id,
+                    "public_key": formData.public_key
+                };
+
+                try {
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': formData.apiKey
+                    };
+
+                    const response = await fetch('http://localhost:5000/api/enrollment/request/simple', {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const data = await response.json();
+                    showApiResponse(response.status, data, 'POST /api/enrollment/request/simple');
+                    
+                    if (response.ok) {
+                        addLog(`✅ Enrollment Certificate issued for ${formData.its_id}!`, 'info');
+                        if (data.certificate) {
+                            addLog(`   Serial: ${data.serial_number || 'N/A'}`, 'info');
+                        }
+                    } else {
+                        addLog(`❌ Enrollment failed: ${response.status}`, 'error');
+                    }
+                } catch (error) {
+                    showApiError(error, 'POST /api/enrollment/request/simple');
+                    addLog(`❌ Request failed: ${error.message}`, 'error');
+                }
+            });
+        }
+
+        // Test Enrollment - ETSI Format
+        async function testEnrollmentETSI() {
+            const apiKey = prompt('Enter EA API Key (or leave empty to skip auth):');
+            showApiLoading('Testing ETSI Enrollment request...');
+            addLog('Testing EA: POST /api/enrollment/request', 'info');
+
+            alert('⚠️ ETSI format requires ASN.1 OER encoded data.\nThis demo uses simplified format.\nUse Swagger UI for full ETSI testing.');
+            
+            // For demo purposes, show what the request would look like
+            const mockRequest = {
+                "format": "ETSI TS 102941",
+                "message_type": "EnrollmentRequest",
+                "canonical_id": "test_vehicle_" + Date.now(),
+                "public_key_compressed": "03A1B2C3D4..."
+            };
+
+            showApiResponse(200, mockRequest, 'POST /api/enrollment/request (Mock)');
+            addLog('ℹ️ Use Swagger UI for full ETSI compliance testing', 'info');
+        }
+
+        // Test Authorization - Single AT
+        async function testAuthorizationSingle() {
+            showRequestForm('Authorization Ticket Request', [
+                { label: 'API Key', name: 'apiKey', type: 'password', placeholder: 'Enter AA API Key', required: true },
+                { label: 'Enrollment Certificate (PEM)', name: 'enrollment_certificate', type: 'textarea', placeholder: 'Paste EC in PEM format or use mock data', value: 'MOCK_EC_DATA', required: true },
+                { label: 'Requested Permissions (comma-separated)', name: 'permissions', type: 'text', value: 'CAM,DENM', required: true },
+                { label: 'Validity Period (days)', name: 'validity_period', type: 'number', value: '7', required: true }
+            ], async (formData) => {
+                showApiLoading('Testing Authorization Ticket request...');
+                addLog('Testing AA: POST /api/authorization/request', 'info');
+
+                const requestBody = {
+                    "enrollment_certificate": formData.enrollment_certificate,
+                    "requested_permissions": formData.permissions.split(',').map(p => p.trim()),
+                    "validity_period": parseInt(formData.validity_period)
+                };
+
+                try {
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': formData.apiKey
+                    };
+
+                    const response = await fetch('http://localhost:5001/api/authorization/request', {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const data = await response.json();
+                    showApiResponse(response.status, data, 'POST /api/authorization/request');
+                    
+                    if (response.ok) {
+                        addLog('✅ Authorization Ticket issued successfully!', 'info');
+                    } else {
+                        addLog(`❌ Authorization failed: ${response.status}`, 'error');
+                    }
+                } catch (error) {
+                    showApiError(error, 'POST /api/authorization/request');
+                    addLog(`❌ Request failed: ${error.message}`, 'error');
+                }
+            });
+        }
+
+        // Test Authorization - Butterfly
+        async function testAuthorizationButterfly() {
+            showRequestForm('Butterfly Key Expansion Request', [
+                { label: 'API Key', name: 'apiKey', type: 'password', placeholder: 'Enter AA API Key', required: true },
+                { label: 'Enrollment Certificate (PEM)', name: 'enrollment_certificate', type: 'textarea', placeholder: 'Paste EC in PEM format or use mock data', value: 'MOCK_EC_DATA', required: true },
+                { label: 'Requested Permissions (comma-separated)', name: 'permissions', type: 'text', value: 'CAM,DENM', required: true },
+                { label: 'Batch Size', name: 'batch_size', type: 'number', value: '5', required: true },
+                { label: 'Validity Period (days)', name: 'validity_period', type: 'number', value: '7', required: true }
+            ], async (formData) => {
+                showApiLoading(`Testing Butterfly Key Expansion (${formData.batch_size} ATs)...`);
+                addLog('Testing AA: POST /api/authorization/request/butterfly', 'info');
+
+                const requestBody = {
+                    "enrollment_certificate": formData.enrollment_certificate,
+                    "requested_permissions": formData.permissions.split(',').map(p => p.trim()),
+                    "batch_size": parseInt(formData.batch_size),
+                    "validity_period": parseInt(formData.validity_period)
+                };
+
+                try {
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': formData.apiKey
+                    };
+
+                    const response = await fetch('http://localhost:5001/api/authorization/request/butterfly', {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    const data = await response.json();
+                    showApiResponse(response.status, data, 'POST /api/authorization/request/butterfly');
+                    
+                    if (response.ok) {
+                        addLog(`✅ Butterfly expansion: ${data.batch_size || formData.batch_size} ATs issued!`, 'info');
+                    } else {
+                        addLog(`❌ Butterfly request failed: ${response.status}`, 'error');
+                    }
+                } catch (error) {
+                    showApiError(error, 'POST /api/authorization/request/butterfly');
+                    addLog(`❌ Request failed: ${error.message}`, 'error');
+                }
+            });
+        }
+
+        // Test CRL - Full
+        async function testCRLFull() {
+            showApiLoading('Fetching Full CRL...');
+            addLog('Testing: GET /api/crl/full', 'info');
+
+            try {
+                const response = await fetch('http://localhost:5001/api/crl/full');
+                const data = await response.json();
+                showApiResponse(response.status, data, 'GET /api/crl/full');
+                
+                if (response.ok) {
+                    addLog(`✅ Full CRL retrieved: ${data.revoked_count || 0} revoked certs`, 'info');
+                }
+            } catch (error) {
+                showApiError(error, 'GET /api/crl/full');
+                addLog(`❌ Request failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Test CRL - Delta
+        async function testCRLDelta() {
+            showApiLoading('Fetching Delta CRL...');
+            addLog('Testing: GET /api/crl/delta', 'info');
+
+            try {
+                const response = await fetch('http://localhost:5001/api/crl/delta');
+                const data = await response.json();
+                showApiResponse(response.status, data, 'GET /api/crl/delta');
+                
+                if (response.ok) {
+                    addLog(`✅ Delta CRL retrieved: ${data.revoked_count || 0} new revocations`, 'info');
+                }
+            } catch (error) {
+                showApiError(error, 'GET /api/crl/delta');
+                addLog(`❌ Request failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Test Trust List - Full
+        async function testTrustListFull() {
+            showApiLoading('Fetching Full Trust List...');
+            addLog('Testing: GET /api/trust-list/full', 'info');
+
+            try {
+                const response = await fetch('http://localhost:5002/api/trust-list/full');
+                const data = await response.json();
+                showApiResponse(response.status, data, 'GET /api/trust-list/full');
+                
+                if (response.ok) {
+                    addLog(`✅ Full Trust List retrieved: ${data.trust_anchors?.length || 0} trust anchors`, 'info');
+                }
+            } catch (error) {
+                showApiError(error, 'GET /api/trust-list/full');
+                addLog(`❌ Request failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Test Trust List - Delta
+        async function testTrustListDelta() {
+            showApiLoading('Fetching Delta Trust List...');
+            addLog('Testing: GET /api/trust-list/delta', 'info');
+
+            try {
+                const response = await fetch('http://localhost:5002/api/trust-list/delta');
+                const data = await response.json();
+                showApiResponse(response.status, data, 'GET /api/trust-list/delta');
+                
+                if (response.ok) {
+                    addLog(`✅ Delta Trust List retrieved: ${data.additions?.length || 0} additions`, 'info');
+                }
+            } catch (error) {
+                showApiError(error, 'GET /api/trust-list/delta');
+                addLog(`❌ Request failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Show API loading state
+        function showApiLoading(message) {
+            const viewer = document.getElementById('apiResponse');
+            viewer.innerHTML = `<span style="color: #f59e0b;">⏳ ${message}</span>`;
+        }
+
+        // Store full response for toggle feature
+        let fullResponseData = null;
+        let showingFullResponse = false;
+
+        // Show API response (con truncate intelligente per certificati lunghi)
+        function showApiResponse(status, data, endpoint) {
+            const viewer = document.getElementById('apiResponse');
+            const statusColor = status >= 200 && status < 300 ? '#10b981' : '#ef4444';
+            
+            // Salva i dati completi per la funzione toggle
+            fullResponseData = { status, data, endpoint };
+            showingFullResponse = false;
+            
+            // Trunca i certificati lunghi per mantenere il layout pulito
+            const truncatedData = truncateLongFields(data);
+            const jsonString = JSON.stringify(truncatedData, null, 2);
+            
+            viewer.innerHTML = `
+<span style="color: #3b82f6;">HTTP ${status}</span> <span style="color: #6b7280;">${endpoint}</span>
+
+<span style="color: ${statusColor};">Response:</span>
+${jsonString}
+            `.trim();
+            
+            // Mostra il pulsante "Show Full Response" se ci sono campi troncati
+            const hasLongFields = JSON.stringify(data).length > JSON.stringify(truncatedData).length;
+            document.getElementById('toggleFullResponseBtn').style.display = hasLongFields ? 'inline-block' : 'none';
+            document.getElementById('toggleFullResponseBtn').textContent = '📋 Show Full Response';
+        }
+
+        // Toggle tra risposta troncata e completa
+        function toggleFullResponse() {
+            if (!fullResponseData) return;
+            
+            const viewer = document.getElementById('apiResponse');
+            const btn = document.getElementById('toggleFullResponseBtn');
+            const { status, data, endpoint } = fullResponseData;
+            const statusColor = status >= 200 && status < 300 ? '#10b981' : '#ef4444';
+            
+            showingFullResponse = !showingFullResponse;
+            
+            if (showingFullResponse) {
+                // Mostra risposta completa
+                const jsonString = JSON.stringify(data, null, 2);
+                viewer.innerHTML = `
+<span style="color: #3b82f6;">HTTP ${status}</span> <span style="color: #6b7280;">${endpoint}</span>
+
+<span style="color: ${statusColor};">Full Response:</span>
+${jsonString}
+                `.trim();
+                btn.textContent = '📋 Show Truncated Response';
+            } else {
+                // Mostra risposta troncata
+                const truncatedData = truncateLongFields(data);
+                const jsonString = JSON.stringify(truncatedData, null, 2);
+                viewer.innerHTML = `
+<span style="color: #3b82f6;">HTTP ${status}</span> <span style="color: #6b7280;">${endpoint}</span>
+
+<span style="color: ${statusColor};">Response:</span>
+${jsonString}
+                `.trim();
+                btn.textContent = '📋 Show Full Response';
+            }
+        }
+
+        // Trunca campi lunghi (certificati, chiavi) per mantenere il layout leggibile
+        function truncateLongFields(obj, maxLength = 100) {
+            if (typeof obj !== 'object' || obj === null) {
+                return obj;
+            }
+            
+            if (Array.isArray(obj)) {
+                return obj.map(item => truncateLongFields(item, maxLength));
+            }
+            
+            const truncated = {};
+            for (const [key, value] of Object.entries(obj)) {
+                if (typeof value === 'string' && value.length > maxLength) {
+                    // Identifica se è un certificato o chiave
+                    if (value.includes('BEGIN CERTIFICATE') || value.includes('BEGIN PUBLIC KEY')) {
+                        const lines = value.split('\n');
+                        const header = lines[0];
+                        const footer = lines[lines.length - 1] || lines[lines.length - 2];
+                        truncated[key] = `${header}\n... [${value.length} chars, ${lines.length} lines] ...\n${footer}`;
+                    } else {
+                        // Trunca stringhe lunghe generiche
+                        truncated[key] = value.substring(0, maxLength) + `... [${value.length} chars total]`;
+                    }
+                } else if (typeof value === 'object') {
+                    truncated[key] = truncateLongFields(value, maxLength);
+                } else {
+                    truncated[key] = value;
+                }
+            }
+            return truncated;
+        }
+
+        // Show API error
+        function showApiError(error, endpoint) {
+            const viewer = document.getElementById('apiResponse');
+            viewer.innerHTML = `
+<span style="color: #ef4444;">❌ ERROR</span> <span style="color: #6b7280;">${endpoint}</span>
+
+<span style="color: #ef4444;">Error:</span>
+${error.message}
+
+<span style="color: #f59e0b;">Tip:</span> Make sure the entity is running on the correct port!
+            `.trim();
+        }
+
+        // Show Entity Generator Form
+        function showEntityGeneratorForm() {
+            showRequestForm(
+                '🏗️ Bulk Entity Generator',
+                [
+                    { name: 'num_ea', label: 'Number of EAs', type: 'number', required: false, value: '0', min: '0', max: '20' },
+                    { name: 'num_aa', label: 'Number of AAs', type: 'number', required: false, value: '0', min: '0', max: '20' },
+                    { name: 'num_tlm', label: 'Number of TLMs', type: 'number', required: false, value: '0', min: '0', max: '20' },
+                    { name: 'start_port', label: 'Starting Port', type: 'number', required: true, value: '5000', min: '5000', max: '9999' }
+                ],
+                generateEntities
+            );
+        }
+
+        // Generate entities using Python script
+        async function generateEntities(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            
+            const num_ea = parseInt(formData.get('num_ea')) || 0;
+            const num_aa = parseInt(formData.get('num_aa')) || 0;
+            const num_tlm = parseInt(formData.get('num_tlm')) || 0;
+            const start_port = parseInt(formData.get('start_port')) || 5000;
+            
+            if (num_ea === 0 && num_aa === 0 && num_tlm === 0) {
+                alert('⚠️ Please specify at least one entity type to generate!');
+                return;
+            }
+            
+            // Close modal
+            document.getElementById('requestModal').style.display = 'none';
+            
+            // Show generating message
+            addLog(`Generating ${num_ea} EAs, ${num_aa} AAs, ${num_tlm} TLMs starting from port ${start_port}...`, 'info');
+            
+            // Create command to execute
+            const command = `python generate_entities_config.py --ea ${num_ea} --aa ${num_aa} --tlm ${num_tlm} --start-port ${start_port}`;
+            
+            // Show instructions modal
+            showGeneratedEntitiesInstructions(command, num_ea, num_aa, num_tlm, start_port);
+            
+            addLog('Entity generation configured! Follow the instructions in the modal.', 'info');
+        }
+
+        // Show instructions for generated entities
+        function showGeneratedEntitiesInstructions(command, num_ea, num_aa, num_tlm, start_port) {
+            const totalEntities = num_ea + num_aa + num_tlm;
+            let port = start_port;
+            
+            // Build entity list
+            let entityList = '';
+            
+            if (num_ea > 0) {
+                entityList += '<h4 style="color: #10b981; margin-top: 15px;">📝 Enrollment Authorities</h4><ul style="margin-left: 20px;">';
+                for (let i = 0; i < num_ea; i++) {
+                    entityList += `<li>EA (auto-assigned ID) on port ${port}</li>`;
+                    port++;
+                }
+                entityList += '</ul>';
+            }
+            
+            if (num_aa > 0) {
+                entityList += '<h4 style="color: #3b82f6; margin-top: 15px;">🎫 Authorization Authorities</h4><ul style="margin-left: 20px;">';
+                for (let i = 0; i < num_aa; i++) {
+                    entityList += `<li>AA (auto-assigned ID) on port ${port}</li>`;
+                    port++;
+                }
+                entityList += '</ul>';
+            }
+            
+            if (num_tlm > 0) {
+                entityList += '<h4 style="color: #f59e0b; margin-top: 15px;">📋 Trust List Managers</h4><ul style="margin-left: 20px;">';
+                for (let i = 0; i < num_tlm; i++) {
+                    entityList += `<li>TLM (auto-assigned ID) on port ${port}</li>`;
+                    port++;
+                }
+                entityList += '</ul>';
+            }
+            
+            const modalContent = `
+                <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation Instructions</h3>
+                
+                <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <p style="margin-bottom: 10px;"><strong>Total Entities to Generate:</strong> ${totalEntities}</p>
+                    ${entityList}
+                </div>
+                
+                <div style="background: #1f2937; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <p style="color: #10b981; margin-bottom: 10px;"><strong>Step 1: Run this command in PowerShell</strong></p>
+                    <code style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all;" onclick="copyToClipboard(this.textContent)">${command}</code>
+                    <p style="color: #9ca3af; font-size: 0.85em; margin-top: 5px;">Click to copy</p>
+                </div>
+                
+                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #f59e0b;">
+                    <p style="color: #92400e; margin-bottom: 10px;"><strong>Step 2: Start the entities</strong></p>
+                    <p style="color: #78350f; font-size: 0.9em;">After running the script, you'll get:</p>
+                    <ul style="margin-left: 20px; color: #78350f; font-size: 0.9em;">
+                        <li><code>entity_configs.json</code> - Configuration file</li>
+                        <li><code>start_all_entities.bat</code> - Windows batch script</li>
+                        <li><code>start_all_entities.ps1</code> - PowerShell script</li>
+                    </ul>
+                    <p style="color: #78350f; font-size: 0.9em; margin-top: 10px;">
+                        Run <strong>start_all_entities.bat</strong> or <strong>start_all_entities.ps1</strong> to start all entities at once!
+                    </p>
+                </div>
+                
+                <div style="background: #dbeafe; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3b82f6;">
+                    <p style="color: #1e40af; margin-bottom: 10px;"><strong>Step 3: Monitor in Dashboard</strong></p>
+                    <p style="color: #1e3a8a; font-size: 0.9em;">
+                        Once started, all entities will appear in the "Active Instances" panel above.
+                        The dashboard automatically scans ports ${start_port}-${port-1}.
+                    </p>
+                </div>
+                
+                <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="closeInstructionsModal()">
+                    ✅ Got it!
+                </button>
+            `;
+            
+            // Show in modal
+            const modal = document.getElementById('requestModal');
+            const modalBody = document.getElementById('modalBody');
+            modalBody.innerHTML = modalContent;
+            modal.style.display = 'block';
+        }
+
+        // Copy text to clipboard
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                addLog('Command copied to clipboard!', 'info');
+            }).catch(err => {
+                addLog('Failed to copy: ' + err.message, 'error');
+            });
+        }
+
+        // Close instructions modal
+        function closeInstructionsModal() {
+            document.getElementById('requestModal').style.display = 'none';
+            addLog('You can now run the generation command in your terminal', 'info');
+        }
+    </script>
+</body>
+</html>

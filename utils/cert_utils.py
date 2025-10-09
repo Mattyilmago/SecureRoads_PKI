@@ -107,10 +107,8 @@ def get_certificate_expiry_time(certificate: x509.Certificate) -> datetime:
     Returns:
         Expiration datetime in UTC
     """
-    expiry = certificate.not_valid_after
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
-    return expiry
+    # Use not_valid_after_utc (cryptography 39.0+) instead of deprecated not_valid_after
+    return certificate.not_valid_after_utc
 
 
 def get_certificate_not_before(certificate: x509.Certificate) -> datetime:
@@ -123,10 +121,8 @@ def get_certificate_not_before(certificate: x509.Certificate) -> datetime:
     Returns:
         Start datetime in UTC
     """
-    not_before = certificate.not_valid_before
-    if not_before.tzinfo is None:
-        not_before = not_before.replace(tzinfo=timezone.utc)
-    return not_before
+    # Use not_valid_before_utc (cryptography 39.0+) instead of deprecated not_valid_before
+    return certificate.not_valid_before_utc
 
 
 def format_certificate_info(certificate: x509.Certificate) -> str:

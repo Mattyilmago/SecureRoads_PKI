@@ -49,9 +49,9 @@ class EnrollmentAuthority:
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
         
-        # Inizializza logger
+        # Inizializza logger (ea_id contiene già il prefisso "EA_")
         self.logger = PKILogger.get_logger(
-            name=f"EA_{ea_id}",
+            name=ea_id,
             log_dir=self.log_dir,
             console_output=True
         )

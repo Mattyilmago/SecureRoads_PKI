@@ -1,0 +1,599 @@
+openapi: 3.0.3
+info:
+  title: SecureRoad PKI API
+  description: |
+    **Public Key Infrastructure (PKI) per sistemi ITS (Intelligent Transportation Systems)**
+    
+    Implementazione conforme agli standard ETSI TS 102941 e IEEE 1609.2 per la gestione
+    di certificati digitali e comunicazioni Vehicle-to-Everything (V2X).
+    
+    ## Autenticazione
+    
+    L'API supporta due modalità di autenticazione:
+    
+    ### 1. API Key (Endpoint pubblici)
+    Header: `X-API-Key: <your-api-key>`
+    
+    Usato per endpoint accessibili da ITS Stations (veicoli):
+    - `/api/enrollment/request`
+    - `/api/authorization/request`
+    - `/api/crl/*`
+    - `/api/trust-list/*`
+    
+    ### 2. mTLS - Mutual TLS (Endpoint inter-authority)
+    Certificato client X.509 richiesto nella connessione TLS.
+    
+    Usato per comunicazioni sicure tra autorità:
+    - `/api/enrollment/validation` (AA → EA)
+    - Altri endpoint interni
+    
+    ## Rate Limiting
+    
+    Tutti gli endpoint sono soggetti a rate limiting:
+    - **Default**: 100 richieste/minuto per IP
+    - **Endpoint critici**: 10 richieste/minuto
+    
+    Header di risposta:
+    - `X-RateLimit-Limit`: Limite massimo
+    - `X-RateLimit-Remaining`: Richieste rimanenti
+    - `X-RateLimit-Reset`: Timestamp reset contatore
+    
+    ## Standard di Riferimento
+    
+    - ETSI TS 102941: Security management
+    - ETSI TS 103097: Certificate and security management
+    - IEEE 1609.2: Security services for applications
+    
+  version: 1.0.0
+  contact:
+    name: SecureRoad PKI Team
+    url: https://github.com/Mattyilmago/SecureRoads_PKI
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:5000
+    description: Development server
+  - url: https://pki.secureroad.local
+    description: Production server
+
+tags:
+  - name: Sistema
+    description: Health check e info sistema
+  - name: Enrollment
+    description: Gestione Enrollment Certificates (EC)
+  - name: Authorization
+    description: Gestione Authorization Tickets (AT)
+  - name: CRL
+    description: Certificate Revocation Lists
+  - name: Trust List
+    description: Certificate Trust Lists (CTL)
+
+paths:
+  /:
+    get:
+      tags:
+        - Sistema
+      summary: Root endpoint
+      description: Informazioni API e link documentazione
+      responses:
+        '200':
+          description: API info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "SecureRoad PKI API"
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  endpoints:
+                    type: object
+
+  /health:
+    get:
+      tags:
+        - Sistema
+      summary: Health check
+      description: Stato di salute del server PKI
+      responses:
+        '200':
+          description: Server operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                  components:
+                    type: object
+                    properties:
+                      root_ca:
+                        type: string
+                        example: "operational"
+                      enrollment_authority:
+                        type: string
+                        example: "operational"
+                      authorization_authority:
+                        type: string
+                        example: "operational"
+
+  /api/enrollment/request/simple:
+    post:
+      tags:
+        - Enrollment
+      summary: "⚠️ [TESTING] Richiesta EC semplificata (JSON)"
+      description: |
+        **⚠️ SOLO PER TESTING - NON CONFORME ETSI TS 102941**
+        
+        Endpoint semplificato per testing manuale con Swagger UI.
+        Accetta JSON invece di ASN.1 OER binario.
+        
+        **Per produzione usare:** `POST /api/enrollment/request` (ASN.1 OER)
+        
+        **Flusso semplificato:**
+        1. Invia ITS ID + chiave pubblica PEM in JSON
+        2. EA genera e firma Enrollment Certificate
+        3. Ricevi certificato in formato PEM
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - its_id
+                - public_key
+              properties:
+                its_id:
+                  type: string
+                  description: Identificativo univoco ITS Station
+                  example: "VEHICLE_001"
+                public_key:
+                  type: string
+                  format: pem
+                  description: Chiave pubblica ECC in formato PEM
+                  example: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...\n-----END PUBLIC KEY-----\n"
+                requested_attributes:
+                  type: object
+                  description: Attributi opzionali del certificato
+                  properties:
+                    country:
+                      type: string
+                      example: "IT"
+                      default: "IT"
+                    organization:
+                      type: string
+                      example: "SecureRoad"
+                    validity_days:
+                      type: integer
+                      example: 365
+                      default: 365
+      responses:
+        '200':
+          description: Enrollment Certificate rilasciato
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Enrollment Certificate issued successfully"
+                  certificate:
+                    type: string
+                    format: pem
+                    description: Certificato in formato PEM
+                  certificate_info:
+                    type: object
+                    properties:
+                      serial_number:
+                        type: string
+                      subject:
+                        type: object
+                        properties:
+                          country:
+                            type: string
+                          organization:
+                            type: string
+                          common_name:
+                            type: string
+                      validity:
+                        type: object
+                        properties:
+                          not_before:
+                            type: string
+                            format: date-time
+                          not_after:
+                            type: string
+                            format: date-time
+                          days:
+                            type: integer
+                      issuer:
+                        type: string
+        '400':
+          description: Richiesta malformata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+        '401':
+          description: API key mancante o invalida
+        '415':
+          description: Content-Type non supportato (deve essere application/json)
+        '500':
+          description: Errore interno del server
+
+  /api/enrollment/request:
+    post:
+      tags:
+        - Enrollment
+      summary: Richiesta Enrollment Certificate (ETSI Standard)
+      description: |
+        ITS Station richiede un Enrollment Certificate (EC) all'Enrollment Authority.
+        
+        **✅ CONFORME ETSI TS 102941 Section 6.2.3.3**
+        
+        Usa codifica ASN.1 OER binaria. Per testing manuale usare `/api/enrollment/request/simple`
+        
+        **Flusso:**
+        1. ITS-S genera nuova coppia chiavi ECC
+        2. Crea richiesta con canonical ID + chiave pubblica
+        3. Firma richiesta (Proof of Possession)
+        4. Cifra con chiave pubblica EA
+        5. EA valida e rilascia EC
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: EtsiTs102941Data-Encrypted codificato in ASN.1 OER
+      responses:
+        '200':
+          description: EC rilasciato con successo
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: EtsiTs102941Data con InnerEcResponse (ASN.1 OER)
+        '400':
+          description: Richiesta malformata
+        '401':
+          description: API key mancante o invalida
+        '415':
+          description: Content-Type non supportato (deve essere application/octet-stream)
+        '429':
+          description: Rate limit exceeded
+
+  /api/enrollment/validation:
+    post:
+      tags:
+        - Enrollment
+      summary: Validazione richiesta authorization (AA → EA)
+      description: |
+        Authorization Authority chiede all'Enrollment Authority di validare
+        una richiesta di Authorization Ticket.
+        
+        Conforme a ETSI TS 102941 Section 6.2.3.4 (Authorization Validation Protocol).
+        
+        **Richiede autenticazione mTLS** - Solo AA autorizzate
+      security:
+        - MutualTLS: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - shared_at_request
+                - ec_signature
+              properties:
+                shared_at_request:
+                  type: object
+                  description: Componenti estratti dalla richiesta AT
+                ec_signature:
+                  type: string
+                  description: Firma della richiesta con EC
+      responses:
+        '200':
+          description: Validazione completata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response_code:
+                    type: integer
+                    example: 0
+                  confirmed_attributes:
+                    type: object
+        '401':
+          description: Certificato client mTLS mancante
+        '403':
+          description: Certificato client invalido o autorità non autorizzata
+
+  /api/authorization/request:
+    post:
+      tags:
+        - Authorization
+      summary: Richiesta Authorization Ticket
+      description: |
+        ITS Station richiede Authorization Ticket (AT) per firmare messaggi V2X.
+        
+        Conforme a ETSI TS 102941 Section 6.2.3.3.1 (Authorization Request).
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enrollment_certificate
+                - public_key
+                - requested_permissions
+              properties:
+                enrollment_certificate:
+                  type: string
+                  description: EC ricevuto da EA (PEM)
+                public_key:
+                  type: string
+                  description: Nuova chiave pubblica per AT
+                requested_permissions:
+                  type: object
+                  properties:
+                    app_permissions:
+                      type: array
+                      items:
+                        type: string
+                      example: ["CAM", "DENM"]
+      responses:
+        '200':
+          description: AT rilasciato
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response_code:
+                    type: integer
+                    example: 0
+                  authorization_ticket:
+                    type: string
+                    description: AT in formato PEM
+
+  /api/authorization/request/butterfly:
+    post:
+      tags:
+        - Authorization
+      summary: Richiesta Butterfly AT batch
+      description: |
+        Richiesta batch di Authorization Tickets tramite Butterfly Key Expansion.
+        
+        Conforme a IEEE 1609.2.1 Butterfly Key Mechanism.
+        
+        Più efficiente per veicoli che necessitano molti AT pseudonimi.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enrollment_certificate
+                - caterpillar_public_key
+                - batch_size
+              properties:
+                enrollment_certificate:
+                  type: string
+                caterpillar_public_key:
+                  type: string
+                  description: Caterpillar key per expansion
+                batch_size:
+                  type: integer
+                  example: 20
+                  description: Numero AT da generare (max 100)
+      responses:
+        '200':
+          description: Batch preparato
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response_code:
+                    type: integer
+                  batch_id:
+                    type: string
+                  download_time:
+                    type: string
+                    format: date-time
+
+  /api/crl/full:
+    get:
+      tags:
+        - CRL
+      summary: Download Full CRL
+      description: |
+        Scarica la Certificate Revocation List completa.
+        
+        Contiene tutti i certificati revocati attualmente validi.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Full CRL
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+                format: binary
+
+  /api/crl/delta:
+    get:
+      tags:
+        - CRL
+      summary: Download Delta CRL
+      description: |
+        Scarica la Delta CRL (modifiche incrementali dall'ultima Full CRL).
+        
+        Più efficiente per ITS Stations che aggiornano frequentemente.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: base_crl_number
+          in: query
+          schema:
+            type: integer
+          description: Numero Full CRL di riferimento
+      responses:
+        '200':
+          description: Delta CRL
+          content:
+            application/x-pem-file:
+              schema:
+                type: string
+                format: binary
+
+  /api/trust-list/full:
+    get:
+      tags:
+        - Trust List
+      summary: Download Full CTL
+      description: |
+        Scarica la Certificate Trust List completa (tutti i trust anchors).
+        
+        Conforme a ETSI TS 102941 Section 6.3.4.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Full CTL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                  ctl_sequence:
+                    type: integer
+                  is_full_ctl:
+                    type: boolean
+                    example: true
+                  next_update:
+                    type: string
+                    format: date-time
+                  trust_anchors:
+                    type: array
+                    items:
+                      type: object
+
+  /api/trust-list/delta:
+    get:
+      tags:
+        - Trust List
+      summary: Download Delta CTL
+      description: Modifiche incrementali alla Certificate Trust List
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: base_ctl_number
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Delta CTL
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key per autenticazione endpoint pubblici.
+        
+        Ottenere chiave dall'amministratore PKI.
+    
+    MutualTLS:
+      type: mutualTLS
+      description: |
+        Autenticazione mTLS per endpoint inter-authority.
+        
+        Richiede certificato client X.509 firmato dal Root CA:
+        - Common Name contenente ruolo (EA/AA)
+        - Certificato valido e non revocato
+        - Catena di fiducia verificabile fino a Root CA
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Codice errore
+        message:
+          type: string
+          description: Descrizione errore
+        timestamp:
+          type: string
+          format: date-time
+      example:
+        error: "invalid_certificate"
+        message: "Certificato client scaduto"
+        timestamp: "2025-10-09T12:34:56Z"
+
+  responses:
+    Unauthorized:
+      description: Autenticazione fallita
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    
+    Forbidden:
+      description: Accesso negato
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    
+    RateLimitExceeded:
+      description: Troppe richieste
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "rate_limit_exceeded"
+            message: "Limite di 100 richieste/minuto superato"

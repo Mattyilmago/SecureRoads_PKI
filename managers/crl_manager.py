@@ -130,6 +130,27 @@ class CRLManager:
         )
         self.logger.info(f"Revoche delta pending: {len(self.delta_revocations)}")
 
+    def is_certificate_revoked(self, serial_number):
+        """
+        Verifica se un certificato è stato revocato.
+        
+        Args:
+            serial_number: Serial number del certificato da verificare (int)
+            
+        Returns:
+            bool: True se il certificato è revocato, False altrimenti
+        """
+        # Converti hex string a int se necessario
+        if isinstance(serial_number, str):
+            serial_number = int(serial_number, 16)
+        
+        # Cerca nella lista dei certificati revocati
+        for entry in self.revoked_certificates:
+            if entry.get("serial_number") == serial_number:
+                return True
+        
+        return False
+
     def revoke_by_serial(self, serial_number, reason=ReasonFlags.unspecified):
         """
         Revoca un certificato usando solo il serial number (senza certificato completo).

@@ -64,3 +64,22 @@ docs/
 *.tmp
 test_*.py
 !tests/test_*.py
+
+# Security - NEVER commit these!
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+*_key.pem
+*_cert.pem
+private_key.pem
+config.json
+.env
+.env.*
+secrets/
+ssl/
+certs/
+*.der
+*.bin

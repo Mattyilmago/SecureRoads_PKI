@@ -152,7 +152,10 @@ class InnerEcRequestSignedForPop:
             return True
         except InvalidSignature:
             return False
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as e:
+            # Log unexpected errors for debugging
+            import logging
+            logging.getLogger(__name__).error(f"Unexpected error in signature verification: {e}")
             return False
 
 

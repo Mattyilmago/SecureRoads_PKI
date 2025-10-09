@@ -10,6 +10,8 @@ Usage:
 
 import argparse
 import json
+import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -60,13 +62,77 @@ def load_config(config_path=None):
     return config
 
 
-def create_entity(entity_type, entity_id=None):
+def find_existing_entities(entity_type, base_dir="./data"):
+    """
+    Trova tutte le entità esistenti di un determinato tipo scansionando la directory.
+    
+    Args:
+        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
+        base_dir: Directory base dove cercare
+        
+    Returns:
+        List di ID esistenti (es. ['EA_001', 'EA_002', 'EA_FOR_AA_001'])
+    """
+    entity_type_lower = entity_type.lower()
+    entity_dir = os.path.join(base_dir, entity_type_lower)
+    
+    if not os.path.exists(entity_dir):
+        return []
+    
+    existing = []
+    for item in os.listdir(entity_dir):
+        item_path = os.path.join(entity_dir, item)
+        if os.path.isdir(item_path) and item.startswith(entity_type):
+            existing.append(item)
+    
+    return existing
+
+
+def find_next_available_id(entity_type, base_dir="./data"):
+    """
+    Trova il prossimo ID numerico disponibile per un'entità.
+    
+    Args:
+        entity_type: 'EA', 'AA', 'TLM'
+        base_dir: Directory base dove cercare
+        
+    Returns:
+        String con il prossimo ID disponibile (es. 'EA_003')
+    """
+    existing = find_existing_entities(entity_type, base_dir)
+    
+    # Estrai i numeri dalle entità esistenti (solo quelle con pattern TIPO_NNN)
+    numbers = []
+    pattern = re.compile(rf'^{entity_type}_(\d{{3}})$')
+    
+    for entity_id in existing:
+        match = pattern.match(entity_id)
+        if match:
+            numbers.append(int(match.group(1)))
+    
+    # Trova il prossimo numero disponibile
+    if not numbers:
+        next_num = 1
+    else:
+        # Trova il primo buco nella sequenza, o usa max+1
+        numbers.sort()
+        next_num = None
+        for i in range(1, numbers[-1] + 2):
+            if i not in numbers:
+                next_num = i
+                break
+    
+    return f"{entity_type}_{next_num:03d}"
+
+
+def create_entity(entity_type, entity_id=None, ea_id=None):
     """
     Create PKI entity instance
 
     Args:
         entity_type: 'EA', 'AA', 'TLM', or 'RootCA'
         entity_id: Optional entity identifier
+        ea_id: Optional EA identifier (only for AA type)
 
     Returns:
         Entity instance
@@ -77,30 +143,89 @@ def create_entity(entity_type, entity_id=None):
 
     if entity_type == "RootCA":
         entity_id = entity_id or "RootCA"
-        entity = RootCA(entity_id, base_dir="data/root_ca")
+        entity = RootCA(base_dir="data/root_ca")
 
     elif entity_type == "EA":
-        entity_id = entity_id or "EA_001"
-        root_ca = RootCA("RootCA", base_dir="data/root_ca")
+        # Se non specificato, trova automaticamente il prossimo ID disponibile
+        if not entity_id:
+            entity_id = find_next_available_id("EA")
+            print(f"📝 Auto-assigned ID: {entity_id}")
+            existing = find_existing_entities("EA")
+            if existing:
+                print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
+        
+        root_ca = RootCA(base_dir="data/root_ca")
         entity = EnrollmentAuthority(root_ca, ea_id=entity_id)
 
     elif entity_type == "AA":
-        entity_id = entity_id or "AA_001"
-        root_ca = RootCA("RootCA", base_dir="data/root_ca")
+        # Se non specificato, trova automaticamente il prossimo ID disponibile
+        if not entity_id:
+            entity_id = find_next_available_id("AA")
+            print(f"📝 Auto-assigned ID: {entity_id}")
+            existing = find_existing_entities("AA")
+            if existing:
+                print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
+        
+        root_ca = RootCA(base_dir="data/root_ca")
 
         # Initialize TLM with EA trust anchor
-        print("Initializing TLM for AA...")
-        ea = EnrollmentAuthority(root_ca, ea_id="EA_001")
+        if ea_id:
+            # Usa EA esistente specificata
+            print(f"🔗 Using existing EA '{ea_id}' for {entity_id}...")
+            ea = EnrollmentAuthority(root_ca, ea_id=ea_id)
+            print(f"✅ EA '{ea_id}' loaded")
+        else:
+            # Trova automaticamente un'EA libera o creane una nuova
+            print(f"🔍 Looking for available EA for {entity_id}...")
+            
+            # Cerca EA standalone già esistenti (non usate da altre AA)
+            existing_eas = find_existing_entities("EA")
+            existing_aas = find_existing_entities("AA")
+            
+            # Filtra EA che non sono già associate ad altre AA
+            used_ea_ids = set()
+            for aa_id in existing_aas:
+                if aa_id != entity_id:  # Esclude l'AA corrente se sta reinizializzando
+                    # Pattern: EA_FOR_AA_XXX
+                    potential_ea = f"EA_FOR_{aa_id}"
+                    if potential_ea in existing_eas:
+                        used_ea_ids.add(potential_ea)
+            
+            # Cerca EA standalone disponibili (pattern EA_NNN)
+            available_standalone = [ea for ea in existing_eas 
+                                   if re.match(r'^EA_\d{3}$', ea) and ea not in used_ea_ids]
+            
+            if available_standalone:
+                # Usa la prima EA standalone disponibile
+                ea_id_to_use = sorted(available_standalone)[0]
+                print(f"♻️  Reusing standalone EA '{ea_id_to_use}'")
+                ea = EnrollmentAuthority(root_ca, ea_id=ea_id_to_use)
+            else:
+                # Crea una nuova EA dedicata
+                ea_id_for_aa = f"EA_FOR_{entity_id}"
+                print(f"🆕 Creating dedicated EA '{ea_id_for_aa}'...")
+                ea = EnrollmentAuthority(root_ca, ea_id=ea_id_for_aa)
+                print(f"✅ Dedicated EA '{ea_id_for_aa}' created")
 
-        tlm = TrustListManager("TLM_001")
+        print("Initializing TLM for AA...")
+        tlm_id = f"TLM_FOR_{entity_id}"
+        tlm = TrustListManager(root_ca, base_dir=f"./data/tlm/{tlm_id}/")
         tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-        print(f"✅ TLM initialized with {len(tlm.trust_anchors)} trust anchor(s)")
+        print(f"✅ TLM '{tlm_id}' initialized with {len(tlm.trust_anchors)} trust anchor(s)")
 
         entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_id)
 
     elif entity_type == "TLM":
-        entity_id = entity_id or "TLM_001"
-        entity = TrustListManager(entity_id)
+        # Se non specificato, trova automaticamente il prossimo ID disponibile
+        if not entity_id:
+            entity_id = find_next_available_id("TLM")
+            print(f"📝 Auto-assigned ID: {entity_id}")
+            existing = find_existing_entities("TLM")
+            if existing:
+                print(f"ℹ️  Existing TLM instances: {', '.join(sorted(existing))}")
+        
+        root_ca = RootCA(base_dir="data/root_ca")
+        entity = TrustListManager(root_ca, base_dir=f"./data/tlm/{entity_id}/")
 
     else:
         raise ValueError(f"Unknown entity type: {entity_type}")
@@ -167,20 +292,35 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Start servers
   python start_production_server.py --entity EA
   python start_production_server.py --entity AA --port 5002 --config prod.json
   python start_production_server.py --entity TLM --id TLM_MAIN --host 0.0.0.0
+  
+  # Generate secure API key
+  python start_production_server.py --generate-key
         """,
     )
 
     parser.add_argument(
         "--entity",
-        required=True,
         choices=["EA", "AA", "TLM", "RootCA"],
         help="Entity type to run (EA, AA, TLM, RootCA)",
     )
+    
+    parser.add_argument(
+        "--generate-key",
+        action="store_true",
+        help="Generate a secure API key and exit",
+    )
 
     parser.add_argument("--id", type=str, help="Entity identifier (default: auto-generated)")
+
+    parser.add_argument(
+        "--ea-id", 
+        type=str, 
+        help="EA identifier to use for AA initialization (default: creates dedicated EA_FOR_{AA_ID})"
+    )
 
     parser.add_argument("--config", type=str, help="Path to JSON configuration file")
 
@@ -193,6 +333,15 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # Handle --generate-key flag
+    if args.generate_key:
+        generate_api_key()
+        sys.exit(0)
+    
+    # Validate --entity is required if not generating key
+    if not args.entity:
+        parser.error("--entity is required unless using --generate-key")
 
     # Load configuration
     config = load_config(args.config)
@@ -208,7 +357,7 @@ Examples:
 
     try:
         # Create entity
-        entity = create_entity(args.entity, args.id)
+        entity = create_entity(args.entity, args.id, ea_id=args.ea_id)
 
         # Create Flask app
         app = create_app(args.entity, entity, config)
@@ -246,6 +395,20 @@ Examples:
 
         traceback.print_exc()
         sys.exit(1)
+
+
+def generate_api_key():
+    """Generate a secure API key and print it"""
+    api_key = secrets.token_urlsafe(32)
+    print("\n" + "="*70)
+    print("🔑 SECURE API KEY GENERATED")
+    print("="*70)
+    print(f"\n{api_key}\n")
+    print("⚠️  SAVE THIS KEY SECURELY!")
+    print("   Add it to your config.json:")
+    print('   {"api_keys": ["' + api_key + '"]}\n')
+    print("="*70 + "\n")
+    return api_key
 
 
 if __name__ == "__main__":

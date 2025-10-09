@@ -10,10 +10,12 @@ Date: October 2025
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
+from flask_swagger_ui import get_swaggerui_blueprint
 
 
 def create_app(
@@ -43,16 +45,23 @@ def create_app(
     default_config = {
         "secret_key": "dev-secret-key-CHANGE-IN-PRODUCTION",
         "api_keys": [],
-        "cors_origins": ["http://localhost:3000"],
+        "cors_origins": "*",  # "*" for dev, list of domains for production
         "rate_limit": "100 per hour",
         "log_level": "INFO",
         "max_content_length": 10 * 1024 * 1024,  # 10MB
+        "environment": "development",  # "development" or "production"
     }
 
     # Merge with user config
     if config:
         default_config.update(config)
 
+    # Determine CORS configuration based on environment
+    cors_origins = default_config["cors_origins"]
+    if default_config["environment"] == "production" and cors_origins == "*":
+        # In production, if still using "*", log a warning
+        app.logger.warning("⚠️  SECURITY: CORS set to '*' in production! Specify allowed domains.")
+    
     # Apply Flask configuration
     app.config.update(
         {
@@ -62,11 +71,18 @@ def create_app(
             "ENTITY_TYPE": entity_type,
             "ENTITY_ID": getattr(entity_instance, f"{entity_type.lower()}_id", "unknown"),
             "API_KEYS": default_config["api_keys"],
+            "ENVIRONMENT": default_config["environment"],
         }
     )
 
-    # Setup CORS
-    CORS(app, origins=default_config["cors_origins"])
+    # Setup CORS with environment-aware configuration
+    CORS(
+        app,
+        resources={r"/*": {"origins": cors_origins}},
+        allow_headers=["Content-Type", "X-API-Key", "Authorization"],
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        supports_credentials=True
+    )
 
     # Setup logging
     level = getattr(logging, default_config["log_level"].upper(), logging.INFO)
@@ -81,6 +97,43 @@ def create_app(
 
     # Store entity instance in app config
     app.config["ENTITY_INSTANCE"] = entity_instance
+    
+    # Setup monitoring middleware
+    from .middleware.monitoring import setup_monitoring
+    setup_monitoring(app)
+
+    # Configure Swagger UI
+    SWAGGER_URL = '/api/docs'
+    API_URL = '/api/openapi.yaml'
+    
+    # Swagger UI blueprint
+    swaggerui_blueprint = get_swaggerui_blueprint(
+        SWAGGER_URL,
+        API_URL,
+        config={
+            'app_name': f"{entity_type} PKI API",
+            'defaultModelsExpandDepth': -1,  # Hide schemas section by default
+            'displayRequestDuration': True,
+            'docExpansion': 'list',  # Expand operations list
+            'filter': True,  # Enable search filter
+            'showExtensions': True,
+            'showCommonExtensions': True,
+            'tryItOutEnabled': True
+        }
+    )
+    app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
+    
+    # Serve OpenAPI spec
+    @app.route('/api/openapi.yaml')
+    def openapi_spec():
+        """Serve the OpenAPI specification file"""
+        spec_path = os.path.join(os.path.dirname(__file__), 'openapi_spec.yaml')
+        if os.path.exists(spec_path):
+            return send_file(spec_path, mimetype='text/yaml')
+        else:
+            return jsonify({'error': 'OpenAPI spec not found'}), 404
+    
+    app.logger.info(f"Swagger UI available at: {SWAGGER_URL}")
 
     # Root endpoint
     @app.route("/")
@@ -93,6 +146,10 @@ def create_app(
                 "encoding": "ASN.1 OER",
                 "entity_type": entity_type,
                 "entity_id": app.config["ENTITY_ID"],
+                "documentation": {
+                    "swagger_ui": SWAGGER_URL,
+                    "openapi_spec": API_URL
+                },
                 "endpoints": get_available_endpoints(entity_type),
             }
         )
@@ -116,18 +173,24 @@ def create_app(
         try:
             from .blueprints.crl_bp import create_crl_blueprint
             from .blueprints.enrollment_bp import create_enrollment_blueprint
+            from .blueprints.enrollment_simple_bp import create_simple_enrollment_blueprint
 
             enrollment_bp = create_enrollment_blueprint(entity_instance)
-            app.register_blueprint(enrollment_bp, url_prefix="/enrollment")
+            app.register_blueprint(enrollment_bp, url_prefix="/api/enrollment")
+
+            # Simplified JSON endpoint for testing (NOT ETSI compliant)
+            enrollment_simple_bp = create_simple_enrollment_blueprint(entity_instance)
+            app.register_blueprint(enrollment_simple_bp, url_prefix="/api/enrollment")
 
             crl_bp = create_crl_blueprint(entity_instance)
-            app.register_blueprint(crl_bp, url_prefix="/crl")
+            app.register_blueprint(crl_bp, url_prefix="/api/crl")
 
             app.logger.info("Registered EA endpoints:")
-            app.logger.info("  POST /enrollment/request")
-            app.logger.info("  POST /enrollment/validation")
-            app.logger.info("  GET  /crl/full")
-            app.logger.info("  GET  /crl/delta")
+            app.logger.info("  POST /api/enrollment/request (ETSI ASN.1 OER)")
+            app.logger.info("  POST /api/enrollment/request/simple (JSON - TESTING ONLY)")
+            app.logger.info("  POST /api/enrollment/validation")
+            app.logger.info("  GET  /api/crl/full")
+            app.logger.info("  GET  /api/crl/delta")
         except ImportError as e:
             app.logger.warning(f"Could not import blueprints: {e}")
 
@@ -142,16 +205,16 @@ def create_app(
                 app.logger.error("create_authorization_blueprint returned None!")
                 raise ValueError("Failed to create authorization blueprint")
 
-            app.register_blueprint(authorization_bp, url_prefix="/authorization")
+            app.register_blueprint(authorization_bp, url_prefix="/api/authorization")
 
             crl_bp = create_crl_blueprint(entity_instance)
-            app.register_blueprint(crl_bp, url_prefix="/crl")
+            app.register_blueprint(crl_bp, url_prefix="/api/crl")
 
             app.logger.info("Registered AA endpoints:")
-            app.logger.info("  POST /authorization/request")
-            app.logger.info("  POST /authorization/request/butterfly")
-            app.logger.info("  GET  /crl/full")
-            app.logger.info("  GET  /crl/delta")
+            app.logger.info("  POST /api/authorization/request")
+            app.logger.info("  POST /api/authorization/request/butterfly")
+            app.logger.info("  GET  /api/crl/full")
+            app.logger.info("  GET  /api/crl/delta")
         except Exception as e:
             app.logger.error(f"Error registering AA blueprints: {e}")
             import traceback
@@ -164,13 +227,29 @@ def create_app(
             from .blueprints.trust_list_bp import create_trust_list_blueprint
 
             tlm_bp = create_trust_list_blueprint(entity_instance)
-            app.register_blueprint(tlm_bp, url_prefix="/ctl")
+            app.register_blueprint(tlm_bp, url_prefix="/api/trust-list")
 
             app.logger.info("Registered TLM endpoints:")
-            app.logger.info("  GET /ctl/full")
-            app.logger.info("  GET /ctl/delta")
+            app.logger.info("  GET /api/trust-list/full")
+            app.logger.info("  GET /api/trust-list/delta")
         except ImportError as e:
             app.logger.warning(f"Could not import blueprints: {e}")
+    
+    # Register monitoring blueprint (available for all entity types)
+    try:
+        from .blueprints.monitoring_bp import monitoring_bp
+        app.register_blueprint(monitoring_bp, url_prefix="/api/monitoring")
+        
+        app.logger.info("Registered monitoring endpoints:")
+        app.logger.info("  GET /api/monitoring/metrics")
+        app.logger.info("  GET /api/monitoring/metrics/prometheus")
+        app.logger.info("  GET /api/monitoring/metrics/errors")
+        app.logger.info("  GET /api/monitoring/metrics/slowest")
+        app.logger.info("  GET /api/monitoring/health")
+        app.logger.info("  GET /api/monitoring/health/ready")
+        app.logger.info("  GET /api/monitoring/health/live")
+    except ImportError as e:
+        app.logger.warning(f"Could not import monitoring blueprint: {e}")
 
     # Global error handlers
     @app.errorhandler(400)
@@ -237,18 +316,19 @@ def get_available_endpoints(entity_type: str) -> list:
     """Get list of available endpoints for entity type"""
     endpoints = {
         "EA": [
-            "POST /enrollment/request",
-            "POST /enrollment/validation",
-            "GET /crl/full",
-            "GET /crl/delta",
+            "POST /api/enrollment/request (ETSI ASN.1 OER)",
+            "POST /api/enrollment/request/simple (JSON - Testing only)",
+            "POST /api/enrollment/validation",
+            "GET /api/crl/full",
+            "GET /api/crl/delta",
         ],
         "AA": [
-            "POST /authorization/request",
-            "POST /authorization/request/butterfly",
-            "GET /crl/full",
-            "GET /crl/delta",
+            "POST /api/authorization/request",
+            "POST /api/authorization/request/butterfly",
+            "GET /api/crl/full",
+            "GET /api/crl/delta",
         ],
-        "TLM": ["GET /ctl/full", "GET /ctl/delta"],
-        "RootCA": ["GET /crl/full", "GET /crl/delta"],
+        "TLM": ["GET /api/trust-list/full", "GET /api/trust-list/delta"],
+        "RootCA": ["GET /api/crl/full", "GET /api/crl/delta"],
     }
     return endpoints.get(entity_type, [])

@@ -10,6 +10,10 @@ Key Features:
 - Complete enrollment and authorization flow
 
 Usage:
+    # Set API keys as environment variables
+    export EA_API_KEY="your-ea-key"
+    export AA_API_KEY="your-aa-key"
+    
     python examples/api_client_example.py
 
 Author: SecureRoad PKI Project
@@ -62,9 +66,14 @@ def example_enrollment_flow():
     """Example: Complete enrollment flow"""
     print_section("Example 1: Enrollment Flow")
     
-    # Configuration
-    EA_BASE_URL = "http://localhost:5001"
-    EA_API_KEY = "ea-secret-key-12345"
+    # Configuration - Use environment variables for security
+    EA_BASE_URL = os.getenv("EA_BASE_URL", "http://localhost:5001")
+    EA_API_KEY = os.getenv("EA_API_KEY")
+    
+    if not EA_API_KEY:
+        print("⚠️  ERROR: EA_API_KEY environment variable not set!")
+        print("   Set it with: export EA_API_KEY='your-key'")
+        return
     
     print("🔧 Configuration:")
     print(f"   EA Server: {EA_BASE_URL}")
@@ -127,9 +136,14 @@ def example_authorization_flow():
     """Example: Authorization flow with enrollment certificate"""
     print_section("Example 2: Authorization Flow")
     
-    # Configuration
-    AA_BASE_URL = "http://localhost:5002"
-    AA_API_KEY = "aa-secret-key-67890"
+    # Configuration - Use environment variables for security
+    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5002")
+    AA_API_KEY = os.getenv("AA_API_KEY")
+    
+    if not AA_API_KEY:
+        print("⚠️  ERROR: AA_API_KEY environment variable not set!")
+        print("   Set it with: export AA_API_KEY='your-key'")
+        return
     
     print("🔧 Configuration:")
     print(f"   AA Server: {AA_BASE_URL}")
@@ -183,8 +197,12 @@ def example_butterfly_authorization():
     """Example: Butterfly authorization (batch)"""
     print_section("Example 3: Butterfly Authorization (Batch)")
     
-    AA_BASE_URL = "http://localhost:5002"
-    AA_API_KEY = "aa-secret-key-67890"
+    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5002")
+    AA_API_KEY = os.getenv("AA_API_KEY")
+    
+    if not AA_API_KEY:
+        print("⚠️  ERROR: AA_API_KEY environment variable not set!")
+        return
     
     print("🔧 Configuration:")
     print(f"   AA Server: {AA_BASE_URL}")
