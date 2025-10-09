@@ -371,8 +371,8 @@ def create_enrollment_blueprint(ea_instance):
             confirmed_attrs = {
                 "subject": str(certificate.subject),
                 "serial_number": certificate.serial_number,
-                "not_valid_before": certificate.not_valid_before_utc.isoformat(),
-                "not_valid_after": certificate.not_valid_after_utc.isoformat(),
+                "not_valid_before": certificate.not_valid_before.isoformat(),
+                "not_valid_after": certificate.not_valid_after.isoformat(),
             }
 
             current_app.logger.info("✓ Certificate validated successfully")

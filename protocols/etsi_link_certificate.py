@@ -16,7 +16,7 @@ ASN.1 Schema:
         expiryTime Time32,
         ...
     }
-    
+
     LinkCertificate ::= SEQUENCE {
         content ToBeSignedLinkCertificate,
         signature Signature
@@ -83,18 +83,18 @@ class ETSILinkCertificateEncoder:
         """
         # Epoch ETSI = 2004-01-01 00:00:00 UTC
         etsi_epoch = datetime(2004, 1, 1, tzinfo=timezone.utc)
-        
+
         # Assicura timezone-aware
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        
+
         delta = dt - etsi_epoch
         time32 = int(delta.total_seconds())
-        
+
         # Verifica range valido
         if time32 < 0 or time32 > 0xFFFFFFFF:
             raise ValueError(f"Time32 out of range: {time32}")
-        
+
         return time32
 
     @staticmethod
@@ -109,7 +109,7 @@ class ETSILinkCertificateEncoder:
             datetime: Datetime corrispondente
         """
         from datetime import timedelta
-        
+
         etsi_epoch = datetime(2004, 1, 1, tzinfo=timezone.utc)
         return etsi_epoch + timedelta(seconds=time32)
 

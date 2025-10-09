@@ -1,16 +1,11 @@
 """
-Production Server Launcher for SecureRoad PKI
+Production Server Launcher for SecureRoad PKI.
 
-ETSI TS 102941 Compliant REST API Server
-Supports: EA, AA, TLM, RootCA
+ETSI TS 102941 compliant REST API server supporting EA, AA, TLM, and RootCA entities.
 
 Usage:
     python start_production_server.py --entity EA --config config.json
     python start_production_server.py --entity AA --port 5002
-    python start_production_server.py --help
-
-Author: SecureRoad PKI Project
-Date: October 2025
 """
 
 import argparse

@@ -13,6 +13,7 @@ from cryptography.x509 import ReasonFlags
 from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
+from utils.pki_io import PKIFileHandler
 
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
@@ -94,9 +95,8 @@ class AuthorizationAuthority:
         if self.ea_certificate_path:
             dirs_to_create.append(os.path.dirname(self.ea_certificate_path))
 
-        for d in dirs_to_create:
-            os.makedirs(d, exist_ok=True)
-            print(f"[AA] Directory creata o già esistente: {d}")
+        PKIFileHandler.ensure_directories(*dirs_to_create)
+        print(f"[AA] Directory create o già esistenti: {len(dirs_to_create)} cartelle")
 
         self.load_or_generate_aa()
 
@@ -141,7 +141,7 @@ class AuthorizationAuthority:
             f.write(
                 self.private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
@@ -166,22 +166,17 @@ class AuthorizationAuthority:
     # Carica la chiave privata ECC dal file PEM
     def load_aa_keypair(self):
         print("[AA] Caricamento chiave privata AA da file...")
-        with open(self.aa_key_path, "rb") as f:
-            self.private_key = serialization.load_pem_private_key(f.read(), password=None)
+        self.private_key = PKIFileHandler.load_private_key(self.aa_key_path)
         print("[AA] Chiave privata AA caricata.")
 
-    # Carica il certificato AA dal file PEM
     def load_aa_certificate(self):
         print("[AA] Caricamento certificato AA da file...")
-        with open(self.aa_certificate_path, "rb") as f:
-            self.certificate = x509.load_pem_x509_certificate(f.read())
+        self.certificate = PKIFileHandler.load_certificate(self.aa_certificate_path)
         print("[AA] Certificato AA caricato.")
 
-    # Carica il certificato EA dal file PEM
     def load_ea_certificate(self):
         print("[AA] Caricamento certificato EA da file...")
-        with open(self.ea_certificate_path, "rb") as f:
-            self.ea_certificate = x509.load_pem_x509_certificate(f.read())
+        self.ea_certificate = PKIFileHandler.load_certificate(self.ea_certificate_path)
         print("[AA] Certificato EA caricato.")
 
     # Processa richiesta per AT con un EC di un ITS-S
@@ -217,10 +212,8 @@ class AuthorizationAuthority:
                 raise ValueError("Authorization Authority non configurata correttamente")
 
             # === VERIFICA SCADENZA ===
-            ec_expiry = ec_certificate.not_valid_after
-            # Rendi ec_expiry timezone-aware se necessario
-            if ec_expiry.tzinfo is None:
-                ec_expiry = ec_expiry.replace(tzinfo=timezone.utc)
+            ec_expiry = ec_certificate.not_valid_after_utc
+            # not_valid_after_utc is already timezone-aware
             if ec_expiry < datetime.now(timezone.utc):
                 print("[AA] [ERROR] EC scaduto.")
                 return None
@@ -275,7 +268,7 @@ class AuthorizationAuthority:
         print(f"[AA] ITS-S: {its_id}")
         print(f"[AA] Identificatore SKI: {cert_ski}")
         print(f"[AA] Serial: {certificate.serial_number}")
-        print(f"[AA] Validità: {certificate.not_valid_before} → {certificate.not_valid_after}")
+        print(f"[AA] Validità: {certificate.not_valid_before_utc} → {certificate.not_valid_after_utc}")
         print(f"[AA] File: {at_filename}")
         print(f"[AA] Path: {at_path}")
 
@@ -286,6 +279,73 @@ class AuthorizationAuthority:
         print(f"[AA] Authorization Ticket salvato con successo!")
         print(f"[AA] ========================================")
         return certificate
+
+    def issue_authorization_ticket_batch(self, its_id, public_keys, attributes=None):
+        """
+        Emette un batch di Authorization Tickets per un veicolo ITS-S.
+
+        Args:
+            its_id: ID del veicolo ITS-S (string) o SharedAtRequest object
+            public_keys: Lista di chiavi pubbliche per gli AT o lista di InnerAtRequest
+            attributes: Attributi opzionali o enrollment certificate
+
+        Returns:
+            Lista di certificati AT generati
+        """
+        # Se its_id è un oggetto SharedAtRequest, converti
+        if hasattr(its_id, "eaId"):
+            shared_request = its_id
+            inner_requests = public_keys
+            # Converti eaId in stringa (hex se bytes, altrimenti string)
+            if isinstance(shared_request.eaId, bytes):
+                its_id_str = f"Vehicle_{shared_request.eaId.hex()}"
+            else:
+                its_id_str = f"Vehicle_{shared_request.eaId}"
+            # Estrai le chiavi pubbliche dagli InnerAtRequest
+            extracted_keys = []
+            for req in inner_requests:
+                if hasattr(req, "publicKeys"):
+                    pk = req.publicKeys
+                    if isinstance(pk, dict):
+                        # publicKeys è un dict, prendi il primo valore
+                        for key in pk.values():
+                            # La chiave può essere bytes o già un oggetto chiave pubblica
+                            if isinstance(key, bytes):
+                                # Prova a convertire bytes in chiave pubblica EC
+                                try:
+                                    from cryptography.hazmat.primitives.serialization import (
+                                        load_der_public_key,
+                                    )
+
+                                    public_key = load_der_public_key(key)
+                                    extracted_keys.append(public_key)
+                                except Exception:
+                                    # Se fallisce la deserializzazione, usa i bytes direttamente
+                                    extracted_keys.append(key)
+                            else:
+                                # È già un oggetto chiave pubblica
+                                extracted_keys.append(key)
+                            break  # Una chiave per request
+                    else:
+                        # publicKeys è direttamente una chiave pubblica
+                        extracted_keys.append(pk)
+            public_keys = extracted_keys if extracted_keys else public_keys
+        else:
+            its_id_str = its_id
+
+        print(f"[AA] Emissione batch di {len(public_keys)} Authorization Tickets per {its_id_str}")
+
+        if not public_keys or len(public_keys) == 0:
+            raise RuntimeError("Batch vuoto: almeno una chiave pubblica richiesta")
+
+        certificates = []
+        for idx, public_key in enumerate(public_keys):
+            print(f"[AA] Generando AT {idx+1}/{len(public_keys)}...")
+            cert = self.issue_authorization_ticket(its_id_str, public_key, attributes)
+            certificates.append(cert)
+
+        print(f"[AA] Batch di {len(certificates)} AT emessi con successo!")
+        return certificates
 
     # Aggiunge un certificato alla lista degli AT revocati
     def revoke_authorization_ticket(self, certificate, reason=ReasonFlags.unspecified):
@@ -298,7 +358,7 @@ class AuthorizationAuthority:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after
+        expiry_date = certificate.not_valid_after_utc
 
         print(f"[AA] Revocando Authorization Ticket con serial: {serial_number}")
         print(f"[AA] Data di scadenza certificato: {expiry_date}")

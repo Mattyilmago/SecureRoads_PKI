@@ -1,175 +1,189 @@
 """
-Utility functions for certificate identification and management.
+Certificate utility functions for PKI operations.
 
-Questo modulo fornisce funzioni helper per identificare univocamente
-i certificati usando Subject Key Identifier (SKI) invece del serial number.
-
-Approccio: Subject + SKI
-- Human-readable: il subject name identifica l'entità
-- Univoco: SKI garantisce unicità anche con subject duplicati
-- Conforme ETSI: usa standard X.509 (RFC 5280)
+Provides helper functions for certificate SKI extraction, identifier generation,
+and temporal information handling.
 """
 
-import hashlib
-
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import ExtensionOID
+from datetime import datetime, timezone
+from typing import Optional
 
 
-def get_certificate_ski(certificate):
+def get_certificate_ski(certificate: x509.Certificate) -> str:
     """
-    Estrae o genera il Subject Key Identifier (SKI) di un certificato.
+    Extracts Subject Key Identifier (SKI) from certificate in hex format.
 
-    SKI è un identificatore univoco basato sulla chiave pubblica del certificato.
-    Se presente come extension, lo estrae; altrimenti lo genera dal fingerprint.
+    Returns SKI extension value if present, otherwise generates SHA-256 hash
+    of the public key for legacy certificates.
 
     Args:
-        certificate: Certificato X.509
+        certificate: X.509 certificate
 
     Returns:
-        str: SKI in formato esadecimale (es: "A1B2C3D4...")
+        SKI as hex uppercase string
     """
     try:
-        # Prova a estrarre SKI dall'extension (se presente)
-        ski_ext = certificate.extensions.get_extension_for_oid(
-            x509.oid.ExtensionOID.SUBJECT_KEY_IDENTIFIER
-        )
-        ski_bytes = ski_ext.value.digest
-        return ski_bytes.hex().upper()
+        ski_ext = certificate.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_KEY_IDENTIFIER)
+        # ski_ext.value.digest è bytes, converti in hex uppercase
+        return ski_ext.value.digest.hex().upper()
     except x509.ExtensionNotFound:
-        # Se non c'è extension SKI, genera da fingerprint della chiave pubblica
-        public_key_bytes = certificate.public_key().public_bytes(
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.backends import default_backend
+
+        public_key_der = certificate.public_key().public_bytes(
             encoding=serialization.Encoding.DER,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        ski_hash = hashlib.sha256(public_key_bytes).digest()
-        # Usa primi 20 byte (160 bit) come da RFC 5280
-        return ski_hash[:20].hex().upper()
+
+        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        digest.update(public_key_der)
+        ski_hash = digest.finalize()
+
+        return ski_hash.hex().upper()
 
 
-def get_certificate_identifier(certificate):
+def get_certificate_identifier(certificate: x509.Certificate) -> str:
     """
-    Genera un identificatore univoco per un certificato basato su Subject + SKI.
+    Generates unique certificate identifier (Subject + SKI).
 
-    Formato: "CN=EntityName_SKI-A1B2C3D4E5F6"
-
-    Questo identificatore è:
-    - Human-readable: contiene il Common Name
-    - Univoco: SKI garantisce unicità
-    - File-system safe: usa solo caratteri validi per nomi file
-    - Compatto: troncato per praticità
+    Format: "CN=EntityName_SKI-{first12chars}"
 
     Args:
-        certificate: Certificato X.509
+        certificate: X.509 certificate
 
     Returns:
-        str: Identificatore univoco (es: "CN=RootCA_SKI-A1B2C3D4E5F6")
-    """
-    # Estrai Common Name dal subject
-    try:
-        cn = certificate.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value
-    except (IndexError, AttributeError):
-        # Fallback: usa tutto il subject RFC4514
-        cn = certificate.subject.rfc4514_string().replace(",", "_").replace("=", "-")
-
-    # Estrai SKI
-    ski = get_certificate_ski(certificate)
-
-    # Trunca SKI a primi 12 caratteri per leggibilità (sufficientemente univoco)
-    ski_short = ski[:12]
-
-    # Sanitizza CN per file system (rimuovi caratteri non validi)
-    cn_safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in cn)
-
-    return f"CN={cn_safe}_SKI-{ski_short}"
-
-
-def get_certificate_fingerprint(certificate):
-    """
-    Calcola SHA-256 fingerprint del certificato.
-
-    Questo è l'hash dell'intero certificato in formato DER.
-    Completamente univoco ma meno human-readable del SKI.
-
-    Args:
-        certificate: Certificato X.509
-
-    Returns:
-        str: Fingerprint SHA-256 in formato esadecimale
-    """
-    cert_der = certificate.public_bytes(serialization.Encoding.DER)
-    fingerprint = hashlib.sha256(cert_der).hexdigest().upper()
-    return fingerprint
-
-
-def get_short_identifier(certificate, max_length=32):
-    """
-    Genera un identificatore corto per uso in nomi file.
-
-    Formato: "EntityName_A1B2C3D4"
-
-    Args:
-        certificate: Certificato X.509
-        max_length: Lunghezza massima dell'identificatore
-
-    Returns:
-        str: Identificatore corto
+        Human-readable unique identifier
     """
     try:
-        cn = certificate.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value
-    except (IndexError, AttributeError):
-        cn = "Unknown"
-
-    # Sanitizza CN
-    cn_safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in cn)
-
-    # Estrai SKI
-    ski = get_certificate_ski(certificate)
-    ski_short = ski[:8]  # Usa solo 8 caratteri
-
-    identifier = f"{cn_safe}_{ski_short}"
-
-    # Trunca se troppo lungo
-    if len(identifier) > max_length:
-        # Mantieni sempre almeno gli ultimi 8 caratteri (SKI)
-        cn_max = max_length - 9  # -9 per "_" + 8 char SKI
-        identifier = f"{cn_safe[:cn_max]}_{ski_short}"
-
-    return identifier
+        subject = certificate.subject.rfc4514_string()
+        ski = get_certificate_ski(certificate)
+        ski_short = ski[:12]
+        return f"{subject}_SKI-{ski_short}"
+    except Exception as e:
+        serial = certificate.serial_number
+        subject = certificate.subject.rfc4514_string()
+        return f"{subject}_SERIAL-{serial}"
 
 
-def compare_certificates(cert1, cert2):
+def get_short_identifier(certificate: x509.Certificate) -> str:
     """
-    Confronta due certificati per verificare se sono identici.
+    Generates short certificate identifier (last 8 hex chars of SKI).
 
-    Usa SKI per il confronto (più efficiente del fingerprint completo).
+    Used for file naming and compact identifiers.
 
     Args:
-        cert1: Primo certificato X.509
-        cert2: Secondo certificato X.509
+        certificate: X.509 certificate
 
     Returns:
-        bool: True se i certificati sono identici
-    """
-    return get_certificate_ski(cert1) == get_certificate_ski(cert2)
-
-
-def format_certificate_info(certificate):
-    """
-    Formatta informazioni leggibili su un certificato per logging.
-
-    Args:
-        certificate: Certificato X.509
-
-    Returns:
-        str: Stringa formattata con info certificato
+        8-character hex string uppercase
     """
     try:
-        cn = certificate.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value
-    except (IndexError, AttributeError):
-        cn = "Unknown"
+        ski = get_certificate_ski(certificate)
+        return ski[-8:]
+    except ValueError:
+        serial_hex = hex(certificate.serial_number)[2:].upper()
+        return serial_hex[-8:].zfill(8)
 
-    ski = get_certificate_ski(certificate)
+
+def get_certificate_expiry_time(certificate: x509.Certificate) -> datetime:
+    """
+    Extracts certificate expiration timestamp (timezone-aware).
+
+    Args:
+        certificate: X.509 certificate
+
+    Returns:
+        Expiration datetime in UTC
+    """
+    expiry = certificate.not_valid_after
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry
+
+
+def get_certificate_not_before(certificate: x509.Certificate) -> datetime:
+    """
+    Extracts certificate validity start timestamp (timezone-aware).
+
+    Args:
+        certificate: X.509 certificate
+
+    Returns:
+        Start datetime in UTC
+    """
+    not_before = certificate.not_valid_before
+    if not_before.tzinfo is None:
+        not_before = not_before.replace(tzinfo=timezone.utc)
+    return not_before
+
+
+def format_certificate_info(certificate: x509.Certificate) -> str:
+    """
+    Formats certificate information as human-readable string.
+
+    Args:
+        certificate: X.509 certificate
+
+    Returns:
+        Formatted string with certificate details
+    """
+    subject = certificate.subject.rfc4514_string()
     serial = certificate.serial_number
+    not_before = get_certificate_not_before(certificate)
+    not_after = get_certificate_expiry_time(certificate)
 
-    return f"{cn} (SKI: {ski[:16]}..., Serial: {serial})"
+    try:
+        ski = get_certificate_ski(certificate)
+        ski_line = f"SKI: {ski[:16]}...\n"
+    except ValueError:
+        ski_line = "SKI: N/A\n"
+
+    return (
+        f"Subject: {subject}\n"
+        f"Serial: {serial}\n"
+        f"{ski_line}"
+        f"Validity: {not_before.strftime('%Y-%m-%d %H:%M:%S')} to "
+        f"{not_after.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
+def is_certificate_expired(certificate: x509.Certificate) -> bool:
+    """
+    Checks if certificate is expired.
+
+    Args:
+        certificate: X.509 certificate
+
+    Returns:
+        True if expired, False otherwise
+    """
+    expiry = get_certificate_expiry_time(certificate)
+    now = datetime.now(timezone.utc)
+    return expiry < now
+
+
+def is_certificate_valid_at(
+    certificate: x509.Certificate, timestamp: Optional[datetime] = None
+) -> bool:
+    """
+    Checks if certificate is valid at a given time.
+
+    Args:
+        certificate: X.509 certificate
+        timestamp: Time to check (default: current UTC time)
+
+    Returns:
+        True if valid, False otherwise
+    """
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    not_before = get_certificate_not_before(certificate)
+    not_after = get_certificate_expiry_time(certificate)
+
+    return not_before <= timestamp <= not_after

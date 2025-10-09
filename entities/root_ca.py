@@ -13,6 +13,7 @@ from utils.cert_utils import (
     get_certificate_ski,
     get_short_identifier,
 )
+from utils.pki_io import PKIFileHandler
 
 
 class RootCA:
@@ -33,14 +34,13 @@ class RootCA:
 
         # Assicura che le directory esistano
         print(f"[RootCA] Creando directory necessarie...")
-        for d in [
+        PKIFileHandler.ensure_directories(
             os.path.dirname(self.ca_certificate_path),
             os.path.dirname(self.ca_key_path),
             os.path.dirname(self.crl_path),
             self.log_dir,
             self.backup_dir,
-        ]:
-            os.makedirs(d, exist_ok=True)
+        )
 
         # Prova a caricare chiave/cert
         print(f"[RootCA] Caricando o generando chiave e certificato...")
@@ -79,7 +79,7 @@ class RootCA:
             f.write(
                 self.private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
@@ -117,7 +117,7 @@ class RootCA:
 
         self.certificate = cert
         print(f"[RootCA] Certificato generato con serial number: {cert.serial_number}")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         print(f"[RootCA] Salvando certificato in: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -126,20 +126,17 @@ class RootCA:
     # Carica la chiave privata ECC dal file PEM
     def load_ca_keypair(self):
         print(f"[RootCA] Caricando chiave privata da: {self.ca_key_path}")
-        with open(self.ca_key_path, "rb") as f:
-            self.private_key = serialization.load_pem_private_key(f.read(), password=None)
+        self.private_key = PKIFileHandler.load_private_key(self.ca_key_path)
         print(f"[RootCA] Chiave privata caricata con successo!")
 
-    # Carica il certificato Root CA dal file PEM
     def load_certificate(self):
         print(f"[RootCA] Caricando certificato da: {self.ca_certificate_path}")
-        with open(self.ca_certificate_path, "rb") as f:
-            self.certificate = x509.load_pem_x509_certificate(f.read())
+        self.certificate = PKIFileHandler.load_certificate(self.ca_certificate_path)
         print(f"[RootCA] Certificato caricato con successo!")
         print(f"[RootCA] Subject: {self.certificate.subject}")
         print(f"[RootCA] Serial number: {self.certificate.serial_number}")
         print(
-            f"[RootCA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}"
+            f"[RootCA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
         )
 
     # Firma un certificato subordinato (EA/AA)
@@ -174,7 +171,7 @@ class RootCA:
         )
 
         print(f"[RootCA] Certificato firmato con successo!")
-        print(f"[RootCA] Validità: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[RootCA] Validità: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         return cert
 
     # Salva certificato subordinato su file

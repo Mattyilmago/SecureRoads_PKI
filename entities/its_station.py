@@ -13,6 +13,7 @@ from cryptography.x509.oid import NameOID
 from protocols.etsi_message_encoder import ETSIMessageEncoder
 from protocols.etsi_message_types import InnerAtRequest, InnerEcRequest, ResponseCode
 from utils.cert_utils import get_certificate_ski
+from utils.pki_io import PKIFileHandler
 
 
 class ITSStation:
@@ -34,7 +35,7 @@ class ITSStation:
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
 
-        for d in [
+        dirs = [
             os.path.dirname(self.key_path),
             os.path.dirname(self.cert_path),
             os.path.dirname(self.ec_path),
@@ -46,9 +47,9 @@ class ITSStation:
             os.path.dirname(self.outbox_path),
             self.log_dir,
             self.backup_dir,
-        ]:
-            os.makedirs(d, exist_ok=True)
-            print(f"[ITSS] Directory creata o già esistente: {d}")
+        ]
+        PKIFileHandler.ensure_directories(*dirs)
+        print(f"[ITSS] Directory create o già esistenti: {len(dirs)} cartelle")
 
         self.private_key = None
         self.public_key = None
@@ -111,7 +112,7 @@ class ITSStation:
             f.write(
                 self.private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )

@@ -12,32 +12,17 @@ from utils.cert_utils import (
     get_certificate_ski,
     get_short_identifier,
 )
+from utils.pki_io import PKIFileHandler
 
 
 class TrustListManager:
     """
-    Gestisce la creazione e pubblicazione di Certificate Trust Lists (CTL).
-
-    Concetti chiave:
-    - Full CTL: Lista completa di tutte le CA fidate (whitelist)
-    - Delta CTL: Lista incrementale di modifiche (aggiunte/rimozioni)
-    - Link Certificates: Certificati che collegano CA diverse nella gerarchia
-    - Trust Anchors: Punti di fiducia root per validazione catene
-
-    Differenze con CRLManager:
-    - CTL gestisce certificati FIDATI (whitelist) vs CRL gestisce REVOCATI (blacklist)
-    - CTL usa formato ETSI TS 102941 vs CRL usa X.509 standard
-    - CTL include Link Certificates per navigazione gerarchie
+    Manages Certificate Trust Lists (CTL) creation and publication.
+    Handles Full CTL, Delta CTL, Link Certificates, and Trust Anchors.
     """
 
     def __init__(self, root_ca, base_dir="./data/tlm/"):
-        """
-        Inizializza il Trust List Manager.
-
-        Args:
-            root_ca: Riferimento alla Root CA che firma le CTL
-            base_dir: Directory base per salvare CTL e link certificates
-        """
+        """Initializes Trust List Manager."""
         self.root_ca = root_ca
         self.base_dir = base_dir
 
@@ -53,8 +38,14 @@ class TrustListManager:
         self.backup_dir = os.path.join(base_dir, "backup/")
 
         # Crea directory
-        for d in [self.ctl_dir, self.link_certs_dir, self.link_certs_json_dir, self.link_certs_asn1_dir, self.log_dir, self.backup_dir]:
-            os.makedirs(d, exist_ok=True)
+        PKIFileHandler.ensure_directories(
+            self.ctl_dir,
+            self.link_certs_dir,
+            self.link_certs_json_dir,
+            self.link_certs_asn1_dir,
+            self.log_dir,
+            self.backup_dir,
+        )
 
         # Lista completa dei trust anchors (per Full CTL)
         # Ogni entry contiene: certificate, authority_type (EA/AA), added_date
@@ -82,22 +73,13 @@ class TrustListManager:
         print(f"[TLM] Trust anchors caricati: {len(self.trust_anchors)}")
 
     def add_trust_anchor(self, certificate, authority_type="UNKNOWN"):
-        """
-        Aggiunge una CA fidata alla Certificate Trust List.
-
-        Questo è l'equivalente "positivo" di add_revoked_certificate del CRLManager.
-        Qui aggiungiamo certificati FIDATI invece che revocati.
-
-        Args:
-            certificate: Il certificato X.509 della CA da fidarsi (EA/AA)
-            authority_type: Tipo di autorità ("EA", "AA", "RootCA")
-        """
+        """Adds a trusted CA to the Certificate Trust List."""
         # Usa Subject + SKI invece del serial number
         cert_id = get_certificate_identifier(certificate)
         ski = get_certificate_ski(certificate)
         subject_name = certificate.subject.rfc4514_string()
         added_date = datetime.now(timezone.utc)
-        expiry_date = certificate.not_valid_after
+        expiry_date = certificate.not_valid_after_utc
 
         print(f"[TLM] Aggiungendo trust anchor: {subject_name}")
         print(f"[TLM]   Identificatore: {cert_id}")
@@ -492,13 +474,11 @@ class TrustListManager:
 
         # ETSI TS 102941: Calcola scadenza del link certificate
         # Usa la scadenza del certificato subordinato o 1 anno, quello che è minore
-        authority_expiry = authority_cert.not_valid_after
+        authority_expiry = authority_cert.not_valid_after_utc
         one_year_from_now = datetime.now(timezone.utc) + timedelta(days=365)
-        
-        # Converti a timezone-aware se necessario
-        if authority_expiry.tzinfo is None:
-            authority_expiry = authority_expiry.replace(tzinfo=timezone.utc)
-        
+
+        # not_valid_after_utc is already timezone-aware
+
         link_expiry = min(authority_expiry, one_year_from_now)
 
         # Prepara dati da firmare secondo ETSI TS 102941
@@ -523,36 +503,31 @@ class TrustListManager:
             "link_id": f"LINK_{root_ca_ski[:8]}_to_{authority_ski[:8]}",
             "version": "1.0",
             "link_certificate_format": "ETSI_TS_102941",
-            
             # Issuer (RootCA)
             "from_ca": "RootCA",
             "from_ski": root_ca_ski,
             "from_cert_id": get_short_identifier(self.root_ca.certificate),
             "from_serial": self.root_ca.certificate.serial_number,
-            
             # Subject (EA/AA)
             "to_ca": authority_type,
             "to_ski": authority_ski,
             "to_cert_id": authority_id,
             "to_subject": authority_cert.subject.rfc4514_string(),
             "to_serial": authority_cert.serial_number,
-            
             # ETSI TS 102941 mandatory fields
             "cert_hash_id8": cert_hash_id8,  # HashedId8 del subordinato
             "expiry_time": link_expiry.isoformat(),  # Scadenza link
             "created_at": datetime.now(timezone.utc).isoformat(),
-            
             # Firma digitale ECDSA
             "signature": signature.hex(),
             "signature_algorithm": "ECDSA-SHA256",
-            
             # Metadata
             "purpose": f"Certifies trust relationship RootCA -> {authority_type}",
             "etsi_compliant": True,
         }
 
         self.link_certificates.append(link_cert_info)
-        
+
         print(f"[TLM]   HashedId8: {cert_hash_id8}")
         print(f"[TLM]   Expiry: {link_expiry.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"[TLM]   Signature: {signature.hex()[:32]}...")
@@ -560,46 +535,44 @@ class TrustListManager:
         # Salva link certificate in due formati:
         # 1. JSON (per debugging e compatibilità)
         # 2. ASN.1 OER binario (ETSI-compliant)
-        
+
         short_id = authority_id.replace("EnrollmentAuthority_", "").replace(
             "AuthorizationAuthority_", ""
         )
-        
+
         # Formato JSON (leggibile) - salvato in sottocartella json/
         link_filename_json = f"link_RootCA_to_{short_id}.json"
         link_path_json = os.path.join(self.link_certs_json_dir, link_filename_json)
-        
+
         with open(link_path_json, "w") as f:
             json.dump(link_cert_info, f, indent=2)
-        
+
         print(f"[TLM] Link Certificate JSON salvato: {link_path_json}")
-        
+
         # Formato ASN.1 OER (ETSI-compliant)
         try:
             from protocols.etsi_link_certificate import ETSILinkCertificateEncoder
-            
+
             encoder = ETSILinkCertificateEncoder()
-            
+
             # Codifica in ASN.1 OER
             asn1_bytes = encoder.encode_full_link_certificate(
-                issuer_cert_der=self.root_ca.certificate.public_bytes(
-                    serialization.Encoding.DER
-                ),
+                issuer_cert_der=self.root_ca.certificate.public_bytes(serialization.Encoding.DER),
                 subject_cert_der=authority_cert.public_bytes(serialization.Encoding.DER),
                 expiry_time=link_expiry,
                 private_key=self.root_ca.private_key,
             )
-            
+
             # Salva formato binario ASN.1 - salvato in sottocartella asn1/
             link_filename_asn1 = f"link_RootCA_to_{short_id}.asn1"
             link_path_asn1 = os.path.join(self.link_certs_asn1_dir, link_filename_asn1)
-            
+
             with open(link_path_asn1, "wb") as f:
                 f.write(asn1_bytes)
-            
+
             print(f"[TLM] Link Certificate ASN.1 OER salvato: {link_path_asn1}")
             print(f"[TLM]   Dimensione: {len(asn1_bytes)} bytes")
-            
+
         except Exception as e:
             print(f"[TLM] [WARNING] Errore codifica ASN.1: {e}")
             print(f"[TLM] Continuando con solo formato JSON...")
@@ -616,11 +589,11 @@ class TrustListManager:
 
         Returns:
             tuple (bool, str): (is_valid, message)
-        
+
         ETSI TS 102941 Section 6.4 - Link Certificate Verification
         """
         from cryptography.hazmat.primitives.asymmetric import ec
-        
+
         try:
             # Verifica presenza campi obbligatori ETSI
             required_fields = [
@@ -692,7 +665,7 @@ class TrustListManager:
 
         Questo bundle viene distribuito agli ITS-S insieme alla CTL
         per permettere la validazione completa delle catene.
-        
+
         Genera due formati:
         1. JSON bundle (leggibile, per debugging)
         2. ASN.1 OER bundle (ETSI-compliant, per produzione)
@@ -748,9 +721,7 @@ class TrustListManager:
                             break
 
                     if subject_cert is None:
-                        print(
-                            f"[TLM] [WARNING] Certificato non trovato per SKI: {to_ski[:16]}..."
-                        )
+                        print(f"[TLM] [WARNING] Certificato non trovato per SKI: {to_ski[:16]}...")
                         continue
 
                     # Estrai expiry time
@@ -761,9 +732,7 @@ class TrustListManager:
                         issuer_cert_der=self.root_ca.certificate.public_bytes(
                             serialization.Encoding.DER
                         ),
-                        subject_cert_der=subject_cert.public_bytes(
-                            serialization.Encoding.DER
-                        ),
+                        subject_cert_der=subject_cert.public_bytes(serialization.Encoding.DER),
                         expiry_time=expiry_time,
                         private_key=self.root_ca.private_key,
                     )
@@ -782,7 +751,9 @@ class TrustListManager:
                 f.write(bytes(bundle_asn1))
 
             print(f"[TLM] Bundle ASN.1 OER salvato: {bundle_path_asn1}")
-            print(f"[TLM]   Link certificates codificati: {links_encoded}/{len(self.link_certificates)}")
+            print(
+                f"[TLM]   Link certificates codificati: {links_encoded}/{len(self.link_certificates)}"
+            )
             print(f"[TLM]   Dimensione bundle: {len(bundle_asn1)} bytes")
 
         except Exception as e:

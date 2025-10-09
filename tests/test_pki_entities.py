@@ -26,27 +26,7 @@ from entities.enrollment_authority import EnrollmentAuthority
 from entities.root_ca import RootCA
 from managers.trust_list_manager import TrustListManager
 
-
-@pytest.fixture(scope="module")
-def root_ca():
-    """Create RootCA instance"""
-    return RootCA(base_dir="data/root_ca")
-
-
-@pytest.fixture(scope="module")
-def ea(root_ca):
-    """Create EA instance"""
-    return EnrollmentAuthority(root_ca=root_ca, ea_id="EA_001", base_dir="data/ea")
-
-
-@pytest.fixture(scope="module")
-def aa(root_ca, ea):
-    """Create AA instance with TLM"""
-    tlm = TrustListManager(root_ca=root_ca, base_dir="data/tlm")
-    tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-    return AuthorizationAuthority(
-        root_ca=root_ca, tlm=tlm, aa_id="AA_001", base_dir="data/aa"
-    )
+# Fixture root_ca, ea, aa sono ora in conftest.py
 
 
 class TestRootCA:
@@ -62,9 +42,9 @@ class TestRootCA:
         """Test RootCA certificate validity"""
         cert = root_ca.certificate
         now = datetime.now(timezone.utc)
-        # Use standard attributes (Python 3.13 compatible)
-        valid_from = cert.not_valid_before.replace(tzinfo=timezone.utc)
-        valid_to = cert.not_valid_after.replace(tzinfo=timezone.utc)
+        # Use UTC-aware datetime properties
+        valid_from = cert.not_valid_before_utc
+        valid_to = cert.not_valid_after_utc
         assert valid_from <= now
         assert valid_to > now
 
@@ -189,25 +169,28 @@ class TestDirectoryStructure:
     def test_root_ca_directories(self, root_ca):
         """Test RootCA creates directories"""
         import os
-        assert os.path.exists("data/root_ca/certificates")
-        assert os.path.exists("data/root_ca/private_keys")
-        assert os.path.exists("data/root_ca/crl")
+        # Usa i path dalle istanze invece di hardcoded paths
+        assert os.path.exists(os.path.dirname(root_ca.ca_certificate_path))
+        assert os.path.exists(os.path.dirname(root_ca.ca_key_path))
+        assert os.path.exists(root_ca.crl_manager.crl_dir)
 
     def test_ea_directories(self, ea):
         """Test EA creates directories"""
         import os
-        assert os.path.exists("data/ea/EA_001/certificates")
-        assert os.path.exists("data/ea/EA_001/private_keys")
-        assert os.path.exists("data/ea/EA_001/enrollment_certificates")
-        assert os.path.exists("data/ea/EA_001/crl")
+        # Usa i path dalle istanze invece di hardcoded paths
+        assert os.path.exists(os.path.dirname(ea.ea_certificate_path))
+        assert os.path.exists(os.path.dirname(ea.ea_key_path))
+        assert os.path.exists(ea.ec_dir)
+        assert os.path.exists(ea.crl_manager.crl_dir)
 
     def test_aa_directories(self, aa):
         """Test AA creates directories"""
         import os
-        assert os.path.exists("data/aa/AA_001/certificates")
-        assert os.path.exists("data/aa/AA_001/private_keys")
-        assert os.path.exists("data/aa/AA_001/authorization_tickets")
-        assert os.path.exists("data/aa/AA_001/crl")
+        # Usa i path dalle istanze invece di hardcoded paths
+        assert os.path.exists(os.path.dirname(aa.aa_certificate_path))
+        assert os.path.exists(os.path.dirname(aa.aa_key_path))
+        assert os.path.exists(aa.ticket_dir)  # ticket_dir non at_dir
+        assert os.path.exists(aa.crl_manager.crl_dir)
 
 
 if __name__ == "__main__":

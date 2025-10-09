@@ -18,83 +18,35 @@ from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.authorization_authority import AuthorizationAuthority
 
-
-@pytest.fixture
-def test_data_dir():
-    """Usa la directory data/ principale per i test"""
-    test_dir = Path("./data")
-    test_dir.mkdir(parents=True, exist_ok=True)
-    yield test_dir
-
-
-@pytest.fixture
-def pki_infrastructure(test_data_dir):
-    """Fixture per creare infrastruttura PKI completa con TLM"""
-    # Root CA
-    root_ca = RootCA(
-        base_dir="./data/root_ca"
-    )
-
-    # Trust List Manager
-    from managers.trust_list_manager import TrustListManager
-    tlm = TrustListManager(
-        root_ca=root_ca,
-        base_dir="./data/tlm"
-    )
-
-    # Enrollment Authority
-    ea = EnrollmentAuthority(
-        root_ca=root_ca,
-        ea_id="EA_TEST",
-        base_dir="./data/ea",
-    )
-    
-    # Aggiungi EA al TLM
-    tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-
-    # Authorization Authority con TLM
-    aa = AuthorizationAuthority(
-        root_ca=root_ca,
-        tlm=tlm,
-        aa_id="AA_TEST",
-        base_dir="./data/aa",
-    )
-
-    return {"root_ca": root_ca, "ea": ea, "aa": aa, "tlm": tlm}
+# Fixture pki_infrastructure è ora in conftest.py con:
+# - root_ca: RootCA instance
+# - ea: EnrollmentAuthority instance
+# - tlm: TrustListManager instance
+# - aa: AuthorizationAuthority instance
 
 
 class TestITSStation:
     """Test per ITS Station"""
 
-    def test_itss_initialization(self, test_data_dir):
+    def test_itss_initialization(self, its_station):
         """Test inizializzazione ITS-S"""
-        itss = ITSStation(
-            its_id="TestVehicle",
-            base_dir="./data/itss",
-        )
-
-        assert itss is not None
-        assert itss.its_id == "TestVehicle"
-        assert itss.message_encoder is not None
+        assert its_station is not None
+        assert its_station.its_id == "TEST_VEHICLE"
+        assert its_station.message_encoder is not None
         # Verifica directory create
-        assert itss.log_dir is not None
-        assert itss.backup_dir is not None
+        assert its_station.log_dir is not None
+        assert its_station.backup_dir is not None
 
-    def test_itss_generate_key_pair(self, test_data_dir):
+    def test_itss_generate_key_pair(self, its_station):
         """Test generazione coppia di chiavi"""
-        itss = ITSStation(
-            its_id="TestVehicle",
-            base_dir="./data/itss",
-        )
-
         # Genera chiave (metodo corretto - non ritorna valore)
-        itss.generate_ecc_keypair()
+        its_station.generate_ecc_keypair()
 
-        assert itss.private_key is not None
-        assert itss.public_key is not None
-        assert Path(itss.key_path).exists()
+        assert its_station.private_key is not None
+        assert its_station.public_key is not None
+        assert Path(its_station.key_path).exists()
 
-    def test_itss_request_enrollment_certificate(self, test_data_dir, pki_infrastructure):
+    def test_itss_request_enrollment_certificate(self, pki_infrastructure):
         """Test richiesta Enrollment Certificate"""
         ea = pki_infrastructure["ea"]
         itss = ITSStation(
@@ -112,7 +64,7 @@ class TestITSStation:
         # Verifica che EC sia salvato
         assert Path(itss.ec_path).exists()
 
-    def test_itss_request_authorization_ticket(self, test_data_dir, pki_infrastructure):
+    def test_itss_request_authorization_ticket(self, pki_infrastructure):
         """Test richiesta Authorization Ticket"""
         ea = pki_infrastructure["ea"]
         aa = pki_infrastructure["aa"]
@@ -134,7 +86,7 @@ class TestITSStation:
         at_files = list(Path(itss.at_dir).glob("AT_*.pem"))
         assert len(at_files) > 0
 
-    def test_itss_full_enrollment_authorization_flow(self, test_data_dir, pki_infrastructure):
+    def test_itss_full_enrollment_authorization_flow(self, pki_infrastructure):
         """Test flusso completo enrollment + authorization"""
         ea = pki_infrastructure["ea"]
         aa = pki_infrastructure["aa"]
@@ -161,7 +113,7 @@ class TestITSStation:
         at_files = list(Path(itss.at_dir).glob("AT_*.pem"))
         assert len(at_files) > 0
 
-    def test_itss_download_trust_anchors(self, test_data_dir, pki_infrastructure):
+    def test_itss_download_trust_anchors(self, pki_infrastructure):
         """Test download trust anchors dal TLM"""
         tlm = pki_infrastructure["tlm"]
         ea = pki_infrastructure["ea"]
@@ -191,7 +143,7 @@ class TestITSStation:
         assert len(ta_files) >= 2
         print(f"[TEST] Trust anchors salvati: {len(ta_files)}")
 
-    def test_itss_download_ctl_full(self, test_data_dir, pki_infrastructure):
+    def test_itss_download_ctl_full(self, pki_infrastructure):
         """Test download CTL Full dal TLM"""
         tlm = pki_infrastructure["tlm"]
         ea = pki_infrastructure["ea"]
@@ -209,7 +161,7 @@ class TestITSStation:
         assert ctl_metadata is not None
         
         # Path della CTL pubblicata
-        ctl_source_path = Path("./data/tlm/ctl/full_ctl.pem")
+        ctl_source_path = Path(tlm.full_ctl_path)
         assert ctl_source_path.exists()
 
         # Simula download CTL Full
@@ -222,7 +174,7 @@ class TestITSStation:
         assert ctl_dest.stat().st_size > 0
         print(f"[TEST] CTL Full scaricato: {ctl_dest.stat().st_size} bytes")
 
-    def test_itss_download_ctl_delta(self, test_data_dir, pki_infrastructure):
+    def test_itss_download_ctl_delta(self, pki_infrastructure):
         """Test download CTL Delta dal TLM"""
         tlm = pki_infrastructure["tlm"]
         ea = pki_infrastructure["ea"]
@@ -253,7 +205,7 @@ class TestITSStation:
         assert ctl_delta_metadata is not None
         
         # Path della CTL Delta pubblicata
-        ctl_source_path = Path("./data/tlm/ctl/delta_ctl.pem")
+        ctl_source_path = Path(tlm.delta_ctl_path)
         assert ctl_source_path.exists()
 
         # Simula download CTL Delta
@@ -266,7 +218,7 @@ class TestITSStation:
         assert ctl_dest.stat().st_size > 0
         print(f"[TEST] CTL Delta scaricato: {ctl_dest.stat().st_size} bytes")
 
-    def test_itss_send_signed_message(self, test_data_dir, pki_infrastructure):
+    def test_itss_send_signed_message(self, pki_infrastructure):
         """Test invio messaggio firmato"""
         ea = pki_infrastructure["ea"]
         aa = pki_infrastructure["aa"]

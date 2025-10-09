@@ -12,6 +12,7 @@ from cryptography.x509 import ReasonFlags
 from cryptography.x509.oid import NameOID
 
 from managers.crl_manager import CRLManager
+from utils.pki_io import PKIFileHandler
 
 # ETSI Protocol Layer
 from protocols.etsi_message_encoder import ETSIMessageEncoder
@@ -56,15 +57,14 @@ class EnrollmentAuthority:
         self.root_ca_certificate = root_ca.certificate
 
         print(f"[EA] Creando directory necessarie...")
-        for d in [
+        PKIFileHandler.ensure_directories(
             os.path.dirname(self.ea_certificate_path),
             os.path.dirname(self.ea_key_path),
             self.ec_dir,
             os.path.dirname(self.crl_path),
             self.log_dir,
             self.backup_dir,
-        ]:
-            os.makedirs(d, exist_ok=True)
+        )
 
         print(f"[EA] Caricando o generando chiave e certificato EA...")
         self.load_or_generate_ea()
@@ -112,7 +112,7 @@ class EnrollmentAuthority:
             f.write(
                 self.private_key.private_bytes(
                     encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    format=serialization.PrivateFormat.PKCS8,
                     encryption_algorithm=serialization.NoEncryption(),
                 )
             )
@@ -139,20 +139,17 @@ class EnrollmentAuthority:
     # Carica la chiave privata ECC dal file PEM
     def load_ea_keypair(self):
         print(f"[EA] Caricando chiave privata EA da: {self.ea_key_path}")
-        with open(self.ea_key_path, "rb") as f:
-            self.private_key = serialization.load_pem_private_key(f.read(), password=None)
+        self.private_key = PKIFileHandler.load_private_key(self.ea_key_path)
         print("[EA] Chiave privata EA caricata con successo!")
 
-    # Carica il certificato EA dal file PEM
     def load_ea_certificate(self):
         print(f"[EA] Caricando certificato EA da: {self.ea_certificate_path}")
-        with open(self.ea_certificate_path, "rb") as f:
-            self.certificate = x509.load_pem_x509_certificate(f.read())
+        self.certificate = PKIFileHandler.load_certificate(self.ea_certificate_path)
         print("[EA] Certificato EA caricato con successo!")
         print(f"[EA] Subject: {self.certificate.subject}")
         print(f"[EA] Serial number: {self.certificate.serial_number}")
         print(
-            f"[EA] Validità: dal {self.certificate.not_valid_before} al {self.certificate.not_valid_after}"
+            f"[EA] Validità: dal {self.certificate.not_valid_before_utc} al {self.certificate.not_valid_after_utc}"
         )
 
     # Emette EC da una richiesta CSR
@@ -214,8 +211,28 @@ class EnrollmentAuthority:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
         print(f"[EA] Enrollment Certificate emesso e salvato con successo!")
         print(f"[EA] Identificatore: {cert_id}")
-        print(f"[EA] Validità EC: dal {cert.not_valid_before} al {cert.not_valid_after}")
+        print(f"[EA] Validità EC: dal {cert.not_valid_before_utc} al {cert.not_valid_after_utc}")
         return cert
+
+    def revoke_certificate(self, serial_hex, reason=ReasonFlags.unspecified):
+        """
+        Revoca un certificato di enrollment usando il serial number.
+
+        Args:
+            serial_hex: Serial number in formato esadecimale
+            reason: Il motivo della revoca (ReasonFlags)
+        """
+        print(f"[EA] Revocando certificato con serial (hex): {serial_hex}")
+        print(f"[EA] Motivo revoca: {reason}")
+
+        # Usa CRLManager per revocare per serial
+        self.crl_manager.revoke_by_serial(serial_hex, reason)
+        print(f"[EA] Certificato revocato tramite CRLManager")
+
+        # Pubblica Delta CRL incrementale
+        print(f"[EA] Pubblicando Delta CRL EA...")
+        self.crl_manager.publish_delta_crl()
+        print(f"[EA] Revoca completata!")
 
     # Aggiunge un certificato alla lista dei certificati revocati
     def revoke_enrollment_certificate(self, certificate, reason=ReasonFlags.unspecified):
@@ -228,7 +245,7 @@ class EnrollmentAuthority:
             reason: Il motivo della revoca (ReasonFlags)
         """
         serial_number = certificate.serial_number
-        expiry_date = certificate.not_valid_after
+        expiry_date = certificate.not_valid_after_utc
 
         print(f"[EA] Revocando Enrollment Certificate con serial: {serial_number}")
         print(f"[EA] Data di scadenza certificato: {expiry_date}")
@@ -252,10 +269,14 @@ class EnrollmentAuthority:
 
         Args:
             validity_days: Numero di giorni di validità della Full CRL (default: 7)
+
+        Returns:
+            Path del file CRL pubblicato
         """
         print(f"[EA] Pubblicando Full CRL EA (validità: {validity_days} giorni)...")
-        self.crl_manager.publish_full_crl(validity_days=validity_days)
+        crl_path = self.crl_manager.publish_full_crl(validity_days=validity_days)
         print(f"[EA] Full CRL EA pubblicata con successo!")
+        return crl_path
 
     # Carica la CRL da file
     def load_crl(self):
