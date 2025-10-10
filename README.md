@@ -6,377 +6,44 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](https://github.com/Mattyilmago/SecureRoads_PKI)
 [![Tests](https://img.shields.io/badge/Tests-115%20passed-brightgreen)](tests/)
-[![Coverage](https://img.shields.io/badge/Completion-90%25-blue)](README.md)
 
 ---
 
-## Indice
+## 📋 Indice
 
 - [Panoramica](#panoramica)
-- [Caratteristiche Principali](#caratteristiche-principali)
-- [Architettura](#architettura)
-- [Installazione](#installazione)
+- [Installazione Rapida](#installazione-rapida)
 - [Uso Rapido](#uso-rapido)
-- [Componenti](#componenti)
+- [Architettura](#architettura)
+- [REST API](#rest-api)
 - [Testing](#testing)
 - [Documentazione](#documentazione)
-- [Roadmap](#roadmap)
-- [Contribuire](#contribuire)
-- [Licenza](#licenza)
 
 ---
 
-## Panoramica
+## 🎯 Panoramica
 
-SecureRoad-PKI è un'implementazione **full-stack** di una Public Key Infrastructure (PKI) per sistemi di trasporto intelligente (ITS) seguendo gli standard **ETSI TS 102941** e **IEEE 1609.2**.
+SecureRoad-PKI è un'implementazione **production-ready** di una Public Key Infrastructure per sistemi V2X (Vehicle-to-Everything) conforme agli standard **ETSI TS 102941** e **IEEE 1609.2**.
 
-Il progetto fornisce un'infrastruttura completa e sicura per la gestione di certificati digitali e comunicazioni **Vehicle-to-Everything (V2X)**, garantendo autenticazione, integrità e privacy nelle comunicazioni veicolari.
+### Caratteristiche Principali
 
-### 📊 Stato Progetto
-- **9200+ righe** di codice Python funzionante
-- **115 test** automatici (tutti passing, 0 warnings)
+✅ **Conformità Standard ETSI**: Implementazione completa ETSI TS 102941 e IEEE 1609.2  
+✅ **REST API Production-Ready**: 10 endpoint con autenticazione, rate limiting, CORS  
+✅ **Gestione Certificati Completa**: Enrollment, Authorization, Revoca con supporto CRL/CTL Delta  
+✅ **Privacy-Preserving**: Butterfly key expansion per unlinkability (batch 20 AT)  
+✅ **Testing Robusto**: 115 test automatici con coverage completo  
+✅ **Auto-Start System**: Setup automatico con terminali separati per ogni entità
+
+### Stato Progetto
+
+- **9200+ righe** di codice Python
+- **115 test** automatici (100% passing)
+- **10 endpoint REST** implementati
 - **~90% completamento** generale
-- **100% completo**: Entities, Managers, Protocols, Utils, Logging, Datetime handling
-- **10 endpoint REST** implementati (8 business + 2 sistema)
-- **Manca**: mTLS auth (critico), OpenAPI/Swagger docs
-
-### 🆕 Ultimi Aggiornamenti (9 Ottobre 2025)
-- ✅ **Logging strutturato**: PKILogger implementato in tutte le entità (~200+ print() sostituiti)
-- ✅ **Datetime utilities**: 100% delle operazioni datetime usano utility centralizzate (cryptography 39.0+ compatible)
-- ✅ **Zero warnings**: Tutti i test passano senza warning
-- ✅ **Verifica automatica**: Script `check_datetime.py` per validazione continua
 
 ---
 
-## Caratteristiche Principali
-
-- **Conformità agli standard**: Implementazione basata su ETSI TS 102941, ETSI TS 103097 e IEEE 1609.2
-- **Gestione completa del ciclo di vita**: Emissione, rinnovo, revoca di certificati
-- **Certificate Revocation Lists (CRL)**: Supporto Full e Delta CRL per distribuzione efficiente
-- **Certificate Trust Lists (CTL)**: Gestione centralizzata dei trust anchors
-- **Logging strutturato**: PKILogger con rotazione automatica e audit trail completo
-- **Datetime UTC-aware**: Gestione unificata datetime compatibile cryptography 39.0+
-- **Link Certificates**: Generazione conforme ETSI per validazione catene di fiducia
-- **Privacy-preserving**: Supporto per Butterfly key expansion
-- **Messaggistica ETSI**: Strutture ASN.1 OER conformi agli standard
-- **Test completi**: Suite di test con 115+ test cases
-
----
-
-## 🏗️ Architettura
-
-```
-SecureRoad-PKI/
-│
-├── 📁 entities/                    # Entità PKI core
-│   ├── root_ca.py                  # Root Certificate Authority
-│   ├── enrollment_authority.py     # Enrollment Authority (EA)
-│   ├── authorization_authority.py  # Authorization Authority (AA)
-│   └── its_station.py              # ITS Station (veicoli)
-│
-├── 📁 managers/                    # Manager componenti
-│   ├── crl_manager.py              # Certificate Revocation List Manager
-│   └── trust_list_manager.py       # Certificate Trust List Manager
-│
-├── 📁 protocols/                   # Protocolli messaggistica ETSI
-│   ├── etsi_message_encoder.py     # Serializzazione ASN.1 OER
-│   ├── etsi_message_types.py       # Strutture dati ETSI TS 102941
-│   └── etsi_ts_102941.asn          # Schema ASN.1 ETSI
-│
-├── 📁 utils/                       # Utilities
-│   └── cert_utils.py               # Funzioni utilità certificati
-│
-├── 📁 tests/                       # Test suite
-│   ├── test_entities_pki.py        # Test Root CA, EA, AA
-│   ├── test_its_station.py         # Test ITS Station
-│   ├── test_managers.py            # Test CRL/TLM Manager
-│   ├── test_integration.py         # Test integrazione end-to-end
-│   ├── test_protocols.py           # Test protocolli ETSI
-│   └── test_protocols_simple.py    # Test protocolli semplificati
-│
-├── 📁 docs/                        # Documentazione
-│   ├── DELTA_CRL_DOCUMENTATION.md
-│   ├── TRUST_LIST_MANAGER_DOCUMENTATION.md
-│   └── ... (altre guide)
-│
-├── 📁 data/                        # Dati runtime
-│   ├── root_ca/                    # Root Certificate Authority
-│   │   ├── certificates/           # Certificato root self-signed
-│   │   ├── private_keys/           # Chiave privata root
-│   │   ├── crl/                    # CRL pubblicate
-│   │   │   ├── full/               # Full CRL (lista completa)
-│   │   │   └── delta/              # Delta CRL (modifiche incrementali)
-│   │   ├── logs/                   # Log audit ETSI-compliant
-│   │   ├── backup/                 # Backup disaster recovery
-│   │   └── subordinates/           # Certificati EA/AA firmati
-│   │
-│   ├── ea/                         # Enrollment Authorities
-│   │   └── EA_XXX/                 # Una cartella per ogni EA
-│   │       ├── certificates/       # Certificato EA firmato da Root
-│   │       ├── private_keys/       # Chiave privata EA
-│   │       ├── crl/                # CRL pubblicate
-│   │       │   ├── full/           # Full CRL
-│   │       │   └── delta/          # Delta CRL
-│   │       ├── enrollment_certificates/ # EC emessi ai veicoli
-│   │       ├── logs/               # Log audit
-│   │       └── backup/             # Backup
-│   │
-│   ├── aa/                         # Authorization Authorities
-│   │   └── AA_XXX/                 # Una cartella per ogni AA
-│   │       ├── certificates/       # Certificato AA firmato da Root
-│   │       ├── private_keys/       # Chiave privata AA
-│   │       ├── crl/                # CRL pubblicate
-│   │       │   ├── full/           # Full CRL
-│   │       │   └── delta/          # Delta CRL
-│   │       ├── authorization_tickets/ # AT emessi ai veicoli
-│   │       ├── logs/               # Log audit
-│   │       └── backup/             # Backup
-│   │
-│   ├── itss/                       # ITS Stations (veicoli)
-│   │   └── Vehicle_XXX/            # Una cartella per ogni veicolo
-│   │       ├── own_certificates/   # EC e AT del veicolo
-│   │       ├── trust_anchors/      # CTL ricevute (Root, EA, AA)
-│   │       ├── ctl_full/           # Full CTL ricevute
-│   │       ├── ctl_delta/          # Delta CTL ricevute
-│   │       ├── inbox/              # Messaggi V2X ricevuti
-│   │       ├── outbox/             # Messaggi V2X inviati
-│   │       ├── authorization_tickets/  # AT ricevuti da altri veicoli
-│   │       ├── logs/               # Log audit ETSI-compliant
-│   │       └── backup/             # Backup certificati e chiavi
-│   │
-│   └── tlm/                        # Trust List Manager
-│       ├── ctl/                    # CTL Full e Delta pubblicate
-│       ├── link_certificates/      # Link certificates per catene fiducia
-│       │   ├── json/               # Formato JSON (debug)
-│       │   └── asn1/               # Formato ASN.1 OER (production)
-│       ├── logs/                   # Log audit
-│       └── backup/                 # Backup
-│
-├── 📁 crypto/                      # Crittografia avanzata (TODO)
-│   └── crypto_manager.py           # Gestione AES-CCM, HashedId8, Butterfly
-│
-├── 📁 api/                         # REST API (40% completo)
-│   ├── flask_app_factory.py        # Factory pattern per EA/AA/TLM
-│   ├── blueprints/                 # Endpoint organizzati
-│   │   ├── enrollment_bp.py        # Endpoint enrollment EC
-│   │   ├── authorization_bp.py     # Endpoint authorization AT
-│   │   ├── crl_bp.py               # Distribuzione CRL
-│   │   └── trust_list_bp.py        # Distribuzione CTL
-│   └── middleware/                 # Middleware HTTP
-│       ├── auth.py                 # Autenticazione API key
-│       └── rate_limiting.py        # Rate limiting
-│
-└── 📁 storage/                     # Gestione storage (TODO)
-    └── filesystem_manager.py       # Gestione unificata filesystem
-```
-
----
-
-## ✅ Componenti Implementati
-
-### **Livello Base (ENTITIES)** - 100% Completo
-
-#### 1. **RootCA** ✅ Completo | 349 righe
-*(Vedi: `entities/root_ca.py` + [README_entities](entities/README_entities.md))*
-- ✅ Generazione chiavi ECC (secp256r1)
-- ✅ Certificato self-signed
-- ✅ Firma certificati subordinati (EA, AA)
-- ✅ Pubblicazione CRL (Full + Delta)
-- ✅ Gestione revoche
-- ✅ Datetime UTC-aware (warnings risolti)
-
-#### 2. **EnrollmentAuthority (EA)** ✅ Completo | 407 righe
-*(Vedi: `entities/enrollment_authority.py` + [README_entities](entities/README_entities.md))*
-- ✅ Ricezione e validazione CSR da ITS-S
-- ✅ Proof of possession
-- ✅ Emissione Enrollment Certificates (EC)
-- ✅ Gestione revoca EC
-- ✅ Pubblicazione CRL Delta
-- ✅ Datetime UTC-aware (warnings risolti)
-
-#### 3. **AuthorizationAuthority (AA)** ✅ Completo | 547 righe
-*(Vedi: `entities/authorization_authority.py` + [README_entities](entities/README_entities.md))*
-- ✅ Ricezione richieste AT standard
-- ✅ Validazione EC tramite EA
-- ✅ Emissione Authorization Tickets (AT)
-- ✅ Gestione revoca AT
-- ✅ Pubblicazione CRL Delta
-- ✅ Datetime UTC-aware (warnings risolti)
-- ✅ Butterfly key expansion (via protocols)
-
-#### 4. **ITSStation** ✅ Completo | 863 righe
-*(Vedi: `entities/its_station.py` + [README_entities](entities/README_entities.md))*
-- ✅ Generazione chiavi ECC proprie
-- ✅ Richiesta EC a EA
-- ✅ Richiesta AT a AA (standard)
-- ✅ Richiesta AT butterfly (batch 20 AT)
-- ✅ Aggiornamento trust anchors
-- ✅ Invio/ricezione messaggi firmati
-- ✅ Validazione certificati
-
----
-
-### **Livello Gestione (MANAGERS)** - 100% Completo
-
-#### 1. **CRLManager** ✅ Completo | 671 righe
-*(Vedi: `managers/crl_manager.py` + [README_managers](managers/README_managers.md))*
-- ✅ Generazione Full CRL (tutti i revocati)
-- ✅ Generazione Delta CRL (solo nuove revoche)
-- ✅ Sincronizzazione Full/Delta
-- ✅ Cleanup automatico certificati scaduti
-- ✅ Metadata persistence
-- ✅ Statistiche e monitoraggio
-- ✅ Datetime UTC-aware (warnings risolti)
-
-#### 2. **TrustListManager** ✅ Completo | 994 righe
-*(Vedi: `managers/trust_list_manager.py` + [README_managers](managers/README_managers.md))*
-- ✅ Gestione Certificate Trust Lists (CTL)
-- ✅ Full CTL (tutte le CA fidate)
-- ✅ Delta CTL (modifiche aggiunte/rimozioni)
-- ✅ Link Certificates generation (ASN.1 + JSON)
-- ✅ Distribuzione trust anchors a ITS-S
-- ✅ Verifica certificati fidati
-- ✅ Cleanup automatico trust scaduti
-- ✅ Datetime UTC-aware (warnings risolti)
-
----
-
-### **Livello Protocollo/Messaggistica (PROTOCOLS)** - 100% Completo
-
-#### 1. **ETSIMessageEncoder** ✅ Completo | 1081 righe
-*(Vedi: `protocols/etsi_message_encoder.py` + [README_protocols](protocols/README_protocols.md))*
-- ✅ Cifratura AES-CCM-128
-- ✅ Firma/verifica ECDSA P-256
-- ✅ Encoding/decoding messaggi ETSI TS 102941
-- ✅ InnerEcRequest/Response
-- ✅ InnerAtRequest/Response
-- ✅ Butterfly authorization requests
-- ✅ Gestione nonce e replay protection
-
-#### 2. **ETSIMessageTypes** ✅ Completo | 665 righe
-*(Vedi: `protocols/etsi_message_types.py` + [README_protocols](protocols/README_protocols.md))*
-- ✅ Tutte le strutture ETSI TS 102941
-- ✅ EnrollmentRequest/Response
-- ✅ AuthorizationRequest/Response
-- ✅ ButterflyAuthorizationRequest
-- ✅ CTL/CRL Request/Response
-- ✅ Validation requests
-- ✅ Enumerazioni (ResponseCode, PublicKeyAlgorithm, etc.)
-
-#### 3. **ButterflyKeyExpansion** ✅ Completo | 278 righe
-*(Vedi: `protocols/butterfly_key_expansion.py` + [README_protocols](protocols/README_protocols.md))*
-- ✅ Espansione chiavi Butterfly (ECQV implicito)
-- ✅ Batch generation (20 coppie chiave/certificato)
-- ✅ Key derivation HKDF-SHA256
-- ✅ Ricombinazione chiavi private veicolo
-- ✅ Validazione parametri
-
-#### 4. **ETSILinkCertificateEncoder** ✅ Completo | 491 righe
-*(Vedi: `protocols/etsi_link_certificate.py` + [README_protocols](protocols/README_protocols.md))*
-- ✅ Encoding Link Certificates ASN.1 OER
-- ✅ Formato JSON (debug)
-- ✅ Formato ASN.1 binario (production)
-- ✅ Conversione certificati X.509 → ETSI
-- ✅ Trust chain validation
-
----
-
-### **Livello Utils (UTILS)** - 100% Completo
-
-#### 1. **CertificateMaker** ✅ Completo | 311 righe
-*(Vedi: `utils/certificate_maker.py` + [README_utils](utils/README_utils.md))*
-- ✅ Builder pattern per certificati X.509
-- ✅ Self-signed certificates
-- ✅ CA-signed certificates
-- ✅ CSR generation e signing
-- ✅ Supporto secp256r1 (NIST P-256)
-
-#### 2. **CertificateValidator** ✅ Completo | 0 righe (funzioni in cert_utils)
-*(Vedi: `utils/cert_utils.py` + [README_utils](utils/README_utils.md))*
-- ✅ Validazione certificati X.509
-- ✅ Verifica catena trust
-- ✅ Controllo revoche (CRL check)
-- ✅ Validazione date not_valid_before/after
-
-#### 3. **PKIFileHandler** ✅ Completo | 151 righe
-*(Vedi: `utils/pki_io.py` + [README_utils](utils/README_utils.md))*
-- ✅ Salvataggio/caricamento certificati PEM
-- ✅ Salvataggio/caricamento chiavi private
-- ✅ Gestione directory strutturate
-- ✅ Atomic file operations
-
-#### 4. **PKIEntityBase** ✅ Completo | 200 righe
-*(Vedi: `utils/pki_entity_base.py` + [README_utils](utils/README_utils.md))*
-- ✅ Classe base astratta per entità PKI
-- ✅ Gestione unificata directory
-- ✅ Logging centralizzato
-- ✅ Metodi comuni save/load
-
-#### 5. **PKILogger** ✅ Completo | 90 righe
-*(Vedi: `utils/logger.py` + [README_utils](utils/README_utils.md))*
-- ✅ Logging configurabile per entità PKI
-- ✅ File logging + console output
-- ✅ Formattazione timestamp ISO 8601
-- ✅ Supporto DEBUG/INFO/WARNING/ERROR
-
-#### 6. **cert_utils** ✅ Completo | 189 righe
-*(Vedi: `utils/cert_utils.py` + [README_utils](utils/README_utils.md))*
-- ✅ Funzioni utility crittografia
-- ✅ Conversioni formato certificati
-- ✅ Validazione chiavi ECC
-- ✅ Calcolo fingerprint/serial
-
----
-
-### **Livello REST API** - 70% Completo
-
-#### FlaskAppFactory ✅ Completo | 255 righe
-*(Vedi: `api/flask_app_factory.py` + [README_api](api/README_api.md))*
-- ✅ Factory pattern per EA, AA, TLM
-- ✅ CORS support
-- ✅ Error handling completo
-
-#### Blueprints (Endpoint REST) ✅ Completo | 1092 righe
-*(Vedi: `api/blueprints/` + [README_api](api/README_api.md))*
-- ✅ **enrollment_bp.py** (409 righe) - 2 endpoint:
-  - `POST /enrollment/request` - Richiesta certificato EC
-  - `POST /enrollment/validation` - Validazione EC
-- ✅ **authorization_bp.py** (501 righe) - 2 endpoint:
-  - `POST /authorization/request` - Richiesta Authorization Ticket
-  - `POST /authorization/request/butterfly` - Richiesta batch 20 AT
-- ✅ **crl_bp.py** (95 righe) - 2 endpoint:
-  - `GET /crl/full` - Download Full CRL
-  - `GET /crl/delta` - Download Delta CRL
-- ✅ **trust_list_bp.py** (87 righe) - 2 endpoint:
-  - `GET /ctl/full` - Download Full CTL
-  - `GET /ctl/delta` - Download Delta CTL
-
-#### Endpoint di Sistema ✅ Completo (in flask_app_factory.py)
-- ✅ `GET /` - Informazioni API e lista endpoint disponibili
-- ✅ `GET /health` - Health check (status: ok, entity info)
-
-**Totale: 10 endpoint implementati** (8 business + 2 sistema)
-
-#### Middleware ✅ Completo | 811 righe
-*(Vedi: `api/middleware/` + [README_api](api/README_api.md))*
-- ✅ **auth.py** (155 righe) - Autenticazione API key
-- ✅ **rate_limiting.py** (263 righe) - Token bucket algorithm
-- ✅ **mtls_auth.py** (393 righe) - mTLS authentication con X.509 client certificates ⭐ NEW
-
-#### OpenAPI/Swagger ✅ Completo | 505 righe
-*(Vedi: `api/openapi_spec.yaml`)*
-- ✅ **OpenAPI 3.0.3 Specification** - Documentazione completa API
-- ✅ **Swagger UI** integrato a `/api/docs`
-- ✅ Security schemes: ApiKeyAuth + MutualTLS
-
-#### API Completion Status: 100% ✅
-- ✅ mTLS authentication implementato e testato (15 test)
-- ✅ Documentazione OpenAPI/Swagger completa
-- ⚠️ Metriche Prometheus/monitoring - OPZIONALE
-
----
-
-## 📦 Installazione
+## 🚀 Installazione Rapida
 
 ### Prerequisiti
 
@@ -390,430 +57,395 @@ SecureRoad-PKI/
 git clone https://github.com/Mattyilmago/SecureRoads_PKI.git
 cd SecureRoads_PKI
 
-# Crea virtual environment (consigliato)
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
-
 # Installa dipendenze
 pip install -r requirements.txt
 ```
 
-### Dipendenze
+### Avvio Rapido con Dashboard
 
-```
-cryptography>=41.0.0
-flask>=2.3.0 (per API REST, futuro)
-asn1tools>=0.166.0 (per ASN.1 OER, futuro)
+```bash
+# Genera configurazioni (esempio: 3 EA con nomi custom, 2 AA, TLM)
+python setup.py --ea 3 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL" --aa 2 --tlm
+
+# Avvia tutte le entità (le porte sono auto-assegnate)
+.\start_all_entities.ps1  # Windows
+# ./start_all_entities.sh  # Linux/Mac
+
+# Apri dashboard per monitoraggio
+# Apri pki_dashboard.html nel browser
 ```
 
 ---
 
-## 🚀 Uso Rapido
+## 💻 Uso Rapido
 
-### Esempio Base: Enrollment e Authorization
+### Esempio Completo: Fleet V2X
 
 ```python
 from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.authorization_authority import AuthorizationAuthority
 from entities.its_station import ITSStation
-from managers.trust_list_manager import TrustListManager
 
 # 1. Setup PKI Infrastructure
 root_ca = RootCA(base_dir="data/root_ca")
-ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_001")
+ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_HIGHWAY")
 aa = AuthorizationAuthority(
     ea_certificate_path=ea.ea_certificate_path,
     root_ca=root_ca,
-    aa_id="AA_001"
+    aa_id="AA_TRAFFIC"
 )
 
-# 2. Setup Trust List Manager
-tlm = TrustListManager(root_ca=root_ca, tlm_id="TLM_001")
-tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-tlm.add_trust_anchor(aa.certificate, authority_type="AA")
-tlm.publish_full_ctl(validity_days=30)
+# 2. Enroll veicoli
+vehicles = []
+for i in range(1, 4):  # 3 veicoli
+    vehicle = ITSStation(f"Vehicle_{i:03d}")
+    vehicle.generate_ecc_keypair()
+    
+    # Enrollment Certificate
+    ec = vehicle.request_ec(ea)
+    
+    # Authorization Ticket
+    at = vehicle.request_at(aa)
+    
+    vehicles.append(vehicle)
+    print(f"✅ {vehicle.vehicle_id}: EC + AT ottenuti")
 
-# 3. Veicolo richiede Enrollment Certificate
-vehicle = ITSStation("Vehicle_001")
-vehicle.generate_ecc_keypair()
-ec = vehicle.request_ec(ea)
-
-# 4. Veicolo richiede Authorization Ticket
-at = vehicle.request_at(aa)
-
-# 5. Veicolo invia messaggio firmato
-vehicle.send_signed_message(
-    message="Emergency brake!",
-    recipient_id="Vehicle_002",
+# 3. Comunicazione V2X
+vehicles[0].send_signed_message(
+    message="Traffic jam ahead!",
+    recipient_id="BROADCAST",
     message_type="DENM"
 )
-
-print("✅ Enrollment e Authorization completati!")
+print("✅ Messaggio V2X inviato e firmato")
 ```
 
-### Esempio: Avvio REST API Server
-
-```python
-from api.flask_app_factory import create_app
-from entities.enrollment_authority import EnrollmentAuthority
-
-# Crea EA
-ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_001")
-
-# Crea e configura app Flask
-app = create_app(
-    entity_type="EA",
-    entity_instance=ea,
-    config={
-        "api_keys": ["my-secure-api-key"],
-        "cors_origins": ["http://localhost:3000"],
-        "rate_limit": "100 per hour"
-    }
-)
-
-# Avvia server (development)
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, ssl_context='adhoc')
-
-# Client: Richiesta enrollment
-import requests
-response = requests.post(
-    'https://localhost:5000/api/v1/enrollment',
-    headers={'Authorization': 'Bearer my-secure-api-key'},
-    data=enrollment_request_bytes
-)
-```
-
-### Esempio: Gestione Revoche
-
-```python
-# Scenario: EA compromessa
-
-# 1. Root CA revoca certificato EA
-root_ca.revoke_certificate(
-    ea.certificate,
-    reason=ReasonFlags.key_compromise
-)
-
-# 2. Pubblica Delta CRL
-root_ca.crl_manager.publish_delta_crl()
-
-# 3. Rimuovi da trust anchors
-tlm.remove_trust_anchor(ea.certificate, reason="key_compromise")
-
-# 4. Pubblica Delta CTL
-tlm.publish_delta_ctl()
-
-# 5. Distribuisci aggiornamenti a veicoli
-vehicles = [vehicle1, vehicle2, vehicle3]
-tlm.distribute_to_itss(vehicles)
-
-print("✅ EA revocata e trust aggiornato!")
-```
-
----
-
-## Documentazione
-
-### Guide per Componenti
-
-- **[Entities](entities/README_entities.md)** - RootCA, EA, AA, ITSStation
-- **[Managers](managers/README_managers.md)** - CRLManager, TrustListManager
-- **[Protocols](protocols/README_protocols.md)** - Messaggistica ETSI, Butterfly
-- **[Utils](utils/README_utils.md)** - Utility e strumenti di supporto
-- **[API](api/README_api.md)** - REST API Flask, endpoint, autenticazione
-- **[Tests](tests/README_tests.md)** - Suite test completa (115 test)
-
-### Guide Specialistiche
-
-- [**Delta CRL Documentation**](docs/DELTA_CRL_DOCUMENTATION.md) - Guida completa alle CRL incrementali
-- [**Trust List Manager Documentation**](docs/TRUST_LIST_MANAGER_DOCUMENTATION.md) - Guida completa al TLM
-- [**Test Modes**](tests/TEST_MODES.md) - Modalità esecuzione test
-
-### Strumenti di Verifica
-
-- `python check_datetime.py` - ✅ Verifica automatica pattern datetime (0 problemi rilevati)
-- Tutti i test: `python -m pytest tests/ -v` - ✅ 115/115 passing
-
-### Concetti Chiave
-
-#### CRL vs CTL
-
-| Aspetto | **CRL (Revocation)** | **CTL (Trust)** |
-|---------|---------------------|-----------------|
-| Scopo | Blacklist (chi NON fidarsi) | Whitelist (di chi fidarsi) |
-| Contenuto | Certificati revocati | CA fidate (trust anchors) |
-| Gestito da | CRLManager | TrustListManager |
-| Operazioni | `add_revoked()` | `add_trust_anchor()` |
-| Uso | Validare che cert NON sia revocato | Validare catene di fiducia |
-
-#### Full vs Delta
-
-**Full CRL/CTL**:
-- Contiene TUTTI i dati (revoche o trust anchors)
-- Pubblicazione mensile
-- Base di riferimento per Delta
-
-**Delta CRL/CTL**:
-- Contiene SOLO modifiche dall'ultima Full
-- Pubblicazione settimanale/oraria
-- Molto più piccola e veloce
-
----
-
-## Testing
-
-### Suite di Test Completa
-
-Il progetto include 115+ test automatici che coprono tutte le funzionalità:
+### REST API - Quick Start
 
 ```bash
-# Esegui tutti i test
-python tests/run_all_tests.py
-
-# Modalità interattiva (scelta tmp/data directories)
-python tests/run_all_tests.py
-
-# Usa directory temporanee (raccomandato per CI/CD)
-python tests/run_all_tests.py --use-tmp-dirs
-
-# Usa directory data/ persistenti (per debug)
-python tests/run_all_tests.py --use-data-dirs
-
-# Test specifici
-pytest tests/test_pki_entities.py      # RootCA, EA, AA
-pytest tests/test_its_station.py       # ITS Station
-pytest tests/test_managers.py          # CRL/TLM Managers
-pytest tests/test_etsi_protocols.py    # Protocolli ETSI
-pytest tests/test_butterfly*.py        # Butterfly key expansion
-pytest tests/test_etsi_link_certificates.py  # Link certificates
-pytest tests/test_etsi_compliance_special_cases.py  # Edge cases
-
-# Test con filtro
-pytest tests/ -k "butterfly"           # Solo test Butterfly
-pytest tests/ -v                       # Verbose output
+# Avvia server (porte auto-assegnate dai range configurati)
+python server.py --entity EA --id EA_001  # Auto: porta 5000-5019
+python server.py --entity AA --id AA_001  # Auto: porta 5020-5039
 ```
 
-### Copertura Test
+```python
+import requests
 
-| Componente | Test | Copertura |
-|------------|------|-----------|
-| RootCA | 7 test | 100% |
-| EnrollmentAuthority | 5 test | 100% |
-| AuthorizationAuthority | 6 test | 100% |
-| ITSStation | 9 test | 100% |
-| CRLManager | 3 test | 100% |
-| TrustListManager | 4 test | 100% |
-| ETSI Protocols | 11 test | 70% |
-| Butterfly | 23 test | 80% |
-| Link Certificates | 15 test | 90% |
-| Special Cases | 24 test | 85% |
+# Enrollment Request
+EA_URL = "http://localhost:5000"  # Prima EA nel range
 
-**Totale: 115 test, tutti PASSED, 0 warnings**
+response = requests.post(
+    f"{EA_URL}/api/enrollment/request/simple",
+    json={
+        "vehicle_id": "Vehicle_001",
+        "public_key_pem": vehicle_public_key
+    },
+    headers={"X-API-Key": "your-api-key"}
+)
 
----
+enrollment_cert = response.json()
+print(f"✅ EC ricevuto: {enrollment_cert['certificate_pem']}")
 
-## Roadmap
+# Authorization Request
+AA_URL = "http://localhost:5020"
 
-### Phase 1: Core PKI - ✅ COMPLETATO (100%)
-- [x] RootCA: Certificati self-signed, firma subordinati (349 righe)
-- [x] EnrollmentAuthority: Emissione EC, validazione CSR (407 righe)
-- [x] AuthorizationAuthority: Emissione AT, validazione EC (547 righe)
-- [x] ITSStation: Gestione certificati, comunicazione V2X (863 righe)
-- [x] CRLManager: Full/Delta CRL, cleanup automatico (671 righe)
-- [x] TrustListManager: CTL, Link Certificates (994 righe)
-- [x] Test suite completa (115 test, tutti passing)
-- [x] Documentazione completa (README per ogni modulo)
-- [x] **Fix deprecation warnings** (datetime UTC-aware)
+response = requests.post(
+    f"{AA_URL}/api/authorization/request",
+    json={
+        "vehicle_id": "Vehicle_001",
+        "enrollment_certificate": ec_pem,
+        "permissions": ["traffic_info", "emergency"]
+    },
+    headers={"X-API-Key": "your-api-key"}
+)
 
-### Phase 2: Protocolli ETSI - ✅ COMPLETATO (100%)
-- [x] Strutture dati ETSI TS 102941 complete (665 righe)
-- [x] Schema ASN.1 formale (etsi_ts_102941.asn)
-- [x] ETSIMessageEncoder completo (1081 righe)
-- [x] Butterfly key expansion completo (278 righe)
-- [x] Link Certificates ETSI completo (491 righe)
-- [x] AES-128-CCM encryption implementato
-- [x] Cifratura/decifratura messaggi ETSI
-- [x] Butterfly batch AT (20 AT simultanei)
-- [x] Validazione conformità ETSI (24 test special cases)
+auth_ticket = response.json()
+print(f"✅ AT ricevuto: {auth_ticket['ticket_id']}")
 
-### Phase 3: Utility e Supporto - ✅ COMPLETATO (100%)
-- [x] CertificateMaker: Builder pattern certificati (311 righe)
-- [x] PKIFileHandler: I/O unificato (151 righe)
-- [x] PKIEntityBase: Classe base astratta (200 righe)
-- [x] PKILogger: Logging configurabile (90 righe)
-- [x] cert_utils: Funzioni utility (189 righe)
-- [x] Documentazione README_utils.md completa
+# Butterfly Batch Request (20 tickets per privacy)
+butterfly_response = requests.post(
+    f"{AA_URL}/api/authorization/request/butterfly",
+    json={
+        "vehicle_id": "Vehicle_001",
+        "enrollment_certificate": ec_pem,
+        "num_tickets": 20,
+        "permissions": ["traffic_info"]
+    },
+    headers={"X-API-Key": "your-api-key"}
+)
 
-### Phase 4: REST API - ✅ COMPLETO 100%
-- [x] Flask app factory pattern (255 righe)
-- [x] **11 endpoint REST implementati** (1518 righe totali):
-  - [x] enrollment_bp: `/api/enrollment/request`, `/api/enrollment/validation` (409 righe)
-  - [x] enrollment_simple_bp: `/api/enrollment/request/simple` (171 righe) - testing only
-  - [x] authorization_bp: `/api/authorization/request`, `/api/authorization/request/butterfly` (501 righe)
-  - [x] crl_bp: `/api/crl/full`, `/api/crl/delta` (95 righe)
-  - [x] trust_list_bp: `/api/trust-list/full`, `/api/trust-list/delta` (87 righe)
-  - [x] Sistema: `/`, `/health` (in flask_app_factory 255 righe)
-- [x] Middleware autenticazione API key (155 righe)
-- [x] Middleware rate limiting (263 righe)
-- [x] **Middleware mTLS authentication** (393 righe) ⭐ NEW
-- [x] **OpenAPI/Swagger 3.0.3 Specification** (505 righe) ⭐ NEW
-- [x] **Swagger UI** integrato a `/api/docs` ⭐ NEW
-- [x] CORS support
-- [x] Error handling completo
-- [x] Health check endpoint
-- [x] Test API completi (25 test: 10 REST + 15 mTLS)
+tickets = butterfly_response.json()["tickets"]
+print(f"✅ {len(tickets)} AT ricevuti (unlinkable)")
+```
 
-### Phase 5: Production Features - 📋 PIANIFICATO (10%)
-- [x] PKILogger implementato (90 righe)
-- [ ] ConfigLoader centralizzato
-- [ ] Metriche e monitoring
-- [ ] Rotazione automatica certificati
-- [ ] Backup automatizzato disaster recovery
-- [ ] Health checks e diagnostics
+### Revoca e CRL Management
 
-### Phase 6: Deployment - 📋 PIANIFICATO (0%)
-- [ ] Containerizzazione Docker
-- [ ] Docker Compose orchestration
-- [ ] Kubernetes manifests
-- [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Production deployment guides
-- [ ] Security audit
-- [ ] Load testing
-- [ ] Performance optimization
+```python
+# Revoca e pubblicazione CRL
+root_ca.revoke_certificate(compromised_cert, reason="key_compromise")
+root_ca.crl_manager.publish_delta_crl()
+
+# Verifica revoca via API
+response = requests.get(f"{EA_URL}/api/crl/delta")
+delta_crl = response.json()
+is_revoked = any(e["serial_number"] == cert.serial_number 
+                 for e in delta_crl["revoked_certificates"])
+```
 
 ---
 
-## Componenti
+## 🏗️ Architettura
 
-Vedi documentazione dettagliata per ogni modulo:
-- [Entities](entities/README_entities.md) - Entità PKI core
-- [Managers](managers/README_managers.md) - Gestori CRL/CTL
-- [Protocols](protocols/README_protocols.md) - Protocolli ETSI
-- [Utils](utils/README_utils.md) - Utility
+### Struttura Progetto
 
-### Stato Implementazione
+```
+SecureRoad-PKI/
+├── entities/              # Entità PKI (RootCA, EA, AA, ITS-S)
+├── managers/              # CRL/CTL Management
+├── protocols/             # ETSI messaging, Butterfly
+├── api/                   # REST API + middleware
+├── utils/                 # Certificati, logging, I/O
+├── data/                  # Dati persistenti (vedere sotto)
+├── tests/                 # 115 test automatici
+├── examples/              # Script dimostrativi
+├── scripts/               # Gestione PKI
+├── docs/                  # Documentazione
+├── setup.py               # Bulk entity generator
+├── server.py              # Production server launcher
+└── pki_dashboard.html     # Dashboard web per monitoraggio
+```
 
-| Componente | Stato | Righe | Completamento |
-|------------|-------|-------|---------------|
-| **Entities** ([README](entities/README_entities.md)) |
-| RootCA | ✅ Completo | 349 | 100% |
-| EnrollmentAuthority | ✅ Completo | 407 | 100% |
-| AuthorizationAuthority | ✅ Completo | 547 | 100% |
-| ITSStation | ✅ Completo | 863 | 100% |
-| **Managers** ([README](managers/README_managers.md)) |
-| CRLManager | ✅ Completo | 671 | 100% |
-| TrustListManager | ✅ Completo | 994 | 100% |
-| **Protocols** ([README](protocols/README_protocols.md)) |
-| ETSIMessageTypes | ✅ Completo | 665 | 100% |
-| ETSIMessageEncoder | ✅ Completo | 1081 | 100% |
-| ButterflyKeyExpansion | ✅ Completo | 278 | 100% |
-| ETSILinkCertificate | ✅ Completo | 491 | 100% |
-| **Utils** ([README](utils/README_utils.md)) |
-| cert_utils | ✅ Completo | 189 | 100% |
-| pki_io (PKIFileHandler) | ✅ Completo | 151 | 100% |
-| certificate_maker | ✅ Completo | 311 | 100% |
-| pki_entity_base | ✅ Completo | 200 | 100% |
-| logger (PKILogger) | ✅ Completo | 90 | 100% |
-| **API** ([README](api/README_api.md)) |
-| FlaskAppFactory + Sistema (/, /health) | ✅ Completo | 255 | 100% |
-| REST Blueprints (8 endpoint business) | ✅ Completo | 1092 | 100% |
-| - enrollment_bp | ✅ Completo | 409 | 100% |
-| - authorization_bp | ✅ Completo | 501 | 100% |
-| - crl_bp | ✅ Completo | 95 | 100% |
-| - trust_list_bp | ✅ Completo | 87 | 100% |
-| Middleware (auth) | ✅ Completo | 155 | 100% |
-| Middleware (rate_limiting) | ✅ Completo | 263 | 100% |
-| Middleware (mtls_auth) | ✅ Completo | 393 | 100% |
-| OpenAPI/Swagger Spec | ✅ Completo | 505 | 100% |
-| enrollment_simple_bp (testing) | ✅ Completo | 171 | 100% |
+### Architettura Directory `data/`
 
-**Completamento Generale: 100%** (~10,600 righe di codice funzionante, 130/130 test passing)
+La directory `data/` contiene tutti i dati persistenti delle entità PKI:
 
----
+```
+data/
+├── root_ca/                    # Root Certificate Authority (1 istanza)
+│   ├── certificates/           # Certificato Root CA
+│   ├── private_keys/           # Chiave privata Root CA
+│   ├── crl/                    # Certificate Revocation Lists
+│   ├── subordinates/           # Certificati EA/AA subordinati firmati
+│   ├── backup/                 # Backup automatici
+│   └── logs/                   # Log operazioni Root CA
+│
+├── ea/                         # Enrollment Authorities (max 20)
+│   ├── EA_001/                 # Enrollment Authority #1
+│   │   ├── certificates/       # Certificato EA (firmato da Root CA)
+│   │   ├── private_keys/       # Chiave privata EA
+│   │   ├── enrollment_certificates/  # EC emessi ai veicoli
+│   │   ├── crl/                # CRL specifiche dell'EA
+│   │   ├── backup/             # Backup automatici
+│   │   └── logs/               # Log operazioni EA
+│   ├── EA_002/
+│   └── ...                     # Fino a EA_020 (porta 5000-5019)
+│
+├── aa/                         # Authorization Authorities (max 20)
+│   ├── AA_001/                 # Authorization Authority #1
+│   │   ├── certificates/       # Certificato AA (firmato da Root CA)
+│   │   ├── private_keys/       # Chiave privata AA
+│   │   ├── authorization_tickets/  # AT emessi ai veicoli
+│   │   ├── butterfly_keys/     # Chiavi per Butterfly expansion
+│   │   ├── crl/                # CRL specifiche dell'AA
+│   │   ├── backup/             # Backup automatici
+│   │   └── logs/               # Log operazioni AA
+│   ├── AA_002/
+│   └── ...                     # Fino a AA_020 (porta 5020-5039)
+│
+└── tlm/                        # Trust List Manager (1 istanza)
+    └── TLM_MAIN/               # Trust List Manager centralizzato
+        ├── trust_lists/        # Certificate Trust Lists (CTL)
+        ├── delta_lists/        # Delta CTL
+        ├── backup/             # Backup automatici
+        └── logs/               # Log operazioni TLM
 
-## Contribuire
+```
 
-I contributi sono benvenuti! Segui queste linee guida:
+**Note sull'architettura dati:**
+- 🔐 **Chiavi private**: Protette, mai esposte via API
+- 📜 **Certificati**: Accessibili tramite API per verifica trust chain
+- 📋 **CRL/CTL**: Pubblicati automaticamente, supporto Delta per efficienza
+- 💾 **Backup**: Snapshot automatici prima di operazioni critiche
+- 📊 **Logs**: Formato strutturato con timestamp, livello, componente
 
-### Processo
+### Port Management (Auto-Assignment)
 
-1. Fork il repository
-2. Crea un branch per la feature (`git checkout -b feature/NuovaFunzionalita`)
-3. Commit le modifiche (`git commit -m 'Aggiunta NuovaFunzionalita'`)
-4. Push al branch (`git push origin feature/NuovaFunzionalita`)
-5. Apri una Pull Request
+| Entità | Range Porte | Max Istanze | Note |
+|--------|-------------|-------------|------|
+| **RootCA** | 5999 | 1 | Trust anchor |
+| **EA** | 5000-5019 | 20 | Enrollment |
+| **AA** | 5020-5039 | 20 | Authorization |
+| **TLM** | 5050 | 1 | Trust List centralizzato |
 
-### Linee Guida
-
-**Codice**:
-- Segui lo stile esistente (PEP 8 per Python)
-- Usa type hints dove possibile
-- Documenta funzioni e classi con docstring
-- Mantieni funzioni piccole e focalizzate
-
-**Test**:
-- Aggiungi test per nuove funzionalità
-- Assicurati che tutti i test passino (`pytest tests/`)
-- Mantieni copertura test >80%
-
-**Documentazione**:
-- Aggiorna README se necessario
-- Documenta API pubbliche
-- Includi esempi di utilizzo
-- Aggiorna changelog
-
-**Commit**:
-- Usa messaggi descrittivi in italiano
-- Formato: `[Componente] Descrizione breve`
-- Esempi:
-  - `[RootCA] Aggiunto supporto curve P-384`
-  - `[Tests] Corretti test enrollment authority`
-  - `[Docs] Aggiornata documentazione TLM`
-
----
-
-## 📄 Licenza
-
-Distribuito sotto licenza MIT. Vedi `LICENSE` per maggiori informazioni.
+**Vantaggi:**
+- ✅ Zero conflitti
+- ✅ Scaling automatico
+- ✅ Setup semplificato
+- ✅ Dashboard-compatible
 
 ---
 
-## 🔗 Riferimenti
+## 🌐 REST API
 
-### Standard
+### Endpoint Principali
 
-- **ETSI TS 102941** - Trust and Privacy Management for ITS
-- **ETSI TS 103097** - Security Header and Certificate Format
-- **IEEE 1609.2** - Security Services for Applications and Management Messages
-- **RFC 5280** - X.509 Certificate and CRL Profile
+#### Enrollment Authority (EA)
+- `POST /api/enrollment/request/simple` - Richiesta EC
+- `GET /api/crl/full` - Full CRL
+- `GET /api/crl/delta` - Delta CRL
 
-### Librerie
+#### Authorization Authority (AA)
+- `POST /api/authorization/request` - Richiesta AT singolo
+- `POST /api/authorization/request/butterfly` - Batch 20 AT (privacy)
+- `GET /api/crl/full` - Full CRL
+- `GET /api/crl/delta` - Delta CRL
 
-- [cryptography](https://cryptography.io/) - Crittografia Python
-- [asn1tools](https://github.com/eerimoq/asn1tools) - ASN.1 encoding/decoding
-- [Flask](https://flask.palletsprojects.com/) - Web framework per API
+#### Trust List Manager (TLM)
+- `GET /api/trust-list/full` - Full CTL
+- `GET /api/trust-list/delta` - Delta CTL
+
+#### Sistema
+- `GET /health` - Health check
+- `GET /api/docs` - OpenAPI/Swagger
+
+### Autenticazione
+
+**API Key (Header)**
+```python
+headers = {"X-API-Key": "your-secret-key"}
+```
+
+**mTLS (Client Certificate)**
+```python
+requests.post(url, cert=("cert.pem", "key.pem"), verify="ca.pem")
+```
+
+### Rate Limiting
+
+- **100 req/ora** per IP (default, configurabile)
+- Header: `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 
 ---
 
-## Autori
+## 🧪 Testing
 
-**Mattyilmago** - Sviluppo principale - [GitHub](https://github.com/Mattyilmago)
+### Esecuzione Test
 
-## Contatti e Supporto
+```bash
+# Tutti i test
+python -m pytest tests/ -v
 
-- **Issues**: Per bug report e richieste feature, apri una [issue su GitHub](https://github.com/Mattyilmago/SecureRoads_PKI/issues)
-- **Discussioni**: Per domande generali, usa le [GitHub Discussions](https://github.com/Mattyilmago/SecureRoads_PKI/discussions)
-- **Email**: Per questioni private o collaborazioni
+# Test specifici
+python -m pytest tests/test_pki_entities.py -v
+python -m pytest tests/test_rest_api.py -v
 
-## Ringraziamenti
+# Con coverage
+python -m pytest tests/ --cov=. --cov-report=html
+```
 
-- ETSI per gli standard ITS
-- Progetto cryptography per la libreria crittografica
-- Comunità open source Python
+### Suite Test Interattiva
+
+```bash
+# Menu interattivo per test completi
+python examples/interactive_pki_tester.py
+
+# Test rapido enrollment + authorization
+python examples/quick_test.py
+```
+```
+
+**Risultati Test:**
+- ✅ 115/115 test passing
+- 📊 Coverage: ~85%
+
+### Dashboard
+
+Apri `pki_dashboard.html` per:
+- ✅ Monitoraggio real-time
+- 🚀 Bulk generation con nomi custom
+- 📊 Statistiche
+- 🧪 Test API interattivi
 
 ---
 
-**SecureRoad-PKI - Infrastruttura PKI per la mobilità intelligente e sicura**
+## 🎓 Caso d'Uso Completo
+
+```python
+# Fleet V2X con revoca
+fleet = []
+for i in range(1, 4):
+    v = ITSStation(f"Vehicle_{i:03d}")
+    v.generate_ecc_keypair()
+    v.request_ec(ea)
+    v.request_at(aa)
+    fleet.append(v)
+
+# V2X messaging
+fleet[0].send_signed_message("Traffic!", "BROADCAST", "DENM")
+
+# Revoca certificato compromesso
+ea.revoke_certificate(fleet[1].enrollment_certificate)
+ea.crl_manager.publish_delta_crl()
+
+# Aggiorna fleet
+for v in [fleet[0], fleet[2]]:
+    v.update_crl(ea.crl_manager.get_latest_delta_crl())
+```
+
+---
+
+## 🛠️ Utility
+
+```bash
+# Bulk generation con nomi custom
+python setup.py --ea 5 --ea-names "EA_HW,EA_CITY,EA_RURAL,EA_PARK,EA_TOLL"
+
+# Port check
+.\scripts\check_ports.ps1
+```
+## 🛠️ Strumenti Utility
+
+### Bulk Entity Generator
+
+```bash
+# Genera 5 EA con nomi custom
+python setup.py --ea 5 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL,EA_PARKING,EA_TOLL"
+
+# Genera 3 AA con nomi custom + TLM
+python setup.py --aa 3 --aa-names "AA_TRAFFIC,AA_EMERGENCY,AA_COMMERCIAL" --tlm
+```
+
+```
+
+### Log Analysis
+
+```bash
+# Analizza log di una entità
+python tools/analyze_logs.py data/ea/EA_001/logs/
+
+# Statistiche operazioni
+python tools/analyze_results.py tests/results/
+```
+
+---
+
+## 📝 Licenza
+
+MIT License - vedi [LICENSE](LICENSE)
+
+---
+
+## 👥 Contribuire
+
+Contributi benvenuti! Consulta [CONTRIBUTING.md](CONTRIBUTING.md) per linee guida.
+
+---
+
+## 📧 Contatti
+
+- **Repository**: [github.com/Mattyilmago/SecureRoads_PKI](https://github.com/Mattyilmago/SecureRoads_PKI)
+- **Issues**: [github.com/Mattyilmago/SecureRoads_PKI/issues](https://github.com/Mattyilmago/SecureRoads_PKI/issues)
+
+---
+
+**SecureRoad-PKI** - Production-ready PKI for Intelligent Transportation Systems 🚗🔐

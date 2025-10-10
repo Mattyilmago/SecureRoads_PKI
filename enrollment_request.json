@@ -1,8 +1,0 @@
-{
-  "its_id": "VEHICLE_001",
-  "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETYvUSlIvsoqkEcVOBEDRcStE9BTR\nel0y1t+xEdPQjyDFXGuPosorpN0nz7emW5lF6krJzhCCwrsSSL96bG4zng==\n-----END PUBLIC KEY-----\n",
-  "requested_attributes": {
-    "country": "IT",
-    "organization": "SecureRoad"
-  }
-}

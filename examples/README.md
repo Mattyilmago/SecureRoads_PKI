@@ -2,7 +2,87 @@
 
 Examples and demonstrations for SecureRoad PKI REST API.
 
-## Available Examples
+## ⚠️  IMPORTANT: API REST ONLY
+
+**All test scripts now use ONLY REST API calls** - no Python class imports.
+This ensures:
+- Tests validate actual HTTP endpoints
+- No direct database or file system access
+- True end-to-end testing
+- CI/CD integration ready
+
+## 📋 Available Examples
+
+### 🎮 `interactive_pki_tester.py` (NEW! - REST API Only)
+
+**Interactive menu-driven test suite for daily PKI operations using REST API.**
+
+Complete testing tool with:
+- 6 different test scenarios (all via REST API)
+- Interactive menu
+- Results saved to `data/test_results.json`
+- Dashboard integration
+- Fleet management
+- Performance testing
+
+**Usage:**
+```powershell
+# Interactive mode
+python examples/interactive_pki_tester.py
+
+# Automatic execution of all tests
+python examples/interactive_pki_tester.py --auto
+
+# With dashboard integration
+python examples/interactive_pki_tester.py --dashboard
+
+# Custom URLs
+python examples/interactive_pki_tester.py --ea-url http://localhost:5000 --aa-url http://localhost:5020
+```
+
+**Tests Available:**
+1. Single vehicle enrollment (via `/api/enrollment/request/simple`)
+2. Authorization ticket request (via REST API)
+3. Fleet enrollment (5 vehicles via REST API)
+4. V2V communication simulation
+5. Certificate validation
+6. Performance test (10 enrollments via REST API)
+7. Full test suite
+
+📖 **[Full Documentation](./README_TESTING.md)**
+
+---
+
+### ⚡ `quick_test.py` (NEW! - REST API Only)
+
+**Fast command-line tests without interactive menu using REST API.**
+
+Quick tests for:
+- Health check
+- Single enrollment
+- Authorization flow
+- Multiple enrollments
+- Multiple enrollments
+- Full test suite
+
+**Usage:**
+```powershell
+# Run all tests
+python examples/quick_test.py --test all
+
+# Specific tests
+python examples/quick_test.py --test enrollment
+python examples/quick_test.py --test authorization
+python examples/quick_test.py --test multiple --count 5
+```
+
+**Exit Codes:**
+- `0` - Test passed
+- `1` - Test failed
+
+📖 **[Full Documentation](./README_TESTING.md)**
+
+---
 
 ### `api_client_example.py`
 
@@ -42,7 +122,7 @@ import requests
 from entities.its_station import ITSStation
 
 # Configuration
-EA_URL = "http://localhost:5001"
+EA_URL = "http://localhost:5000"  # EA range: 5000-5019
 API_KEY = "ea-secret-key-12345"
 
 # Create ITS-S
@@ -107,16 +187,17 @@ else:
 # Install dependencies
 pip install -r requirements.txt
 
-# Start servers
-python run_ea_server.py  # Port 5001
-python run_aa_server.py  # Port 5002
+# Start servers (auto port assignment)
+python server.py --entity EA --id EA_001  # Auto: 5000-5019 range
+python server.py --entity AA --id AA_001  # Auto: 5020-5039 range
 ```
 
 ### 2. Test Health Checks
 
 ```powershell
-curl http://localhost:5001/health
-curl http://localhost:5002/health
+# Check first EA and AA (default ports)
+curl http://localhost:5000/health
+curl http://localhost:5020/health
 ```
 
 ### 3. Run Example Suite

@@ -67,7 +67,8 @@ def example_enrollment_flow():
     print_section("Example 1: Enrollment Flow")
     
     # Configuration - Use environment variables for security
-    EA_BASE_URL = os.getenv("EA_BASE_URL", "http://localhost:5001")
+    # Default port 5000 is first EA port (EA range: 5000-5019)
+    EA_BASE_URL = os.getenv("EA_BASE_URL", "http://localhost:5000")
     EA_API_KEY = os.getenv("EA_API_KEY")
     
     if not EA_API_KEY:
@@ -137,7 +138,8 @@ def example_authorization_flow():
     print_section("Example 2: Authorization Flow")
     
     # Configuration - Use environment variables for security
-    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5002")
+    # Default port 5020 is first AA port (AA range: 5020-5039)
+    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5020")
     AA_API_KEY = os.getenv("AA_API_KEY")
     
     if not AA_API_KEY:
@@ -197,7 +199,8 @@ def example_butterfly_authorization():
     """Example: Butterfly authorization (batch)"""
     print_section("Example 3: Butterfly Authorization (Batch)")
     
-    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5002")
+    # Default port 5020 is first AA port (AA range: 5020-5039)
+    AA_BASE_URL = os.getenv("AA_BASE_URL", "http://localhost:5020")
     AA_API_KEY = os.getenv("AA_API_KEY")
     
     if not AA_API_KEY:
@@ -249,7 +252,8 @@ def example_crl_distribution():
     """Example: CRL retrieval"""
     print_section("Example 4: CRL Distribution")
     
-    EA_BASE_URL = "http://localhost:5001"
+    # Default port 5000 is first EA port (EA range: 5000-5019)
+    EA_BASE_URL = "http://localhost:5000"
     
     print("📥 Retrieving CRL from EA...")
     
@@ -285,7 +289,8 @@ def example_ctl_distribution():
     """Example: CTL (Certificate Trust List) retrieval"""
     print_section("Example 5: CTL Distribution (TLM)")
     
-    AA_BASE_URL = "http://localhost:5002"
+    # Default port 5020 is first AA port (AA range: 5020-5039)
+    AA_BASE_URL = "http://localhost:5020"
     
     print("📥 Retrieving CTL from TLM (via AA)...")
     
@@ -313,9 +318,10 @@ def example_health_checks():
     """Example: Health checks"""
     print_section("Example 6: Health Checks")
     
+    # Default ports from configured ranges
     servers = [
-        ("EA Server", "http://localhost:5001"),
-        ("AA Server", "http://localhost:5002"),
+        ("EA Server", "http://localhost:5000"),  # EA range: 5000-5019
+        ("AA Server", "http://localhost:5020"),  # AA range: 5020-5039
     ]
     
     for name, url in servers:
@@ -342,7 +348,8 @@ def example_error_handling():
     """Example: Error handling"""
     print_section("Example 7: ETSI Response Codes")
     
-    EA_BASE_URL = "http://localhost:5001"
+    # Default port 5000 is first EA port (EA range: 5000-5019)
+    EA_BASE_URL = "http://localhost:5000"
     EA_API_KEY = "ea-secret-key-12345"
     
     print("Testing various error scenarios...\n")

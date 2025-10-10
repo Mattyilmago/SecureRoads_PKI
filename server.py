@@ -4,16 +4,34 @@ Production Server Launcher for SecureRoad PKI.
 ETSI TS 102941 compliant REST API server supporting EA, AA, TLM, and RootCA entities.
 
 Usage:
-    python start_production_server.py --entity EA --config config.json
-    python start_production_server.py --entity AA --port 5002
+    python server.py --entity EA --config config.json
+    python server.py --entity AA --id AA_001
 """
+
+import sys
+import os
+
+# Fix Windows console encoding BEFORE any other imports
+if sys.platform == "win32":
+    try:
+        # Force UTF-8 encoding for Windows console
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+        # Set environment variable for child processes
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+    except AttributeError:
+        # Python < 3.7 fallback
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+    except Exception:
+        pass
 
 import argparse
 import json
-import os
 import re
 import secrets
-import sys
+import socket
 from pathlib import Path
 
 # Add project root to path
@@ -24,6 +42,7 @@ from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.authorization_authority import AuthorizationAuthority
 from managers.trust_list_manager import TrustListManager
+from utils.cert_utils import get_certificate_ski
 
 
 DEFAULT_CONFIG = {
@@ -60,6 +79,128 @@ def load_config(config_path=None):
             print("   Save this key! You'll need it for authentication.")
 
     return config
+
+
+def get_port_range_for_entity(entity_type):
+    """
+    Ottiene il range di porte per un tipo di entità dal file entity_configs.json.
+    
+    Args:
+        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
+        
+    Returns:
+        Tuple (start_port, end_port) o None se non trovato
+    """
+    try:
+        config_path = Path(__file__).parent / "entity_configs.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                if "port_ranges" in config and entity_type in config["port_ranges"]:
+                    range_info = config["port_ranges"][entity_type]
+                    return (range_info["start"], range_info["end"])
+    except Exception as e:
+        print(f"⚠️  Errore nel leggere port_ranges da entity_configs.json: {e}")
+    
+    # Fallback ai range di default
+    default_ranges = {
+        "EA": (5000, 5019),
+        "AA": (5020, 5039),
+        "TLM": (5050, 5050),
+        "RootCA": (5999, 5999)
+    }
+    return default_ranges.get(entity_type, (5000, 5000))
+
+
+def find_available_port_in_range(entity_type, host="0.0.0.0"):
+    """
+    Trova la prima porta disponibile nel range dedicato per il tipo di entità.
+    
+    Args:
+        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
+        host: Host su cui verificare
+        
+    Returns:
+        Porta disponibile trovata, o None se nessuna porta disponibile
+    """
+    start_port, end_port = get_port_range_for_entity(entity_type)
+    
+    print(f"🔍 Cerco porta disponibile per {entity_type} nel range {start_port}-{end_port}...")
+    
+    for port in range(start_port, end_port + 1):
+        if not is_port_in_use(host, port):
+            print(f"✅ Porta {port} disponibile per {entity_type}")
+            return port
+    
+    print(f"❌ ERRORE: Nessuna porta disponibile nel range {start_port}-{end_port} per {entity_type}!")
+    print(f"   Tutte le {end_port - start_port + 1} porte sono occupate.")
+    return None
+
+
+def is_port_in_use(host, port):
+    """
+    Verifica se una porta è già in uso.
+    
+    Args:
+        host: Host da testare
+        port: Porta da testare
+        
+    Returns:
+        True se la porta è in uso, False altrimenti
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+
+def find_available_port(start_port, host="0.0.0.0", max_attempts=100):
+    """
+    Trova la prima porta disponibile a partire da start_port.
+    
+    Args:
+        start_port: Porta iniziale da cui partire
+        host: Host su cui verificare
+        max_attempts: Numero massimo di tentativi
+        
+    Returns:
+        Porta disponibile trovata, o None se non trovata
+    """
+    for port in range(start_port, start_port + max_attempts):
+        if not is_port_in_use(host, port):
+            return port
+    return None
+
+
+def check_port_conflicts(host, port, entity_type, entity_id):
+    """
+    Controlla se c'è un conflitto di porta e suggerisce alternative.
+    
+    Args:
+        host: Host da verificare
+        port: Porta richiesta
+        entity_type: Tipo di entità
+        entity_id: ID dell'entità
+        
+    Returns:
+        Tuple (is_available, suggested_port)
+    """
+    if is_port_in_use(host, port):
+        print(f"\n⚠️  ATTENZIONE: Porta {port} già in uso su {host}!")
+        print(f"   Impossibile avviare {entity_type} '{entity_id}' su questa porta.")
+        
+        # Cerca porta alternativa
+        alternative = find_available_port(port + 1, host)
+        if alternative:
+            print(f"   💡 Porta alternativa disponibile: {alternative}")
+            return False, alternative
+        else:
+            print(f"   ❌ Nessuna porta alternativa trovata!")
+            return False, None
+    
+    return True, port
 
 
 def find_existing_entities(entity_type, base_dir="./data"):
@@ -207,11 +348,28 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
                 ea = EnrollmentAuthority(root_ca, ea_id=ea_id_for_aa)
                 print(f"✅ Dedicated EA '{ea_id_for_aa}' created")
 
-        print("Initializing TLM for AA...")
-        tlm_id = f"TLM_FOR_{entity_id}"
-        tlm = TrustListManager(root_ca, base_dir=f"./data/tlm/{tlm_id}/")
-        tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-        print(f"✅ TLM '{tlm_id}' initialized with {len(tlm.trust_anchors)} trust anchor(s)")
+        # Usa TLM centrale (sempre TLM_MAIN)
+        print("Initializing central TLM for AA...")
+        tlm_id = "TLM_MAIN"
+        tlm_path = f"./data/tlm/{tlm_id}/"
+        
+        # Verifica se TLM_MAIN esiste già
+        if os.path.exists(tlm_path):
+            print(f"♻️  Using existing central TLM '{tlm_id}'")
+            tlm = TrustListManager(root_ca, base_dir=tlm_path)
+        else:
+            print(f"🆕 Creating central TLM '{tlm_id}'")
+            tlm = TrustListManager(root_ca, base_dir=tlm_path)
+        
+        # Aggiungi EA ai trust anchors se non già presente
+        ea_ski = get_certificate_ski(ea.certificate)
+        if not any(anchor.get("ski") == ea_ski for anchor in tlm.trust_anchors):
+            tlm.add_trust_anchor(ea.certificate, authority_type="EA")
+            print(f"✅ EA added to central TLM")
+        else:
+            print(f"ℹ️  EA already in central TLM")
+        
+        print(f"✅ Central TLM '{tlm_id}' has {len(tlm.trust_anchors)} trust anchor(s)")
 
         entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_id)
 
@@ -292,13 +450,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start servers
-  python start_production_server.py --entity EA
-  python start_production_server.py --entity AA --port 5002 --config prod.json
-  python start_production_server.py --entity TLM --id TLM_MAIN --host 0.0.0.0
+  # Start servers (ports auto-assigned from configured ranges)
+  python server.py --entity EA --id EA_001
+  python server.py --entity AA --id AA_001 --config prod.json
+  python server.py --entity TLM --id TLM_MAIN --host 0.0.0.0
   
   # Generate secure API key
-  python start_production_server.py --generate-key
+  python server.py --generate-key
         """,
     )
 
@@ -349,11 +507,55 @@ Examples:
     # Apply CLI overrides
     if args.host:
         config["host"] = args.host
+    
+    # AUTO-SELEZIONE PORTA se non specificata
     if args.port:
+        # Porta esplicitamente specificata dall'utente
         config["port"] = args.port
+        print(f"🎯 Porta specificata manualmente: {config['port']}")
+    else:
+        # Trova automaticamente una porta libera nel range per questo tipo di entità
+        auto_port = find_available_port_in_range(args.entity, config.get("host", "0.0.0.0"))
+        if auto_port:
+            config["port"] = auto_port
+            print(f"✅ Porta selezionata automaticamente: {config['port']}")
+        else:
+            print(f"❌ ERRORE: Impossibile trovare una porta disponibile per {args.entity}!")
+            sys.exit(1)
+    
     if args.debug:
         config["debug"] = True
         print("⚠️  DEBUG MODE ENABLED - Not for production!")
+
+    # VERIFICA CONFLITTI DI PORTA (solo se specificata manualmente)
+    port_available = True
+    suggested_port = None
+    
+    if args.port:
+        print(f"\n🔍 Verifica disponibilità porta {config['port']} su {config['host']}...")
+        port_available, suggested_port = check_port_conflicts(
+            config["host"], 
+            config["port"], 
+            args.entity, 
+            args.id or "auto"
+        )
+        
+        if not port_available:
+            if suggested_port:
+                print(f"\n❓ Vuoi usare la porta alternativa {suggested_port}? (non implementato)")
+                print(f"   Riavvia con: --port {suggested_port}")
+            print(f"\n❌ ERRORE: Impossibile avviare il server sulla porta {config['port']}")
+            print(f"   La porta è già occupata da un altro processo.")
+            print(f"\n💡 SOLUZIONI:")
+            print(f"   1. Ferma il processo che sta usando la porta {config['port']}")
+            print(f"   2. Usa una porta diversa con --port {suggested_port or 'XXXX'}")
+            print(f"   3. Controlla i processi attivi con: netstat -ano | findstr :{config['port']}")
+            sys.exit(1)
+        
+        print(f"✅ Porta {config['port']} disponibile!\n")
+    else:
+        # Porta auto-assegnata, assumiamo sia disponibile (verrà verificata al bind)
+        print(f"✅ Porta {config['port']} auto-assegnata dal range!\n")
 
     try:
         # Create entity
@@ -376,6 +578,23 @@ Examples:
 
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(config["tls_cert"], config["tls_key"])
+            
+            # Configurazione mTLS (ETSI TS 102941 requirement)
+            if config.get("mtls_required", False):
+                print("🔐 mTLS enabled (client certificate required)")
+                context.verify_mode = ssl.CERT_REQUIRED
+                
+                # Carica CA per verificare certificati client
+                if config.get("tls_ca_cert"):
+                    context.load_verify_locations(cafile=config["tls_ca_cert"])
+                    print(f"   CA cert loaded: {config['tls_ca_cert']}")
+                else:
+                    print("⚠️  mTLS enabled but no CA cert provided!")
+                    print("   Set 'tls_ca_cert' in config")
+                    sys.exit(1)
+            else:
+                # TLS normale senza verifica client
+                context.verify_mode = ssl.CERT_NONE
 
             print("🔒 Starting HTTPS server...")
             app.run(

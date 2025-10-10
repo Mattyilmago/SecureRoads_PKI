@@ -414,7 +414,10 @@
             </div>
             <div class="status-card success">
                 <h3>Active Instances</h3>
-                <div class="value" id="activeInstancesTotal">0</div>
+                <div class="value" id="activeInstancesTotal">
+                    <span>0</span>
+                    <span id="scanningIndicator" style="display: none; font-size: 0.5em; margin-left: 5px;">🔄</span>
+                </div>
             </div>
             <div class="status-card">
                 <h3>Total Tests</h3>
@@ -435,6 +438,10 @@
             <div class="status-card">
                 <h3>Requests/sec</h3>
                 <div class="value" id="requestsPerSec">0.0</div>
+            </div>
+            <div class="status-card">
+                <h3>Last Scan</h3>
+                <div class="value" id="lastScanTime" style="font-size: 0.7em;">Never</div>
             </div>
         </div>
 
@@ -470,12 +477,12 @@
                     </div>
                     <div class="entity-item">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="flex: 1;" onclick="checkEntity('AA', 'http://localhost:5001')">
+                            <div style="flex: 1;" onclick="checkEntity('AA', 'http://localhost:5003')">
                                 <h4>Authorization Authority (AA)</h4>
                                 <p>Issues Authorization Tickets for V2X</p>
                                 <span class="status offline" id="status-aa">Checking...</span>
                             </div>
-                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('AA', 5001); event.stopPropagation();">
+                            <button class="btn btn-primary" style="margin-left: 10px; padding: 8px 15px; font-size: 0.9em;" onclick="startEntity('AA', 5003); event.stopPropagation();">
                                 ▶️ Start
                             </button>
                         </div>
@@ -568,6 +575,132 @@
                                 Scanning...
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Daily Use Test Scripts Panel -->
+            <div class="panel">
+                <h2>🧪 Daily Use Test Scripts</h2>
+                <p style="color: #666; margin-bottom: 15px; font-size: 0.9em;">Run common PKI test scenarios from the command line</p>
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px;">
+                    
+                    <!-- Interactive Tester -->
+                    <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); padding: 25px; border-radius: 12px; color: white;">
+                        <h3 style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            🎮 Interactive PKI Tester
+                        </h3>
+                        <p style="font-size: 0.9em; opacity: 0.9; margin-bottom: 15px;">
+                            Menu interattivo per eseguire test completi sulla PKI con salvataggio risultati
+                        </p>
+                        <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; margin-bottom: 15px; font-family: 'Courier New', monospace; font-size: 0.85em;">
+                            python examples/interactive_pki_tester.py
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+                            <div style="background: rgba(255,255,255,0.15); padding: 10px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 1.5em; font-weight: bold;">6</div>
+                                <div style="font-size: 0.8em; opacity: 0.9;">Test Disponibili</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.15); padding: 10px; border-radius: 6px; text-align: center;">
+                                <div style="font-size: 1.5em; font-weight: bold;" id="savedTestResults">0</div>
+                                <div style="font-size: 0.8em; opacity: 0.9;">Risultati Salvati</div>
+                            </div>
+                        </div>
+                        <button onclick="copyToClipboard('python examples/interactive_pki_tester.py')" 
+                                style="width: 100%; padding: 10px; background: white; color: #8b5cf6; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                            📋 Copy Command
+                        </button>
+                        <button onclick="runInteractiveTester()" 
+                                style="width: 100%; padding: 10px; background: rgba(255,255,255,0.2); color: white; border: 1px solid white; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 8px;">
+                            ▶️ Run Now
+                        </button>
+                    </div>
+
+                    <!-- Quick Test -->
+                    <div style="background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%); padding: 25px; border-radius: 12px; color: white;">
+                        <h3 style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            ⚡ Quick Test
+                        </h3>
+                        <p style="font-size: 0.9em; opacity: 0.9; margin-bottom: 15px;">
+                            Test veloci per verificare enrollment, authorization e comunicazioni
+                        </p>
+                        <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; margin-bottom: 15px; font-family: 'Courier New', monospace; font-size: 0.85em;">
+                            python examples/quick_test.py --test all
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 6px; margin-bottom: 15px;">
+                            <div style="font-size: 0.85em; font-weight: bold; margin-bottom: 8px;">Test Disponibili:</div>
+                            <div style="font-size: 0.8em; line-height: 1.6;">
+                                • enrollment - Test enrollment singolo<br>
+                                • authorization - Test authorization<br>
+                                • multiple - Enrollment multipli<br>
+                                • all - Esegui tutti i test
+                            </div>
+                        </div>
+                        <button onclick="copyToClipboard('python examples/quick_test.py --test all')" 
+                                style="width: 100%; padding: 10px; background: white; color: #06b6d4; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                            📋 Copy Command
+                        </button>
+                        <button onclick="runQuickTest()" 
+                                style="width: 100%; padding: 10px; background: rgba(255,255,255,0.2); color: white; border: 1px solid white; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 8px;">
+                            ▶️ Run Quick Test
+                        </button>
+                    </div>
+
+                    <!-- Test Results Viewer -->
+                    <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 25px; border-radius: 12px; color: white;">
+                        <h3 style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+                            📊 Test Results
+                        </h3>
+                        <p style="font-size: 0.9em; opacity: 0.9; margin-bottom: 15px;">
+                            Visualizza i risultati dei test eseguiti con interactive_pki_tester
+                        </p>
+                        <div id="testResultsSummary" style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; margin-bottom: 15px; min-height: 100px;">
+                            <div style="text-align: center; opacity: 0.7; padding: 20px;">
+                                Nessun risultato disponibile.<br>
+                                Esegui prima i test!
+                            </div>
+                        </div>
+                        <button onclick="loadTestResults()" 
+                                style="width: 100%; padding: 10px; background: white; color: #f59e0b; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">
+                            🔄 Refresh Results
+                        </button>
+                        <button onclick="showTestResultsModal()" 
+                                style="width: 100%; padding: 10px; background: rgba(255,255,255,0.2); color: white; border: 1px solid white; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 8px;">
+                            📋 View Details
+                        </button>
+                    </div>
+
+                </div>
+
+                <!-- Test Scenarios Quick Access -->
+                <div style="margin-top: 25px; background: #f9fafb; padding: 20px; border-radius: 10px;">
+                    <h3 style="color: #667eea; margin-bottom: 15px;">🎯 Common Test Scenarios</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+                        <button onclick="runScenario('single_enrollment')" class="btn btn-info" style="text-align: left; padding: 12px;">
+                            🚗 <strong>Single Vehicle Enrollment</strong><br>
+                            <small style="opacity: 0.7;">Test enrollment di un singolo veicolo</small>
+                        </button>
+                        <button onclick="runScenario('fleet')" class="btn btn-info" style="text-align: left; padding: 12px;">
+                            🚚 <strong>Fleet Enrollment (5 vehicles)</strong><br>
+                            <small style="opacity: 0.7;">Test enrollment flotta veicoli</small>
+                        </button>
+                        <button onclick="runScenario('v2v')" class="btn btn-info" style="text-align: left; padding: 12px;">
+                            📡 <strong>V2V Communication</strong><br>
+                            <small style="opacity: 0.7;">Test comunicazione veicolo-veicolo</small>
+                        </button>
+                        <button onclick="runScenario('performance')" class="btn btn-info" style="text-align: left; padding: 12px;">
+                            ⚡ <strong>Performance Test</strong><br>
+                            <small style="opacity: 0.7;">Test di carico con 10 enrollment</small>
+                        </button>
+                        <button onclick="runScenario('validation')" class="btn btn-info" style="text-align: left; padding: 12px;">
+                            ✔️ <strong>Certificate Validation</strong><br>
+                            <small style="opacity: 0.7;">Verifica validità certificati</small>
+                        </button>
+                        <button onclick="runScenario('full_suite')" class="btn btn-success" style="text-align: left; padding: 12px;">
+                            🎯 <strong>Full Test Suite</strong><br>
+                            <small style="opacity: 0.7;">Esegui tutti i test in sequenza</small>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -857,14 +990,17 @@
     </div>
 
     <script>
-        // Configuration - MODIFY THESE TO MATCH YOUR RUNNING INSTANCES
-        // Add all ports you want to monitor for each entity type
-        // Automatically scans a wide range of ports (you can adjust these)
+        // Configuration - PORT RANGES FOR ENTITY TYPES
+        // EA: 5000-5019 (20 instances)
+        // AA: 5020-5039 (20 instances)
+        // TLM: 5050 (1 instance)
+        // RootCA: 5999 (1 instance)
+        
         const ENTITY_PORTS = {
-            'EA': generatePortRange(5000, 5020),   // Scans ports 5000-5020 for EA instances
-            'AA': generatePortRange(5001, 5021),   // Scans ports 5001-5021 for AA instances
-            'TLM': generatePortRange(5002, 5022),  // Scans ports 5002-5022 for TLM instances
-            'RootCA': [8443]                        // RootCA (if exposed)
+            'EA': Array.from({length: 20}, (_, i) => 5000 + i),   // 5000-5019
+            'AA': Array.from({length: 20}, (_, i) => 5020 + i),   // 5020-5039
+            'TLM': [5050],                                         // 5050
+            'RootCA': [5999]                                       // 5999
         };
 
         // Helper function to generate port ranges
@@ -879,9 +1015,9 @@
         // Legacy single entity config (kept for compatibility)
         const ENTITIES = {
             'EA': 'http://localhost:5000',
-            'AA': 'http://localhost:5001',
-            'TLM': 'http://localhost:5002',
-            'RootCA': 'http://localhost:8443'
+            'AA': 'http://localhost:5020',
+            'TLM': 'http://localhost:5050',
+            'RootCA': 'http://localhost:5999'
         };
 
         // Track active instances
@@ -899,10 +1035,10 @@
             scanAllInstances();  // New: scan for all active instances
             refreshMetrics();
             
-            // Auto-refresh every 10 seconds
-            setInterval(checkAllEntities, 10000);
-            setInterval(scanAllInstances, 10000);  // New: auto-refresh instances
-            setInterval(refreshMetrics, 10000);
+            // Auto-refresh every 5 seconds (più frequente per UI reattiva)
+            setInterval(checkAllEntities, 5000);
+            setInterval(scanAllInstances, 5000);  // Ridotto da 10s a 5s
+            setInterval(refreshMetrics, 15000);   // Metriche meno frequenti
         };
 
         // Check all entities
@@ -915,6 +1051,12 @@
 
         // Scan all instances for all entity types (ottimizzato con richieste parallele)
         async function scanAllInstances() {
+            // Mostra indicatore scanning
+            const indicator = document.getElementById('scanningIndicator');
+            if (indicator) {
+                indicator.style.display = 'inline';
+            }
+            
             addLog('Scanning for active instances...', 'info');
             
             // Crea array di promesse per controllare tutte le porte in parallelo
@@ -960,6 +1102,20 @@
             
             // Update total count in status bar
             const totalActive = Object.values(activeInstances).reduce((sum, list) => sum + list.length, 0);
+            
+            // Update last scan time
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            const lastScanEl = document.getElementById('lastScanTime');
+            if (lastScanEl) {
+                lastScanEl.textContent = timeStr;
+            }
+            
+            // Nascondi indicatore
+            if (indicator) {
+                indicator.style.display = 'none';
+            }
+            
             addLog(`Found ${totalActive} active instances (${allResults.length} types scanned)`, 'info');
         }
 
@@ -967,7 +1123,7 @@
         async function checkInstanceHealth(baseUrl) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 500); // Ridotto da 2000ms a 500ms
+                const timeoutId = setTimeout(() => controller.abort(), 3000); // Aumentato a 3 secondi
                 
                 const response = await fetch(`${baseUrl}/health`, {
                     method: 'GET',
@@ -977,15 +1133,29 @@
                 clearTimeout(timeoutId);
                 return response.ok;
             } catch (error) {
-                return false;
+                // Retry una volta se fallisce
+                try {
+                    const controller2 = new AbortController();
+                    const timeoutId2 = setTimeout(() => controller2.abort(), 2000);
+                    
+                    const response2 = await fetch(`${baseUrl}/health`, {
+                        method: 'GET',
+                        signal: controller2.signal
+                    });
+                    
+                    clearTimeout(timeoutId2);
+                    return response2.ok;
+                } catch (error2) {
+                    return false;
+                }
             }
         }
 
-        // Get entity information from health endpoint (con timeout ridotto)
+        // Get entity information from health endpoint
         async function getEntityInfo(baseUrl) {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 500); // Ridotto da 2000ms a 500ms
+                const timeoutId = setTimeout(() => controller.abort(), 2000); // Aumentato a 2 secondi
                 
                 const response = await fetch(`${baseUrl}/health`, {
                     method: 'GET',
@@ -1039,7 +1209,13 @@
             const totalActive = Object.values(activeInstances).reduce((sum, list) => sum + list.length, 0);
             const totalEl = document.getElementById('activeInstancesTotal');
             if (totalEl) {
-                totalEl.textContent = totalActive;
+                // Aggiorna solo il numero, non l'indicatore
+                const numberSpan = totalEl.querySelector('span');
+                if (numberSpan) {
+                    numberSpan.textContent = totalActive;
+                } else {
+                    totalEl.textContent = totalActive;
+                }
             }
         }
 
@@ -1161,9 +1337,9 @@
             // Build command
             let command;
             if (entityType === 'RootCA') {
-                command = `python start_production_server.py --entity RootCA --port ${port}`;
+                command = `python server.py --entity RootCA --port ${port}`;
             } else {
-                command = `python start_production_server.py --entity ${entityType} --port ${port}`;
+                command = `python server.py --entity ${entityType} --port ${port}`;
             }
             
             // Show instructions in modal
@@ -1270,11 +1446,20 @@ After starting, refresh this dashboard to see it online! 🟢
                             <textarea name="${field.name}" placeholder="${field.placeholder || ''}" ${field.required ? 'required' : ''} style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 0.9em; min-height: 80px;">${field.value || ''}</textarea>
                         </div>
                     `;
+                } else if (field.type === 'checkbox') {
+                    formHTML += `
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: flex; align-items: center; color: #333; font-weight: 600; cursor: pointer;">
+                                <input type="checkbox" name="${field.name}" ${field.value ? 'checked' : ''} ${field.required ? 'required' : ''} style="margin-right: 8px; width: 18px; height: 18px; cursor: pointer;">
+                                <span>${field.label}</span>
+                            </label>
+                        </div>
+                    `;
                 } else {
                     formHTML += `
                         <div style="margin-bottom: 15px;">
                             <label style="display: block; color: #333; font-weight: 600; margin-bottom: 5px;">${field.label}:</label>
-                            <input type="${field.type}" name="${field.name}" value="${field.value || ''}" placeholder="${field.placeholder || ''}" ${field.required ? 'required' : ''} style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1em;">
+                            <input type="${field.type}" name="${field.name}" value="${field.value || ''}" placeholder="${field.placeholder || ''}" min="${field.min || ''}" max="${field.max || ''}" ${field.required ? 'required' : ''} style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1em;">
                         </div>
                     `;
                 }
@@ -1331,7 +1516,11 @@ After starting, refresh this dashboard to see it online! 🟢
                 const formData = {};
                 fields.forEach(field => {
                     const input = form.elements[field.name];
-                    formData[field.name] = input.value;
+                    if (field.type === 'checkbox') {
+                        formData[field.name] = input.checked;
+                    } else {
+                        formData[field.name] = input.value;
+                    }
                 });
                 
                 // Close modal and execute callback
@@ -1814,63 +2003,245 @@ ${error.message}
             `.trim();
         }
 
-        // Show Entity Generator Form
+        // Show Entity Generator Form with custom names
         function showEntityGeneratorForm() {
-            showRequestForm(
-                '🏗️ Bulk Entity Generator',
-                [
-                    { name: 'num_ea', label: 'Number of EAs', type: 'number', required: false, value: '0', min: '0', max: '20' },
-                    { name: 'num_aa', label: 'Number of AAs', type: 'number', required: false, value: '0', min: '0', max: '20' },
-                    { name: 'num_tlm', label: 'Number of TLMs', type: 'number', required: false, value: '0', min: '0', max: '20' },
-                    { name: 'start_port', label: 'Starting Port', type: 'number', required: true, value: '5000', min: '5000', max: '9999' }
-                ],
-                generateEntities
-            );
+            // Create custom modal for entity generator with dynamic name fields
+            const modalContent = `
+                <h3 style="color: #667eea; margin-bottom: 20px;">🏗️ Bulk Entity Generator</h3>
+                
+                <form id="entityGeneratorForm">
+                    <!-- EA Section -->
+                    <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #10b981;">
+                        <h4 style="color: #10b981; margin-bottom: 10px;">📝 Enrollment Authorities (EA)</h4>
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Number of EAs (0-20):</label>
+                        <input type="number" id="num_ea" min="0" max="20" value="0" style="width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;" onchange="updateEntityNameFields()">
+                        <div id="ea_names_container"></div>
+                    </div>
+                    
+                    <!-- AA Section -->
+                    <div style="background: #eff6ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #3b82f6;">
+                        <h4 style="color: #3b82f6; margin-bottom: 10px;">🎫 Authorization Authorities (AA)</h4>
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Number of AAs (0-20):</label>
+                        <input type="number" id="num_aa" min="0" max="20" value="0" style="width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 5px;" onchange="updateEntityNameFields()">
+                        <div id="aa_names_container"></div>
+                    </div>
+                    
+                    <!-- TLM Info Section -->
+                    <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #f59e0b;">
+                        <h4 style="color: #f59e0b; margin-bottom: 10px;">📋 Trust List Manager (TLM)</h4>
+                        <p style="color: #92400e; font-size: 0.9em; font-style: italic;">
+                            ℹ️ TLM_MAIN will be automatically created if it doesn't exist already. TLM is always a single centralized instance for the entire PKI.
+                        </p>
+                    </div>
+                    
+                    <!-- Port Info -->
+                    <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                        <h4 style="color: #6b7280; margin-bottom: 10px;">ℹ️ Port Assignment Rules</h4>
+                        <ul style="margin-left: 20px; color: #4b5563; font-size: 0.9em;">
+                            <li><strong>RootCA:</strong> Port 5999 (1 instance)</li>
+                            <li><strong>EA:</strong> Ports 5000-5019 (up to 20 instances)</li>
+                            <li><strong>AA:</strong> Ports 5020-5039 (up to 20 instances)</li>
+                            <li><strong>TLM:</strong> Port 5050 (1 instance)</li>
+                        </ul>
+                        <p style="color: #6b7280; font-size: 0.85em; margin-top: 8px; font-style: italic;">
+                            Ports are automatically assigned from these ranges
+                        </p>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <button type="button" class="btn btn-secondary" onclick="closeEntityGeneratorModal()" style="width: 100%;">
+                            ❌ Cancel
+                        </button>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            ✅ Generate
+                        </button>
+                    </div>
+                </form>
+            `;
+            
+            // Create modal
+            let modal = document.getElementById('entityGeneratorModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'entityGeneratorModal';
+                modal.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.7);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    z-index: 10000;
+                `;
+                
+                const modalContainer = document.createElement('div');
+                modalContainer.style.cssText = `
+                    background: white;
+                    border-radius: 12px;
+                    padding: 30px;
+                    max-width: 700px;
+                    max-height: 90vh;
+                    overflow-y: auto;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+                `;
+                modalContainer.id = 'entityGeneratorModalBody';
+                
+                modal.appendChild(modalContainer);
+                document.body.appendChild(modal);
+            }
+            
+            document.getElementById('entityGeneratorModalBody').innerHTML = modalContent;
+            
+            // Add form submit handler
+            document.getElementById('entityGeneratorForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                generateEntitiesWithNames();
+            });
+        }
+        
+        // Update entity name input fields dynamically
+        function updateEntityNameFields() {
+            const num_ea = parseInt(document.getElementById('num_ea').value) || 0;
+            const num_aa = parseInt(document.getElementById('num_aa').value) || 0;
+            
+            // Generate EA name fields
+            const eaContainer = document.getElementById('ea_names_container');
+            eaContainer.innerHTML = '';
+            if (num_ea > 0) {
+                eaContainer.innerHTML = '<label style="display: block; margin-top: 10px; margin-bottom: 5px; font-weight: bold; color: #059669;">Entity Names (optional - auto-generated if empty):</label>';
+                for (let i = 0; i < num_ea; i++) {
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.id = `ea_name_${i}`;
+                    input.placeholder = `EA name ${i+1} (e.g., EA_HIGHWAY_01, EA_CITY_01)`;
+                    input.style.cssText = 'width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #10b981; border-radius: 5px;';
+                    eaContainer.appendChild(input);
+                }
+            }
+            
+            // Generate AA name fields
+            const aaContainer = document.getElementById('aa_names_container');
+            aaContainer.innerHTML = '';
+            if (num_aa > 0) {
+                aaContainer.innerHTML = '<label style="display: block; margin-top: 10px; margin-bottom: 5px; font-weight: bold; color: #2563eb;">Entity Names (optional - auto-generated if empty):</label>';
+                for (let i = 0; i < num_aa; i++) {
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.id = `aa_name_${i}`;
+                    input.placeholder = `AA name ${i+1} (e.g., AA_TRAFFIC, AA_PARKING)`;
+                    input.style.cssText = 'width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #3b82f6; border-radius: 5px;';
+                    aaContainer.appendChild(input);
+                }
+            }
+        }
+        
+        // Close entity generator modal
+        function closeEntityGeneratorModal() {
+            const modal = document.getElementById('entityGeneratorModal');
+            if (modal) {
+                modal.remove();
+            }
         }
 
-        // Generate entities using Python script
-        async function generateEntities(event) {
-            event.preventDefault();
-            const formData = new FormData(event.target);
+        // Generate entities with custom names
+        async function generateEntitiesWithNames() {
+            const num_ea = parseInt(document.getElementById('num_ea').value) || 0;
+            const num_aa = parseInt(document.getElementById('num_aa').value) || 0;
             
-            const num_ea = parseInt(formData.get('num_ea')) || 0;
-            const num_aa = parseInt(formData.get('num_aa')) || 0;
-            const num_tlm = parseInt(formData.get('num_tlm')) || 0;
-            const start_port = parseInt(formData.get('start_port')) || 5000;
-            
-            if (num_ea === 0 && num_aa === 0 && num_tlm === 0) {
+            if (num_ea === 0 && num_aa === 0) {
                 alert('⚠️ Please specify at least one entity type to generate!');
                 return;
             }
             
+            // Collect custom names
+            const ea_names = [];
+            const aa_names = [];
+            
+            for (let i = 0; i < num_ea; i++) {
+                const nameInput = document.getElementById(`ea_name_${i}`);
+                const name = nameInput ? nameInput.value.trim() : '';
+                if (name) {
+                    // Validate name format (uppercase, alphanumeric + underscore)
+                    if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+                        alert(`⚠️ Invalid EA name "${name}". Names must start with uppercase letter and contain only uppercase letters, numbers, and underscores.`);
+                        return;
+                    }
+                    if (!name.startsWith('EA_')) {
+                        alert(`⚠️ EA name "${name}" must start with "EA_"`);
+                        return;
+                    }
+                }
+                ea_names.push(name);
+            }
+            
+            for (let i = 0; i < num_aa; i++) {
+                const nameInput = document.getElementById(`aa_name_${i}`);
+                const name = nameInput ? nameInput.value.trim() : '';
+                if (name) {
+                    // Validate name format
+                    if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+                        alert(`⚠️ Invalid AA name "${name}". Names must start with uppercase letter and contain only uppercase letters, numbers, and underscores.`);
+                        return;
+                    }
+                    if (!name.startsWith('AA_')) {
+                        alert(`⚠️ AA name "${name}" must start with "AA_"`);
+                        return;
+                    }
+                }
+                aa_names.push(name);
+            }
+            
             // Close modal
-            document.getElementById('requestModal').style.display = 'none';
+            closeEntityGeneratorModal();
             
-            // Show generating message
-            addLog(`Generating ${num_ea} EAs, ${num_aa} AAs, ${num_tlm} TLMs starting from port ${start_port}...`, 'info');
+            // Show generating message (TLM is always included automatically)
+            addLog(`Generating ${num_ea} EAs, ${num_aa} AAs + TLM with auto-start in separate terminals...`, 'info');
             
-            // Create command to execute
-            const command = `python generate_entities_config.py --ea ${num_ea} --aa ${num_aa} --tlm ${num_tlm} --start-port ${start_port}`;
+            // Build command with custom names (always include --tlm)
+            let command = 'python setup.py';
             
-            // Show instructions modal
-            showGeneratedEntitiesInstructions(command, num_ea, num_aa, num_tlm, start_port);
+            if (num_ea > 0) {
+                command += ` --ea ${num_ea}`;
+                // Add custom EA names if provided
+                const customEaNames = ea_names.filter(n => n.length > 0);
+                if (customEaNames.length > 0) {
+                    command += ` --ea-names "${customEaNames.join(',')}"`;
+                }
+            }
+            
+            if (num_aa > 0) {
+                command += ` --aa ${num_aa}`;
+                // Add custom AA names if provided
+                const customAaNames = aa_names.filter(n => n.length > 0);
+                if (customAaNames.length > 0) {
+                    command += ` --aa-names "${customAaNames.join(',')}"`;
+                }
+            }
+            
+            // Always include TLM (will be created if it doesn't exist)
+            command += ' --tlm';
+            
+            // Show instructions modal (include_tlm is always true)
+            showGeneratedEntitiesInstructions(command, num_ea, num_aa, true, ea_names, aa_names);
             
             addLog('Entity generation configured! Follow the instructions in the modal.', 'info');
         }
 
         // Show instructions for generated entities
-        function showGeneratedEntitiesInstructions(command, num_ea, num_aa, num_tlm, start_port) {
-            const totalEntities = num_ea + num_aa + num_tlm;
-            let port = start_port;
+        function showGeneratedEntitiesInstructions(command, num_ea, num_aa, include_tlm, ea_names = [], aa_names = []) {
+            const totalEntities = num_ea + num_aa + (include_tlm ? 1 : 0);
             
-            // Build entity list
+            // Build entity list with port ranges
             let entityList = '';
             
             if (num_ea > 0) {
                 entityList += '<h4 style="color: #10b981; margin-top: 15px;">📝 Enrollment Authorities</h4><ul style="margin-left: 20px;">';
                 for (let i = 0; i < num_ea; i++) {
-                    entityList += `<li>EA (auto-assigned ID) on port ${port}</li>`;
-                    port++;
+                    const displayName = ea_names[i] || `EA (auto-generated ID)`;
+                    entityList += `<li>${displayName} - Port auto-assigned from range 5000-5019</li>`;
                 }
                 entityList += '</ul>';
             }
@@ -1878,23 +2249,21 @@ ${error.message}
             if (num_aa > 0) {
                 entityList += '<h4 style="color: #3b82f6; margin-top: 15px;">🎫 Authorization Authorities</h4><ul style="margin-left: 20px;">';
                 for (let i = 0; i < num_aa; i++) {
-                    entityList += `<li>AA (auto-assigned ID) on port ${port}</li>`;
-                    port++;
+                    const displayName = aa_names[i] || `AA (auto-generated ID)`;
+                    entityList += `<li>${displayName} - Port auto-assigned from range 5020-5039</li>`;
                 }
                 entityList += '</ul>';
             }
             
-            if (num_tlm > 0) {
-                entityList += '<h4 style="color: #f59e0b; margin-top: 15px;">📋 Trust List Managers</h4><ul style="margin-left: 20px;">';
-                for (let i = 0; i < num_tlm; i++) {
-                    entityList += `<li>TLM (auto-assigned ID) on port ${port}</li>`;
-                    port++;
-                }
+            if (include_tlm) {
+                entityList += '<h4 style="color: #f59e0b; margin-top: 15px;">📋 Trust List Manager (Central)</h4><ul style="margin-left: 20px;">';
+                entityList += `<li>TLM_MAIN (unique central instance) - Port 5050</li>`;
                 entityList += '</ul>';
+                entityList += '<p style="color: #f59e0b; font-size: 0.9em; margin-top: 5px;"><em>ℹ️ Note: TLM will be created automatically if it doesn\'t exist. It is always a single, centralized instance for the entire PKI.</em></p>';
             }
             
             const modalContent = `
-                <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation Instructions</h3>
+                <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation & Auto-Start</h3>
                 
                 <div style="background: #f3f4f6; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
                     <p style="margin-bottom: 10px;"><strong>Total Entities to Generate:</strong> ${totalEntities}</p>
@@ -1903,28 +2272,42 @@ ${error.message}
                 
                 <div style="background: #1f2937; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
                     <p style="color: #10b981; margin-bottom: 10px;"><strong>Step 1: Run this command in PowerShell</strong></p>
-                    <code style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all;" onclick="copyToClipboard(this.textContent)">${command}</code>
+                    <code style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all; word-wrap: break-word; white-space: pre-wrap;" onclick="copyToClipboard(this.textContent)">${command}</code>
                     <p style="color: #9ca3af; font-size: 0.85em; margin-top: 5px;">Click to copy</p>
                 </div>
                 
-                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #f59e0b;">
-                    <p style="color: #92400e; margin-bottom: 10px;"><strong>Step 2: Start the entities</strong></p>
-                    <p style="color: #78350f; font-size: 0.9em;">After running the script, you'll get:</p>
-                    <ul style="margin-left: 20px; color: #78350f; font-size: 0.9em;">
-                        <li><code>entity_configs.json</code> - Configuration file</li>
-                        <li><code>start_all_entities.bat</code> - Windows batch script</li>
-                        <li><code>start_all_entities.ps1</code> - PowerShell script</li>
+                <div style="background: #dcfce7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #10b981;">
+                    <p style="color: #065f46; margin-bottom: 10px;"><strong>✨ Automatic Start Feature</strong></p>
+                    <p style="color: #047857; font-size: 0.9em;">
+                        The command above will <strong>automatically start all entities</strong> in separate PowerShell terminals!
+                    </p>
+                    <ul style="margin-left: 20px; color: #047857; font-size: 0.9em; margin-top: 10px;">
+                        <li>Each entity gets its own dedicated terminal window</li>
+                        <li>No need to manually run start scripts</li>
+                        <li>Configuration files and startup scripts are still generated for reference</li>
                     </ul>
-                    <p style="color: #78350f; font-size: 0.9em; margin-top: 10px;">
-                        Run <strong>start_all_entities.bat</strong> or <strong>start_all_entities.ps1</strong> to start all entities at once!
+                    <p style="color: #047857; font-size: 0.85em; margin-top: 10px; font-style: italic;">
+                        💡 To disable auto-start and only generate configs, add <code>--no-auto-start</code> to the command
                     </p>
                 </div>
                 
                 <div style="background: #dbeafe; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3b82f6;">
-                    <p style="color: #1e40af; margin-bottom: 10px;"><strong>Step 3: Monitor in Dashboard</strong></p>
+                    <p style="color: #1e40af; margin-bottom: 10px;"><strong>Step 2: Monitor in Dashboard</strong></p>
                     <p style="color: #1e3a8a; font-size: 0.9em;">
-                        Once started, all entities will appear in the "Active Instances" panel above.
-                        The dashboard automatically scans ports ${start_port}-${port-1}.
+                        Once started, all entities will appear in the "Active Instances" panel above within seconds.
+                        The dashboard automatically scans the assigned port ranges.
+                    </p>
+                </div>
+                
+                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #f59e0b;">
+                    <p style="color: #92400e; margin-bottom: 10px;"><strong>📁 Generated Files</strong></p>
+                    <ul style="margin-left: 20px; color: #78350f; font-size: 0.9em;">
+                        <li><code>entity_configs.json</code> - Configuration file</li>
+                        <li><code>start_all_entities.bat</code> - Windows batch script (backup)</li>
+                        <li><code>start_all_entities.ps1</code> - PowerShell script (backup)</li>
+                    </ul>
+                    <p style="color: #78350f; font-size: 0.85em; margin-top: 10px;">
+                        These scripts are created as backups. You can use them to restart entities later if needed.
                     </p>
                 </div>
                 
@@ -1933,11 +2316,50 @@ ${error.message}
                 </button>
             `;
             
-            // Show in modal
-            const modal = document.getElementById('requestModal');
-            const modalBody = document.getElementById('modalBody');
+            // Create or get modal
+            let modal = document.getElementById('instructionsModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'instructionsModal';
+                modal.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.7);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    z-index: 10000;
+                `;
+                
+                const modalContainer = document.createElement('div');
+                modalContainer.style.cssText = `
+                    background: white;
+                    border-radius: 12px;
+                    padding: 30px;
+                    max-width: 700px;
+                    max-height: 90vh;
+                    overflow-y: auto;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+                `;
+                modalContainer.id = 'instructionsModalBody';
+                
+                modal.appendChild(modalContainer);
+                document.body.appendChild(modal);
+                
+                // Close on background click
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal) {
+                        closeInstructionsModal();
+                    }
+                });
+            }
+            
+            const modalBody = document.getElementById('instructionsModalBody');
             modalBody.innerHTML = modalContent;
-            modal.style.display = 'block';
+            modal.style.display = 'flex';
         }
 
         // Copy text to clipboard
@@ -1951,9 +2373,261 @@ ${error.message}
 
         // Close instructions modal
         function closeInstructionsModal() {
-            document.getElementById('requestModal').style.display = 'none';
+            const modal = document.getElementById('instructionsModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
             addLog('You can now run the generation command in your terminal', 'info');
         }
+
+        // ============================================
+        // Daily Use Test Scripts Functions
+        // ============================================
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                addLog(`Command copied to clipboard: ${text}`, 'success');
+                showNotification('✅ Copied!', 'Command copied to clipboard', 'success');
+            }).catch(err => {
+                addLog(`Failed to copy: ${err}`, 'error');
+            });
+        }
+
+        function runInteractiveTester() {
+            addLog('Opening interactive PKI tester...', 'info');
+            showNotification('🎮 Interactive Tester', 'Open a terminal and run: python examples/interactive_pki_tester.py', 'info');
+            copyToClipboard('python examples/interactive_pki_tester.py');
+        }
+
+        function runQuickTest() {
+            addLog('Preparing quick test...', 'info');
+            showNotification('⚡ Quick Test', 'Open a terminal and run: python examples/quick_test.py --test all', 'info');
+            copyToClipboard('python examples/quick_test.py --test all');
+        }
+
+        async function loadTestResults() {
+            try {
+                addLog('Loading test results...', 'info');
+                
+                // Try to fetch test results file
+                const response = await fetch('data/test_results.json');
+                
+                if (response.ok) {
+                    const results = await response.json();
+                    
+                    if (results && results.length > 0) {
+                        // Update counter
+                        document.getElementById('savedTestResults').textContent = results.length;
+                        
+                        // Show summary
+                        const summary = document.getElementById('testResultsSummary');
+                        const successCount = results.filter(r => r.status === 'success').length;
+                        const failedCount = results.filter(r => r.status === 'failed' || r.status === 'error').length;
+                        
+                        const lastTest = results[results.length - 1];
+                        const lastTestDate = new Date(lastTest.timestamp).toLocaleString();
+                        
+                        summary.innerHTML = `
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                                <div style="background: rgba(255,255,255,0.2); padding: 10px; border-radius: 6px; text-align: center;">
+                                    <div style="font-size: 1.8em; font-weight: bold;">✅ ${successCount}</div>
+                                    <div style="font-size: 0.8em; opacity: 0.9;">Success</div>
+                                </div>
+                                <div style="background: rgba(255,255,255,0.2); padding: 10px; border-radius: 6px; text-align: center;">
+                                    <div style="font-size: 1.8em; font-weight: bold;">❌ ${failedCount}</div>
+                                    <div style="font-size: 0.8em; opacity: 0.9;">Failed</div>
+                                </div>
+                            </div>
+                            <div style="font-size: 0.85em; opacity: 0.9;">
+                                <strong>Last Test:</strong> ${lastTest.test}<br>
+                                <strong>Time:</strong> ${lastTestDate}
+                            </div>
+                        `;
+                        
+                        addLog(`Loaded ${results.length} test results`, 'success');
+                    } else {
+                        document.getElementById('testResultsSummary').innerHTML = `
+                            <div style="text-align: center; opacity: 0.7; padding: 20px;">
+                                No results yet.<br>
+                                Run tests first!
+                            </div>
+                        `;
+                        addLog('No test results found', 'info');
+                    }
+                } else {
+                    throw new Error('Results file not found');
+                }
+            } catch (error) {
+                addLog(`Could not load test results: ${error.message}`, 'warning');
+                document.getElementById('testResultsSummary').innerHTML = `
+                    <div style="text-align: center; opacity: 0.7; padding: 20px;">
+                        No results available.<br>
+                        Run tests first!
+                    </div>
+                `;
+            }
+        }
+
+        function showTestResultsModal() {
+            addLog('Opening test results details...', 'info');
+            
+            fetch('data/test_results.json')
+                .then(response => response.json())
+                .then(results => {
+                    if (!results || results.length === 0) {
+                        showNotification('ℹ️ No Results', 'No test results available yet', 'info');
+                        return;
+                    }
+                    
+                    let modalHTML = `
+                        <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; display: flex; align-items: center; justify-content: center;" onclick="this.remove()">
+                            <div style="background: white; border-radius: 15px; padding: 30px; max-width: 900px; max-height: 80vh; overflow-y: auto; width: 90%;" onclick="event.stopPropagation()">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                                    <h2 style="color: #667eea; margin: 0;">📊 Test Results Details</h2>
+                                    <button onclick="this.closest('div[style*=fixed]').remove()" style="background: #ef4444; color: white; border: none; padding: 8px 15px; border-radius: 6px; cursor: pointer;">✕ Close</button>
+                                </div>
+                                <div style="display: grid; gap: 15px;">
+                    `;
+                    
+                    results.reverse().forEach((result, index) => {
+                        const statusColor = result.status === 'success' ? '#10b981' : '#ef4444';
+                        const statusIcon = result.status === 'success' ? '✅' : '❌';
+                        const date = new Date(result.timestamp).toLocaleString();
+                        
+                        modalHTML += `
+                            <div style="background: #f9fafb; padding: 20px; border-radius: 10px; border-left: 4px solid ${statusColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                                    <h3 style="color: #333; margin: 0;">${statusIcon} ${result.test}</h3>
+                                    <span style="background: ${statusColor}; color: white; padding: 4px 12px; border-radius: 12px; font-size: 0.85em;">${result.status.toUpperCase()}</span>
+                                </div>
+                                <p style="color: #666; font-size: 0.9em; margin: 5px 0;">⏱️ ${date}</p>
+                                ${result.details && Object.keys(result.details).length > 0 ? `
+                                    <div style="background: white; padding: 12px; border-radius: 6px; margin-top: 10px;">
+                                        <strong style="color: #667eea;">Details:</strong>
+                                        <pre style="margin: 8px 0 0 0; font-size: 0.85em; color: #555; overflow-x: auto;">${JSON.stringify(result.details, null, 2)}</pre>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    });
+                    
+                    modalHTML += `
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    document.body.insertAdjacentHTML('beforeend', modalHTML);
+                })
+                .catch(error => {
+                    showNotification('❌ Error', 'Could not load test results', 'error');
+                });
+        }
+
+        function runScenario(scenarioType) {
+            const scenarios = {
+                'single_enrollment': {
+                    command: 'python examples/quick_test.py --test enrollment',
+                    description: 'Single vehicle enrollment test'
+                },
+                'fleet': {
+                    command: 'python examples/interactive_pki_tester.py',
+                    description: 'Fleet enrollment test (run Test 3 from menu)'
+                },
+                'v2v': {
+                    command: 'python examples/interactive_pki_tester.py',
+                    description: 'V2V communication test (run Test 4 from menu)'
+                },
+                'performance': {
+                    command: 'python examples/interactive_pki_tester.py',
+                    description: 'Performance test (run Test 6 from menu)'
+                },
+                'validation': {
+                    command: 'python examples/interactive_pki_tester.py',
+                    description: 'Certificate validation (run Test 5 from menu)'
+                },
+                'full_suite': {
+                    command: 'python examples/interactive_pki_tester.py',
+                    description: 'Full test suite (run Test 7 from menu)'
+                }
+            };
+            
+            const scenario = scenarios[scenarioType];
+            if (scenario) {
+                addLog(`Running scenario: ${scenario.description}`, 'info');
+                showNotification('🎯 Test Scenario', `${scenario.description}\n\nCommand: ${scenario.command}`, 'info');
+                copyToClipboard(scenario.command);
+            }
+        }
+
+        function showNotification(title, message, type = 'info') {
+            const colors = {
+                success: '#10b981',
+                error: '#ef4444',
+                warning: '#f59e0b',
+                info: '#667eea'
+            };
+            
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: white;
+                border-left: 4px solid ${colors[type]};
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                z-index: 10000;
+                min-width: 300px;
+                max-width: 400px;
+                animation: slideIn 0.3s ease-out;
+            `;
+            
+            notification.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <h4 style="margin: 0 0 8px 0; color: ${colors[type]};">${title}</h4>
+                        <p style="margin: 0; color: #666; font-size: 0.9em; white-space: pre-line;">${message}</p>
+                    </div>
+                    <button onclick="this.parentElement.parentElement.remove()" style="background: none; border: none; font-size: 1.2em; cursor: pointer; color: #999; padding: 0 0 0 10px;">×</button>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.style.transform = 'translateX(400px)';
+                notification.style.transition = 'all 0.3s ease-out';
+                setTimeout(() => notification.remove(), 300);
+            }, 5000);
+        }
+
+        // Add animation style
+        if (!document.getElementById('notificationStyles')) {
+            const style = document.createElement('style');
+            style.id = 'notificationStyles';
+            style.textContent = `
+                @keyframes slideIn {
+                    from {
+                        transform: translateX(400px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        // Auto-load test results on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadTestResults();
+            setInterval(loadTestResults, 30000); // Refresh every 30 seconds
+        });
     </script>
 </body>
 </html>
