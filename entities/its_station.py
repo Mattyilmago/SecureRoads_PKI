@@ -58,7 +58,7 @@ class ITSStation:
             self.backup_dir,
         ]
         PKIFileHandler.ensure_directories(*dirs)
-        self.logger.info(f"Directory create o già esistenti: {len(dirs)} cartelle")
+        self.logger.info(f"Directory create o gi esistenti: {len(dirs)} cartelle")
 
         self.private_key = None
         self.public_key = None
@@ -76,10 +76,10 @@ class ITSStation:
 
     def get_latest_at_path(self):
         """
-        Ottiene il path dell'Authorization Ticket più recente.
+        Ottiene il path dell'Authorization Ticket pi recente.
 
         Returns:
-            str: Path del file AT più recente, None se non esistono AT
+            str: Path del file AT pi recente, None se non esistono AT
         """
         if not os.path.exists(self.at_dir):
             return None
@@ -88,7 +88,7 @@ class ITSStation:
         if not at_files:
             return None
 
-        # Ordina per data di modifica (il più recente per ultimo)
+        # Ordina per data di modifica (il pi recente per ultimo)
         at_files.sort(key=lambda f: os.path.getmtime(os.path.join(self.at_dir, f)))
         latest_at = at_files[-1]
 
@@ -96,20 +96,20 @@ class ITSStation:
 
     def load_latest_at(self):
         """
-        Carica l'Authorization Ticket più recente.
+        Carica l'Authorization Ticket pi recente.
 
         Returns:
-            x509.Certificate: Certificato AT più recente, None se non esiste
+            x509.Certificate: Certificato AT pi recente, None se non esiste
         """
         at_path = self.get_latest_at_path()
         if not at_path:
             self.logger.info(f"Nessun Authorization Ticket trovato")
             return None
 
-        with open(at_path, "rb") as f:
-            at_cert = x509.load_pem_x509_certificate(f.read())
+        from utils.cert_cache import load_certificate_cached
+        at_cert = load_certificate_cached(at_path)
 
-        self.logger.info(f"Authorization Ticket più recente caricato: {os.path.basename(at_path)}")
+        self.logger.info(f"Authorization Ticket pi recente caricato: {os.path.basename(at_path)}")
         return at_cert
 
     # Genera una chiave privata ECC e la salva su file
@@ -243,7 +243,7 @@ class ITSStation:
             self.logger.info("Nessun trust anchor disponibile per la validazione")
             return False
 
-        # Validazione semplificata: controlla se il certificato è firmato da uno dei trust anchors
+        # Validazione semplificata: controlla se il certificato  firmato da uno dei trust anchors
         for anchor in self.trust_anchors:
             try:
                 # Verifica la firma (semplificata)
@@ -318,7 +318,7 @@ class ITSStation:
 
                 # In un sistema reale, qui si farebbe:
                 # 1. Richiesta HTTP/V2X al server CRL dell'AA
-                # 2. Download del Delta CRL (più efficiente del Full CRL)
+                # 2. Download del Delta CRL (pi efficiente del Full CRL)
                 # 3. Applicazione del Delta alla CRL locale
                 # 4. Verifica firma della CRL con certificato AA
 
@@ -419,7 +419,7 @@ class ITSStation:
             self.logger.info(f"Cartella inbox non esistente per {self.its_id}.")
             return []
 
-        # Controlla se la cartella inbox è vuota
+        # Controlla se la cartella inbox  vuota
         inbox_files = os.listdir(self.inbox_path)
         if not inbox_files:
             self.logger.info(f"Nessun messaggio in arrivo per {self.its_id}.")
@@ -461,14 +461,14 @@ class ITSStation:
 
         Verifica:
         1. Firma digitale con chiave pubblica del mittente
-        2. Validità del certificato AT del mittente (non scaduto)
+        2. Validit del certificato AT del mittente (non scaduto)
         3. Certificato AT non revocato (check CRL se disponibile)
 
         Args:
             message_block: Blocco di testo del messaggio con firma
 
         Returns:
-            True se il messaggio è valido, False altrimenti
+            True se il messaggio  valido, False altrimenti
         """
         try:
             # Parsing del messaggio
@@ -492,7 +492,7 @@ class ITSStation:
                 self.logger.info(f"[ERROR] Messaggio malformato da {sender_id}")
                 return False
 
-            # Carica il certificato AT del mittente (cerca l'AT più recente)
+            # Carica il certificato AT del mittente (cerca l'AT pi recente)
             sender_base_dir = os.path.join("./data/itss/", f"{sender_id}/")
             sender_at_dir = os.path.join(sender_base_dir, "authorization_tickets/")
 
@@ -507,17 +507,17 @@ class ITSStation:
                 # In un sistema reale, potresti richiedere il certificato via V2X
                 return False
 
-            # Usa l'AT più recente
+            # Usa l'AT pi recente
             sender_at_files.sort(key=lambda f: os.path.getmtime(os.path.join(sender_at_dir, f)))
             sender_at_path = os.path.join(sender_at_dir, sender_at_files[-1])
 
             self.logger.info(f"Caricamento AT mittente: {sender_at_files[-1]}")
 
-            # Carica certificato AT del mittente
-            with open(sender_at_path, "rb") as f:
-                sender_at_cert = x509.load_pem_x509_certificate(f.read())
+            # Carica certificato AT del mittente con cache
+            from utils.cert_cache import load_certificate_cached
+            sender_at_cert = load_certificate_cached(sender_at_path)
 
-            # === VERIFICA 1: Validità temporale del certificato ===
+            # === VERIFICA 1: Validit temporale del certificato ===
             now = datetime.now(timezone.utc)
 
             # Usa le utility functions per ottenere datetime UTC-aware
@@ -567,7 +567,7 @@ class ITSStation:
                         for d in os.listdir("./data/aa/")
                         if os.path.isdir(os.path.join("./data/aa/", d))
                     ]
-                    # Priorità: AA con nome ESATTO che matcha l'issuer
+                    # Priorit: AA con nome ESATTO che matcha l'issuer
                     matching_aa = [d for d in all_aa_dirs if d == aa_id_from_issuer]
                     # Fallback: AA con nome che contiene l'issuer (fuzzy match)
                     fuzzy_match = [
@@ -597,7 +597,7 @@ class ITSStation:
 
                             if crl_age > max_crl_age:
                                 self.logger.warning(
-                                    f"CRL obsoleta (età: {int(crl_age.total_seconds())}s, "
+                                    f"CRL obsoleta (et: {int(crl_age.total_seconds())}s, "
                                     f"max: {int(max_crl_age.total_seconds())}s)"
                                 )
                                 self.logger.info(f"[REFRESH] Aggiornamento automatico Delta CRL...")
@@ -614,10 +614,10 @@ class ITSStation:
                                     )
                             else:
                                 self.logger.info(
-                                    f"[OK] CRL aggiornata (età: {int(crl_age.total_seconds())}s)"
+                                    f"[OK] CRL aggiornata (et: {int(crl_age.total_seconds())}s)"
                                 )
 
-                            # Verifica se il certificato è revocato
+                            # Verifica se il certificato  revocato
                             revoked_cert = crl.get_revoked_certificate_by_serial_number(
                                 sender_at_cert.serial_number
                             )
@@ -640,7 +640,7 @@ class ITSStation:
                     self.logger.info(f"[WARNING] Impossibile verificare CRL per {sender_id}")
 
             # Tutte le verifiche passate
-            self.logger.info(f"[✓] Messaggio da {sender_id} VALIDO")
+            self.logger.info(f"[?] Messaggio da {sender_id} VALIDO")
             return True
 
         except Exception as e:
@@ -656,7 +656,7 @@ class ITSStation:
         """
         Richiede un Enrollment Certificate usando il protocollo ETSI TS 102941.
 
-        🔄 FLUSSO COMPLETO:
+        ?? FLUSSO COMPLETO:
         1. ITS-S crea InnerEcRequest con chiave pubblica
         2. ITS-S firma request (Proof of Possession)
         3. ITS-S cripta con chiave pubblica EA (ECIES)
@@ -734,7 +734,7 @@ class ITSStation:
                 self.logger.info(f"Enrollment Certificate ricevuto:")
                 self.logger.info(f"   Subject: {ec_cert.subject.rfc4514_string()}")
                 self.logger.info(f"   Serial: {ec_cert.serial_number}")
-                self.logger.info(f"   Validità: {get_certificate_not_before(ec_cert)} - {get_certificate_expiry_time(ec_cert)}")
+                self.logger.info(f"   Validit: {get_certificate_not_before(ec_cert)} - {get_certificate_expiry_time(ec_cert)}")
 
                 # Salva EC
                 with open(self.ec_path, "wb") as f:
@@ -756,7 +756,7 @@ class ITSStation:
         """
         Richiede un Authorization Ticket usando il protocollo ETSI TS 102941.
 
-        🔄 FLUSSO COMPLETO:
+        ?? FLUSSO COMPLETO:
         1. ITS-S genera HMAC key per unlinkability
         2. ITS-S crea InnerAtRequest con chiave pubblica + hmacKey
         3. ITS-S allega Enrollment Certificate
@@ -849,7 +849,7 @@ class ITSStation:
                 self.logger.info(f"Authorization Ticket ricevuto")
                 self.logger.info(f"Subject: {at_cert.subject.rfc4514_string()}")
                 self.logger.info(f"Serial: {at_cert.serial_number}")
-                self.logger.info(f"Validità: {get_certificate_not_before(at_cert)} - {get_certificate_expiry_time(at_cert)}")
+                self.logger.info(f"Validit: {get_certificate_not_before(at_cert)} - {get_certificate_expiry_time(at_cert)}")
                 self.logger.info(f"Identificatore SKI: {cert_ski}")
                 self.logger.info(f"File: {at_filename}")
                 self.logger.info(f"Path: {at_path}")

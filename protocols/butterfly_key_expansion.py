@@ -235,6 +235,36 @@ def compute_key_fingerprint(key: bytes) -> str:
     return hash_obj.hexdigest()[:16]
 
 
+def derive_ticket_hmac(master_hmac: bytes, ticket_index: int) -> bytes:
+    """
+    Deriva un HMAC key specifico per un ticket dal master HMAC.
+    
+    Usa HKDF per derivare chiavi univoche per ogni ticket nel batch,
+    garantendo unlinkability.
+    
+    Args:
+        master_hmac: Master HMAC key (32 bytes)
+        ticket_index: Indice del ticket (0-based)
+        
+    Returns:
+        HMAC key derivato per il ticket (32 bytes)
+    """
+    if len(master_hmac) != 32:
+        raise ValueError(f"master_hmac deve essere 32 bytes, ricevuto {len(master_hmac)}")
+    
+    # Info = "ticket_hmac" || index
+    info = b"ticket_hmac" + ticket_index.to_bytes(4, "big")
+    
+    kdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=info
+    )
+    
+    return kdf.derive(master_hmac)
+
+
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================

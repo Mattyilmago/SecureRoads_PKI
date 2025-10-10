@@ -58,13 +58,9 @@ class MTLSAuthenticator:
         self.logger = PKILogger.get_logger("mtls_auth", console_output=True)
         self.crl_manager = crl_manager
         
-        # Carica Root CA certificate (trust anchor)
-        if not os.path.exists(root_ca_cert_path):
-            raise FileNotFoundError(f"Root CA certificate non trovato: {root_ca_cert_path}")
-        
-        with open(root_ca_cert_path, 'rb') as f:
-            cert_data = f.read()
-            self.root_ca_cert = x509.load_pem_x509_certificate(cert_data)
+        # Carica Root CA certificate (trust anchor) con cache per performance
+        from utils.cert_cache import load_certificate_cached
+        self.root_ca_cert = load_certificate_cached(root_ca_cert_path)
         
         self.logger.info(
             f"mTLS Authenticator initialized with Root CA: {self.root_ca_cert.subject.rfc4514_string()}"

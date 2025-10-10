@@ -59,6 +59,7 @@ venv.bak/
 # Project specific
 data/
 configs/
+logs/
 *.log
 *.bak
 *.tmp
@@ -69,6 +70,7 @@ entity_configs.json
 start_all_entities.bat
 start_all_entities.ps1
 test_server_start.ps1
+running_entities_pids.txt
 
 # Test files (exclude root-level test scripts, keep test suite)
 test_*.py

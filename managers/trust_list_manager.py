@@ -75,6 +75,11 @@ class TrustListManager:
 
         # Carica metadata se esistono
         self.load_metadata()
+        
+        # Salva metadata iniziali se non esistono (primo avvio)
+        if not os.path.exists(self.metadata_path):
+            self.logger.info(f"Primo avvio: creazione metadata iniziali")
+            self.save_metadata()
 
         self.logger.info(f"TrustListManager inizializzato")
         self.logger.info(f"CTL Number attuale: {self.ctl_number}")

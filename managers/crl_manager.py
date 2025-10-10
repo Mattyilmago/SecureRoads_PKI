@@ -62,6 +62,11 @@ class CRLManager:
 
         # Carica Full CRL metadata per ricostruire lista certificati revocati
         self.load_full_crl_metadata()
+        
+        # Salva metadata iniziali se non esistono (primo avvio)
+        if not os.path.exists(self.metadata_path):
+            self.logger.info(f"Primo avvio: creazione metadata iniziali")
+            self.save_metadata()
 
         self.logger.info(f"Inizializzato per {authority_id}")
         self.logger.info(f"CRL Number attuale: {self.crl_number}")

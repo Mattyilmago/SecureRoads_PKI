@@ -44,8 +44,8 @@ class MetricsStats:
     # Per status code
     status_codes: Dict[int, int] = field(default_factory=lambda: defaultdict(int))
     
-    # Per endpoint
-    endpoints: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Per endpoint - struttura dettagliata con count, success_count, error_count, avg_latency_ms
+    endpoints: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 class MetricsCollector:
@@ -69,9 +69,12 @@ class MetricsCollector:
         
         # Real-time counters
         self._counters = {
-            'total_requests': 0,
-            'successful_requests': 0,
-            'failed_requests': 0,
+            'total_requests': 0,  # Excluding health checks
+            'successful_requests': 0,  # Excluding health checks
+            'failed_requests': 0,  # Excluding health checks
+            'health_checks': 0,  # Separate counter for health checks
+            'enrollment_certificates_issued': 0,  # EC issued by EA
+            'authorization_tickets_issued': 0,  # AT issued by AA
             'enrollment_requests': 0,
             'authorization_requests': 0,
             'butterfly_requests': 0,
@@ -105,7 +108,10 @@ class MetricsCollector:
             error: Error message if request failed
         """
         with self._lock:
-            # Create sample
+            # Skip /health and /metrics endpoints from main statistics
+            is_health_check = endpoint in ['/health', '/api/monitoring/metrics', '/metrics']
+            
+            # Create sample (always store, even health checks)
             sample = MetricsSample(
                 timestamp=datetime.now(timezone.utc),
                 endpoint=endpoint,
@@ -122,17 +128,26 @@ class MetricsCollector:
             if len(self._samples) > self.max_samples:
                 self._samples.pop(0)
             
-            # Update counters
-            self._counters['total_requests'] += 1
-            if 200 <= status_code < 300:
-                self._counters['successful_requests'] += 1
+            # Count health checks separately
+            if is_health_check:
+                self._counters['health_checks'] += 1
             else:
-                self._counters['failed_requests'] += 1
+                # Update main counters (excluding health checks)
+                self._counters['total_requests'] += 1
+                if 200 <= status_code < 300:
+                    self._counters['successful_requests'] += 1
+                else:
+                    self._counters['failed_requests'] += 1
+                
+                # Track latency (only for real requests)
+                self._latencies.append(latency_ms)
+                if len(self._latencies) > 1000:  # Keep last 1000
+                    self._latencies.pop(0)
             
-            # Track endpoint-specific counters
-            if 'enrollment' in endpoint:
+            # Track endpoint-specific counters (including success status)
+            if 'enrollment' in endpoint and 200 <= status_code < 300:
                 self._counters['enrollment_requests'] += 1
-            elif 'authorization' in endpoint:
+            elif 'authorization' in endpoint and 200 <= status_code < 300:
                 if 'butterfly' in endpoint:
                     self._counters['butterfly_requests'] += 1
                 else:
@@ -141,11 +156,19 @@ class MetricsCollector:
                 self._counters['crl_downloads'] += 1
             elif 'trust-list' in endpoint:
                 self._counters['ctl_downloads'] += 1
-            
-            # Track latency
-            self._latencies.append(latency_ms)
-            if len(self._latencies) > 1000:  # Keep last 1000
-                self._latencies.pop(0)
+    
+    def increment_counter(self, counter_name: str, value: int = 1):
+        """
+        Increment a specific counter (for certificates/tickets issued)
+        
+        Args:
+            counter_name: Name of counter to increment
+            value: Amount to increment (default 1)
+        """
+        with self._lock:
+            if counter_name not in self._counters:
+                self._counters[counter_name] = 0
+            self._counters[counter_name] += value
     
     def get_stats(self, last_n_minutes: Optional[int] = None) -> MetricsStats:
         """
@@ -192,10 +215,31 @@ class MetricsCollector:
             for sample in samples:
                 status_codes[sample.status_code] += 1
             
-            # Endpoint distribution
-            endpoints = defaultdict(int)
+            # Endpoint distribution with detailed stats
+            endpoints_data = defaultdict(lambda: {
+                'samples': [],
+                'success_count': 0,
+                'error_count': 0
+            })
+            
             for sample in samples:
-                endpoints[sample.endpoint] += 1
+                endpoint_key = sample.endpoint
+                endpoints_data[endpoint_key]['samples'].append(sample)
+                if 200 <= sample.status_code < 300:
+                    endpoints_data[endpoint_key]['success_count'] += 1
+                else:
+                    endpoints_data[endpoint_key]['error_count'] += 1
+            
+            # Calculate aggregated stats per endpoint
+            endpoints = {}
+            for endpoint, data in endpoints_data.items():
+                endpoint_latencies = [s.latency_ms for s in data['samples']]
+                endpoints[endpoint] = {
+                    'count': len(data['samples']),
+                    'success_count': data['success_count'],
+                    'error_count': data['error_count'],
+                    'avg_latency_ms': sum(endpoint_latencies) / len(endpoint_latencies) if endpoint_latencies else 0.0
+                }
             
             return MetricsStats(
                 total_requests=total,
@@ -207,7 +251,7 @@ class MetricsCollector:
                 error_rate=error_rate,
                 requests_per_second=rps,
                 status_codes=dict(status_codes),
-                endpoints=dict(endpoints)
+                endpoints=endpoints
             )
     
     def get_counters(self) -> Dict[str, int]:

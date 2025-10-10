@@ -81,7 +81,7 @@ def create_app(
         resources={r"/*": {"origins": cors_origins}},
         allow_headers=["Content-Type", "X-API-Key", "Authorization"],
         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        supports_credentials=True
+        supports_credentials=False  # Set to False for simpler CORS during development
     )
 
     # Setup logging
@@ -174,6 +174,7 @@ def create_app(
             from .blueprints.crl_bp import create_crl_blueprint
             from .blueprints.enrollment_bp import create_enrollment_blueprint
             from .blueprints.enrollment_simple_bp import create_simple_enrollment_blueprint
+            from .blueprints.stats_bp import create_stats_blueprint
 
             enrollment_bp = create_enrollment_blueprint(entity_instance)
             app.register_blueprint(enrollment_bp, url_prefix="/api/enrollment")
@@ -184,6 +185,9 @@ def create_app(
 
             crl_bp = create_crl_blueprint(entity_instance)
             app.register_blueprint(crl_bp, url_prefix="/api/crl")
+            
+            stats_bp = create_stats_blueprint(entity_instance, "EA")
+            app.register_blueprint(stats_bp, url_prefix="/api/stats")
 
             app.logger.info("Registered EA endpoints:")
             app.logger.info("  POST /api/enrollment/request (ETSI ASN.1 OER)")
@@ -191,6 +195,7 @@ def create_app(
             app.logger.info("  POST /api/enrollment/validation")
             app.logger.info("  GET  /api/crl/full")
             app.logger.info("  GET  /api/crl/delta")
+            app.logger.info("  GET  /api/stats")
         except ImportError as e:
             app.logger.warning(f"Could not import blueprints: {e}")
 
@@ -198,7 +203,9 @@ def create_app(
         # Authorization Authority endpoints
         try:
             from .blueprints.authorization_bp import create_authorization_blueprint
+            from .blueprints.authorization_simple_bp import create_simple_authorization_blueprint
             from .blueprints.crl_bp import create_crl_blueprint
+            from .blueprints.stats_bp import create_stats_blueprint
 
             authorization_bp = create_authorization_blueprint(entity_instance)
             if authorization_bp is None:
@@ -207,14 +214,24 @@ def create_app(
 
             app.register_blueprint(authorization_bp, url_prefix="/api/authorization")
 
+            # Simplified JSON endpoint for testing (NOT ETSI compliant)
+            authorization_simple_bp = create_simple_authorization_blueprint(entity_instance)
+            app.register_blueprint(authorization_simple_bp, url_prefix="/api/authorization")
+
             crl_bp = create_crl_blueprint(entity_instance)
             app.register_blueprint(crl_bp, url_prefix="/api/crl")
+            
+            stats_bp = create_stats_blueprint(entity_instance, "AA")
+            app.register_blueprint(stats_bp, url_prefix="/api/stats")
 
             app.logger.info("Registered AA endpoints:")
-            app.logger.info("  POST /api/authorization/request")
-            app.logger.info("  POST /api/authorization/request/butterfly")
+            app.logger.info("  POST /api/authorization/request (ETSI ASN.1 OER)")
+            app.logger.info("  POST /api/authorization/request/simple (JSON - TESTING ONLY)")
+            app.logger.info("  POST /api/authorization/butterfly-request (ETSI ASN.1 OER)")
+            app.logger.info("  POST /api/authorization/butterfly-request/simple (JSON - TESTING ONLY)")
             app.logger.info("  GET  /api/crl/full")
             app.logger.info("  GET  /api/crl/delta")
+            app.logger.info("  GET  /api/stats")
         except Exception as e:
             app.logger.error(f"Error registering AA blueprints: {e}")
             import traceback
@@ -225,13 +242,37 @@ def create_app(
         # Trust List Manager endpoints
         try:
             from .blueprints.trust_list_bp import create_trust_list_blueprint
+            from .blueprints.stats_bp import create_stats_blueprint
 
             tlm_bp = create_trust_list_blueprint(entity_instance)
             app.register_blueprint(tlm_bp, url_prefix="/api/trust-list")
+            
+            stats_bp = create_stats_blueprint(entity_instance, "TLM")
+            app.register_blueprint(stats_bp, url_prefix="/api/stats")
 
             app.logger.info("Registered TLM endpoints:")
             app.logger.info("  GET /api/trust-list/full")
             app.logger.info("  GET /api/trust-list/delta")
+            app.logger.info("  GET /api/stats")
+        except ImportError as e:
+            app.logger.warning(f"Could not import blueprints: {e}")
+    
+    elif entity_type == "RootCA":
+        # Root CA endpoints
+        try:
+            from .blueprints.crl_bp import create_crl_blueprint
+            from .blueprints.stats_bp import create_stats_blueprint
+
+            crl_bp = create_crl_blueprint(entity_instance)
+            app.register_blueprint(crl_bp, url_prefix="/api/crl")
+            
+            stats_bp = create_stats_blueprint(entity_instance, "RootCA")
+            app.register_blueprint(stats_bp, url_prefix="/api/stats")
+
+            app.logger.info("Registered RootCA endpoints:")
+            app.logger.info("  GET /api/crl/full")
+            app.logger.info("  GET /api/crl/delta")
+            app.logger.info("  GET /api/stats")
         except ImportError as e:
             app.logger.warning(f"Could not import blueprints: {e}")
     

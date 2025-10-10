@@ -31,6 +31,12 @@ def create_simple_enrollment_blueprint(ea_instance):
     bp = Blueprint("enrollment_simple", __name__)
     bp.ea = ea_instance
 
+    # OPTIONS handler for CORS preflight
+    @bp.route("/request/simple", methods=["OPTIONS"])
+    def simple_enrollment_request_options():
+        """Handle CORS preflight for enrollment request"""
+        return "", 204
+
     @bp.route("/request/simple", methods=["POST"])
     @rate_limit
     @optional_auth
@@ -143,6 +149,11 @@ def create_simple_enrollment_blueprint(ea_instance):
                 current_app.logger.info(f"Serial: {serial}")
                 current_app.logger.info(f"Valid: {not_before} to {not_after}")
                 
+                # Increment metrics counter for issued certificates
+                from utils.metrics import get_metrics_collector
+                metrics = get_metrics_collector()
+                metrics.increment_counter('enrollment_certificates_issued')
+                
                 # 8. Return response
                 return jsonify({
                     "success": True,
@@ -179,6 +190,66 @@ def create_simple_enrollment_blueprint(ea_instance):
             current_app.logger.error(traceback.format_exc())
             return jsonify({
                 "error": "Internal server error",
+                "message": str(e)
+            }), 500
+
+    @bp.route("/publish-crl", methods=["POST"])
+    def publish_crl():
+        """
+        POST /enrollment/publish-crl
+        
+        Force publication of CRL (for testing purposes).
+        
+        Request Body (JSON):
+            {
+                "validity_days": 30  # Optional, default 30
+            }
+        
+        Response Body (JSON):
+            {
+                "success": true,
+                "message": "CRL published successfully",
+                "crl_path": "/path/to/crl/file",
+                "next_update": "2025-11-09T..."
+            }
+        """
+        current_app.logger.info("=" * 80)
+        current_app.logger.info("Force CRL Publication")
+        current_app.logger.info("=" * 80)
+        
+        try:
+            data = request.get_json() if request.is_json else {}
+            validity_days = data.get("validity_days", 30)
+            
+            # Check if EA has CRL manager
+            if not hasattr(bp.ea, 'crl_manager'):
+                return jsonify({
+                    "error": "CRL manager not available",
+                    "message": "EA does not have CRL manager configured"
+                }), 500
+            
+            # Publish CRL
+            crl_path = bp.ea.publish_crl(validity_days=validity_days)
+            
+            current_app.logger.info(f"✅ CRL published: {crl_path}")
+            
+            from datetime import datetime, timedelta
+            next_update = datetime.utcnow() + timedelta(days=validity_days)
+            
+            return jsonify({
+                "success": True,
+                "message": "CRL published successfully",
+                "crl_path": str(crl_path),
+                "next_update": next_update.isoformat(),
+                "validity_days": validity_days
+            }), 200
+            
+        except Exception as e:
+            current_app.logger.error(f"Failed to publish CRL: {e}")
+            import traceback
+            current_app.logger.error(traceback.format_exc())
+            return jsonify({
+                "error": "Failed to publish CRL",
                 "message": str(e)
             }), 500
 

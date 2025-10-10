@@ -43,7 +43,7 @@ class AuthorizationAuthority:
         Args:
             root_ca: Riferimento alla Root CA
             tlm: TrustListManager per validazione EC
-            ea_certificate_path: Path certificato EA singola (modalità legacy)
+            ea_certificate_path: Path certificato EA singola (modalit legacy)
             aa_id: ID dell'AA (generato automaticamente se None)
             base_dir: Directory base per dati AA
         """
@@ -57,7 +57,7 @@ class AuthorizationAuthority:
 
         # Logger initialization (must be before any logger calls)
         self.log_dir = os.path.join(base_dir, "logs")
-        # aa_id contiene già il prefisso "AA_"
+        # aa_id contiene gi il prefisso "AA_"
         self.logger = PKILogger.get_logger(name=aa_id, log_dir=self.log_dir, console_output=True)
 
         self.logger.info("=" * 80)
@@ -77,12 +77,12 @@ class AuthorizationAuthority:
         self.ea_certificate_path = ea_certificate_path
         self.ea_certificate = None
 
-        # Determina modalità operativa
+        # Determina modalit operativa
         if self.tlm:
-            self.logger.info(f"Modalità TLM: validazione EC tramite Trust List Manager")
+            self.logger.info(f"Modalit TLM: validazione EC tramite Trust List Manager")
             self.validation_mode = "TLM"
         elif self.ea_certificate_path:
-            self.logger.info(f"[WARNING] Modalità LEGACY: validazione EC tramite EA singola")
+            self.logger.info(f"[WARNING] Modalit LEGACY: validazione EC tramite EA singola")
             self.validation_mode = "LEGACY"
         else:
             self.logger.info(f"[WARNING] WARNING: Nessun metodo di validazione EC configurato!")
@@ -104,11 +104,11 @@ class AuthorizationAuthority:
             dirs_to_create.append(os.path.dirname(self.ea_certificate_path))
 
         PKIFileHandler.ensure_directories(*dirs_to_create)
-        self.logger.info(f"Directory create o già esistenti: {len(dirs_to_create)} cartelle")
+        self.logger.info(f"Directory create o gi esistenti: {len(dirs_to_create)} cartelle")
 
         self.load_or_generate_aa()
 
-        # Legacy: carica EA certificate se modalità legacy
+        # Legacy: carica EA certificate se modalit legacy
         if self.validation_mode == "LEGACY":
             self.load_ea_certificate()
 
@@ -192,7 +192,7 @@ class AuthorizationAuthority:
         self.logger.info(f"Ricevuta richiesta di Authorization Ticket da ITS-S {its_id}")
         try:
             ec_certificate = x509.load_pem_x509_certificate(ec_pem)
-            self.logger.info(f"EC caricato per ITS-S {its_id}, verifico chain e validità...")
+            self.logger.info(f"EC caricato per ITS-S {its_id}, verifico chain e validit...")
 
             # === VALIDAZIONE EC ===
             if self.validation_mode == "TLM":
@@ -237,55 +237,43 @@ class AuthorizationAuthority:
         )
         return at_certificate
 
-    # Firma la chiave pubblica dell’ITS-S ricevuta via EC, genera il certificato AT e lo salva
+    # Firma la chiave pubblica dellITS-S ricevuta via EC, genera il certificato AT e lo salva
     def issue_authorization_ticket(self, its_id, public_key, attributes=None):
-        self.logger.info(f"Inizio emissione Authorization Ticket")
-        subject = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ITS-S"),
-                x509.NameAttribute(NameOID.COMMON_NAME, its_id),
-            ]
-        )
+        """Emette un Authorization Ticket (ottimizzato per performance)."""
+        # Costruzione certificato in memoria
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ITS-S"),
+            x509.NameAttribute(NameOID.COMMON_NAME, its_id),
+        ])
+        
+        now_utc = datetime.now(timezone.utc)
         cert_builder = (
             x509.CertificateBuilder()
             .subject_name(subject)
             .issuer_name(self.certificate.subject)
             .public_key(public_key)
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.now(timezone.utc))
-            .not_valid_after(
-                datetime.now(timezone.utc)
-                + timedelta(weeks=1)  # ETSI TS 102 941: AT validity tipicamente 1 settimana
-            )
-            .add_extension(
-                x509.BasicConstraints(ca=False, path_length=None),
-                critical=True,
-            )
+            .not_valid_before(now_utc)
+            .not_valid_after(now_utc + timedelta(weeks=1))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         )
 
+        # Firma (operazione crittografica veloce)
         certificate = cert_builder.sign(self.private_key, hashes.SHA256())
 
-        # Usa identificatore univoco basato su SKI (come RootCA per subordinates)
-        cert_ski = get_certificate_ski(certificate)[:8]  # Primi 8 caratteri dello SKI
+        # Salvataggio ottimizzato
+        cert_ski = get_certificate_ski(certificate)[:8]
         at_filename = f"AT_{cert_ski}.pem"
         at_path = os.path.join(self.ticket_dir, at_filename)
 
-        self.logger.info(f"========================================")
-        self.logger.info(f"Authorization Ticket generato")
-        self.logger.info(f"ITS-S: {its_id}")
-        self.logger.info(f"Identificatore SKI: {cert_ski}")
-        self.logger.info(f"Serial: {certificate.serial_number}")
-        self.logger.info(f"Validità: {get_certificate_not_before(certificate)} → {get_certificate_expiry_time(certificate)}")
-        self.logger.info(f"File: {at_filename}")
-        self.logger.info(f"Path: {at_path}")
-
-        os.makedirs(os.path.dirname(at_path), exist_ok=True)
         with open(at_path, "wb") as f:
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
 
-        self.logger.info(f"Authorization Ticket salvato con successo!")
-        self.logger.info(f"========================================")
+        # Log minimo solo in debug mode
+        if self.logger.level <= 10:
+            self.logger.debug(f"AT emesso: {cert_ski}, serial: {certificate.serial_number}")
+        
         return certificate
 
     def issue_authorization_ticket_batch(self, its_id, public_keys, attributes=None):
@@ -300,7 +288,7 @@ class AuthorizationAuthority:
         Returns:
             Lista di certificati AT generati
         """
-        # Se its_id è un oggetto SharedAtRequest, converti
+        # Se its_id  un oggetto SharedAtRequest, converti
         if hasattr(its_id, "eaId"):
             shared_request = its_id
             inner_requests = public_keys
@@ -315,9 +303,9 @@ class AuthorizationAuthority:
                 if hasattr(req, "publicKeys"):
                     pk = req.publicKeys
                     if isinstance(pk, dict):
-                        # publicKeys è un dict, prendi il primo valore
+                        # publicKeys  un dict, prendi il primo valore
                         for key in pk.values():
-                            # La chiave può essere bytes o già un oggetto chiave pubblica
+                            # La chiave pu essere bytes o gi un oggetto chiave pubblica
                             if isinstance(key, bytes):
                                 # Prova a convertire bytes in chiave pubblica EC
                                 try:
@@ -331,11 +319,11 @@ class AuthorizationAuthority:
                                     # Se fallisce la deserializzazione, usa i bytes direttamente
                                     extracted_keys.append(key)
                             else:
-                                # È già un oggetto chiave pubblica
+                                #  gi un oggetto chiave pubblica
                                 extracted_keys.append(key)
                             break  # Una chiave per request
                     else:
-                        # publicKeys è direttamente una chiave pubblica
+                        # publicKeys  direttamente una chiave pubblica
                         extracted_keys.append(pk)
             public_keys = extracted_keys if extracted_keys else public_keys
         else:
@@ -389,9 +377,9 @@ class AuthorizationAuthority:
         per consolidare tutte le Delta CRL in una nuova Full CRL.
 
         Args:
-            validity_days: Numero di giorni di validità della Full CRL (default: 7)
+            validity_days: Numero di giorni di validit della Full CRL (default: 7)
         """
-        self.logger.info(f"Pubblicando Full CRL AA (validità: {validity_days} giorni)...")
+        self.logger.info(f"Pubblicando Full CRL AA (validit: {validity_days} giorni)...")
         self.crl_manager.publish_full_crl(validity_days=validity_days)
         self.logger.info(f"Full CRL AA pubblicata con successo!")
 
@@ -414,7 +402,7 @@ class AuthorizationAuthority:
         """
         Processa una AuthorizationRequest ETSI TS 102941 (ASN.1 OER encoded).
 
-        🔄 FLUSSO COMPLETO:
+        ?? FLUSSO COMPLETO:
         1. Decripta e decodifica AuthorizationRequest (ASN.1 OER)
         2. Estrae Enrollment Certificate allegato
         3. Valida EC tramite TLM o EA (legacy)
@@ -444,7 +432,7 @@ class AuthorizationAuthority:
             self.logger.info(f"   Requested attributes: {inner_at_request.requestedSubjectAttributes}")
 
             # 2. Estrai Enrollment Certificate dalla request
-            # NOTA: In ETSI TS 102941, l'EC è allegato nell'AuthorizationRequest
+            # NOTA: In ETSI TS 102941, l'EC  allegato nell'AuthorizationRequest
             # Per ora usiamo un placeholder, in futuro va estratto dal messaggio ASN.1
             self.logger.info(f"Estrazione Enrollment Certificate da request...")
             # TODO: Implementare estrazione EC dal messaggio ASN.1

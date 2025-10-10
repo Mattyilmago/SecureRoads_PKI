@@ -135,6 +135,12 @@ class RootCA:
         self.logger.info(f"Saving certificate to: {self.ca_certificate_path}")
         with open(self.ca_certificate_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
+        
+        # Invalidate certificate cache to ensure all entities load new cert
+        from utils.cert_cache import invalidate_certificate_cache
+        invalidate_certificate_cache(self.ca_certificate_path)
+        self.logger.info("Certificate cache invalidated - entities will load new cert")
+        
         self.logger.info("Certificato self-signed generato e salvato con successo!")
 
     # Carica la chiave privata ECC dal file PEM
@@ -152,7 +158,7 @@ class RootCA:
         # Usa utility per datetime UTC-aware
         valid_from = get_certificate_not_before(self.certificate)
         valid_to = get_certificate_expiry_time(self.certificate)
-        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
+        self.logger.info(f"Validit: dal {valid_from} al {valid_to}")
 
     # Firma un certificato subordinato (EA/AA)
     def sign_certificate(self, subject_public_key, subject_name, is_ca=False):
@@ -177,7 +183,7 @@ class RootCA:
             .public_key(subject_public_key)
             .serial_number(serial_number)
             .not_valid_before(datetime.now(timezone.utc))
-            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))  # 1 anno di validità
+            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))  # 1 anno di validit
             .add_extension(
                 x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None),
                 critical=True,
@@ -189,7 +195,7 @@ class RootCA:
         # Usa utility per datetime UTC-aware
         valid_from = get_certificate_not_before(cert)
         valid_to = get_certificate_expiry_time(cert)
-        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
+        self.logger.info(f"Validit: dal {valid_from} al {valid_to}")
         return cert
 
     # Salva certificato subordinato su file
@@ -198,9 +204,9 @@ class RootCA:
         Salva il certificato subordinato firmato nell'archivio della RootCA.
 
         Ogni certificato viene salvato con un nome univoco che include l'ID
-        dell'autorità, permettendo di archiviare certificati di più EA e AA.
+        dell'autorit, permettendo di archiviare certificati di pi EA e AA.
 
-        Nota: Ogni autorità subordinata (EA/AA) salva già il proprio certificato
+        Nota: Ogni autorit subordinata (EA/AA) salva gi il proprio certificato
         nella propria cartella durante l'inizializzazione. Questo metodo serve
         solo per mantenere una copia archivio centralizzata presso la RootCA.
 
@@ -227,7 +233,7 @@ class RootCA:
             cert_filename = f"AA_{cert_ski}.pem"
             authority_type = "Authorization Authority"
         else:
-            # Default: autorità generica
+            # Default: autorit generica
             authority_type = "Subordinate Authority"
             cert_filename = f"SUB_{cert_ski}.pem"
 
@@ -268,7 +274,7 @@ class RootCA:
         # Aggiungi al CRLManager invece che alla lista locale
         self.crl_manager.add_revoked_certificate(certificate, reason)
 
-        # Mantieni anche nella lista locale per retrocompatibilità (se necessario)
+        # Mantieni anche nella lista locale per retrocompatibilit (se necessario)
         expiry_date = get_certificate_expiry_time(certificate)
         self.revoked.append(
             {
@@ -288,7 +294,7 @@ class RootCA:
         Genera e pubblica una Full CRL contenente tutti i certificati revocati.
 
         Args:
-            validity_days: Giorni di validità della Full CRL (default: 7 giorni)
+            validity_days: Giorni di validit della Full CRL (default: 7 giorni)
 
         Returns:
             La CRL generata
@@ -304,7 +310,7 @@ class RootCA:
         Genera e pubblica una Delta CRL contenente solo le nuove revoche.
 
         Args:
-            validity_hours: Ore di validità della Delta CRL (default: 24 ore)
+            validity_hours: Ore di validit della Delta CRL (default: 24 ore)
 
         Returns:
             La Delta CRL generata o None se non ci sono nuove revoche
@@ -345,7 +351,7 @@ class RootCA:
         return self.crl_manager.load_delta_crl()
 
     def load_crl(self):
-        """Carica la Full CRL (wrapper per retrocompatibilità)."""
+        """Carica la Full CRL (wrapper per retrocompatibilit)."""
         self.logger.info("Caricamento Full CRL via metodo legacy")
         return self.load_full_crl()
 

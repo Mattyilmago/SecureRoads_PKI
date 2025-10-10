@@ -32,6 +32,11 @@ def setup_monitoring(app):
     def after_request(response):
         """Record metrics after request completes"""
         if hasattr(g, 'start_time'):
+            # Skip OPTIONS requests (CORS preflight) from metrics
+            if request.method == 'OPTIONS':
+                response.headers['X-Response-Time'] = '0.00ms (preflight)'
+                return response
+            
             # Calculate latency
             latency_ms = (time.time() - g.start_time) * 1000
             

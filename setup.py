@@ -140,15 +140,6 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
         try:
             root_ca, root_ca_created = ensure_root_ca_exists()
             
-            # Aggiungi RootCA alla configurazione
-            entity_config = {
-                "type": "RootCA",
-                "id": "ROOT_CA",
-                "port": "auto",  # Auto-selezione porta 5999
-                "host": "0.0.0.0"
-            }
-            config["entities"].append(entity_config)
-            
             # Comando per avviare RootCA
             start_cmd = f"python server.py --entity RootCA --id ROOT_CA"
             config["start_commands"].append({
@@ -195,14 +186,6 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
                         break
                     ea_num += 1
             
-            entity_config = {
-                "type": "EA",
-                "id": ea_id,
-                "port": "auto",  # Auto-selezione dal range 5000-5019
-                "host": "0.0.0.0"
-            }
-            config["entities"].append(entity_config)
-            
             # Comando per avviare (senza --port, usa auto-selezione)
             start_cmd = f"python server.py --entity EA --id {ea_id}"
             config["start_commands"].append({
@@ -235,14 +218,6 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
                         break
                     aa_num += 1
             
-            entity_config = {
-                "type": "AA",
-                "id": aa_id,
-                "port": "auto",  # Auto-selezione dal range 5020-5039
-                "host": "0.0.0.0"
-            }
-            config["entities"].append(entity_config)
-            
             # Comando per avviare (senza --port, usa auto-selezione)
             start_cmd = f"python server.py --entity AA --id {aa_id}"
             config["start_commands"].append({
@@ -268,14 +243,6 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
         else:
             print(f"  🆕 Creazione nuovo TLM '{tlm_id}'")
         
-        entity_config = {
-            "type": "TLM",
-            "id": tlm_id,
-            "port": "auto",  # Auto-selezione porta 5050
-            "host": "0.0.0.0"
-        }
-        config["entities"].append(entity_config)
-        
         # Comando per avviare (senza --port, usa auto-selezione)
         start_cmd = f"python server.py --entity TLM --id {tlm_id}"
         config["start_commands"].append({
@@ -288,7 +255,7 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
         print(f"  ℹ️  NOTA: TLM è unico e centralizzato per tutta la PKI")
     
     print("\n" + "="*70)
-    print(f"✅ Generazione completata! Totale entità: {len(config['entities'])}")
+    print(f"✅ Generazione completata! Totale comandi: {len(config['start_commands'])}")
     print("="*70 + "\n")
     
     return config
@@ -350,65 +317,131 @@ def generate_powershell_script(config, output_file="start_all_entities.ps1"):
 
 def start_entities_in_vscode_terminals(config):
     """
-    Avvia automaticamente ogni entità in un terminale PowerShell separato.
-    Ogni entità avrà la propria finestra persistente.
+    Avvia automaticamente ogni entità come processi background SENZA finestre.
+    Usa pythonw.exe (Python headless) per evitare completamente le finestre.
     """
     print("\n" + "="*70)
-    print("🚀 AVVIO AUTOMATICO ENTITÀ IN TERMINALI SEPARATI")
+    print("🚀 AVVIO AUTOMATICO ENTITÀ IN BACKGROUND (NO WINDOWS)")
     print("="*70 + "\n")
     
+    import time
+    import sys
     started_count = 0
     failed_count = 0
+    processes = []
+    
+    # Crea directory per i log
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Determina l'eseguibile Python senza finestra
+    # pythonw.exe è la versione di Python senza console window
+    python_exe = sys.executable
+    if python_exe.endswith('python.exe'):
+        pythonw_exe = python_exe.replace('python.exe', 'pythonw.exe')
+        if not os.path.exists(pythonw_exe):
+            print(f"  ⚠️  pythonw.exe not found, using python.exe with hidden window flag")
+            pythonw_exe = python_exe
+    else:
+        pythonw_exe = python_exe
+    
+    print(f"  📌 Using: {pythonw_exe}")
+    print()
     
     for idx, cmd_info in enumerate(config["start_commands"]):
         entity_id = cmd_info["entity"]
         command = cmd_info["command"]
         
         try:
-            # Crea un nuovo terminale PowerShell persistente per ogni entità
-            # Il terminale rimane aperto e mostra l'output
-            # Imposta encoding UTF-8 per supportare emoji
-            ps_command = f'[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $env:PYTHONIOENCODING="utf-8"; cd "{os.getcwd()}"; Write-Host "Starting {entity_id}..." -ForegroundColor Cyan; {command}'
+            print(f"  ⏳ Starting {entity_id}...")
             
-            # Esegui il comando in un nuovo processo PowerShell che rimane aperto
+            # Crea file di log per questa entità
+            log_file = log_dir / f"{entity_id}.log"
+            
+            # Estrai il comando Python dal command string
+            # Formato: "python server.py --entity EA --id EA_001"
+            if command.startswith("python "):
+                cmd_parts = command.split(" ", 1)  # ["python", "server.py --entity EA --id EA_001"]
+                python_args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+            else:
+                python_args = command
+            
+            # Apri file di log
+            log_f = open(log_file, 'a', encoding='utf-8')
+            log_f.write(f"\n{'='*70}\n")
+            log_f.write(f"Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_f.write(f"Command: {command}\n")
+            log_f.write(f"{'='*70}\n\n")
+            log_f.flush()
+            
+            # Crea il processo usando pythonw.exe (senza finestra)
+            # oppure usa CREATE_NO_WINDOW flag se pythonw non disponibile
+            startup_info = None
+            creation_flags = 0
+            
+            if os.name == 'nt':  # Windows
+                startup_info = subprocess.STARTUPINFO()
+                startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startup_info.wShowWindow = subprocess.SW_HIDE
+                creation_flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            
+            # Avvia il processo
             result = subprocess.Popen(
-                ["powershell", "-NoExit", "-Command", ps_command],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                [pythonw_exe] + python_args.split(),
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creation_flags,
+                startupinfo=startup_info,
                 cwd=os.getcwd()
             )
             
             # Attendi un momento per verificare che il processo sia partito
-            # Delay più lungo per dare tempo al sistema di rilasciare le porte
-            import time
-            time.sleep(0.8)  # Aumentato da 0.3 a 0.8 secondi
+            time.sleep(0.8)
             
             # Verifica se il processo è ancora in esecuzione
             if result.poll() is None:
-                print(f"  ✅ {entity_id} avviato in terminale separato (PID: {result.pid})")
+                processes.append({
+                    'entity': entity_id,
+                    'pid': result.pid,
+                    'process': result,
+                    'log': str(log_file),
+                    'log_handle': log_f
+                })
+                print(f"  ✅ {entity_id} started (PID: {result.pid}) → Log: {log_file}")
                 started_count += 1
                 
-                # Delay aggiuntivo tra entità per evitare conflitti di porta
+                # Delay tra entità per evitare conflitti di porta
                 if idx < len(config["start_commands"]) - 1:
-                    time.sleep(1.5)  # Pausa tra un avvio e l'altro
+                    time.sleep(1.5)
             else:
-                print(f"  ⚠️  {entity_id} processo terminato immediatamente")
+                print(f"  ⚠️  {entity_id} process terminated immediately (check log: {log_file})")
+                log_f.close()
                 failed_count += 1
                 
-        except subprocess.TimeoutExpired:
-            print(f"  ⚠️  {entity_id} timeout (probabilmente avviato correttamente)")
-            started_count += 1
         except Exception as e:
-            print(f"  ❌ Errore avviando {entity_id}: {e}")
+            print(f"  ❌ Error starting {entity_id}: {e}")
             failed_count += 1
     
     print(f"\n{'='*70}")
-    print(f"📊 Riepilogo: {started_count} entità avviate, {failed_count} errori")
+    print(f"📊 Summary: {started_count} entities started, {failed_count} errors")
     print(f"{'='*70}\n")
     
     if started_count > 0:
-        print("💡 Le entità sono in esecuzione in terminali separati.")
-        print("   Ogni entità ha la propria finestra PowerShell.")
-        print("   Attendi 5-10 secondi per il completo avvio degli endpoint HTTP.\n")
+        print("💡 Entities are running as HIDDEN background processes (NO WINDOWS!).")
+        print(f"   📁 Logs are in: ./{log_dir}/")
+        print("   📊 Check dashboard or use: Get-Process pythonw*\n")
+        print("   🛑 To stop all: Get-Process pythonw* | Stop-Process -Force\n")
+        
+        # Salva i PID in un file per riferimento
+        pids_file = "running_entities_pids.txt"
+        with open(pids_file, 'w', encoding='utf-8') as f:
+            f.write(f"# PKI Entities PIDs - Started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"# All running as pythonw.exe (no windows)\n")
+            f.write(f"# To stop: Get-Process pythonw* | Stop-Process -Force\n\n")
+            for p in processes:
+                f.write(f"{p['entity']}: PID {p['pid']} -> {p['log']}\n")
+        print(f"   📋 PIDs saved to: {pids_file}")
     
     return started_count > 0
 
@@ -436,7 +469,7 @@ Examples:
 
 Note:
   - RootCA viene verificata/creata automaticamente (disabilita con --no-root-ca)
-  - TLM è sempre singolo e centralizzato (non multiplo)
+  - TLM viene incluso automaticamente (disabilita con --no-tlm)
   - Le entità vengono avviate automaticamente in terminali separati
   - Usa --no-auto-start per generare solo le configurazioni
         """
@@ -444,7 +477,8 @@ Note:
     
     parser.add_argument("--ea", type=int, default=0, help="Numero di Enrollment Authorities da generare")
     parser.add_argument("--aa", type=int, default=0, help="Numero di Authorization Authorities da generare")
-    parser.add_argument("--tlm", action="store_true", help="Includi Trust List Manager (sempre singolo e centralizzato)")
+    parser.add_argument("--tlm", action="store_true", default=True, help="Includi Trust List Manager (default: True, sempre singolo e centralizzato)")
+    parser.add_argument("--no-tlm", action="store_true", help="NON includere Trust List Manager")
     parser.add_argument("--root-ca", action="store_true", default=True, help="Verifica/crea Root CA (default: True)")
     parser.add_argument("--no-root-ca", action="store_true", help="NON verificare/creare Root CA")
     parser.add_argument("--ea-names", type=str, help="Nomi custom per le EA, separati da virgola (es: EA_HIGHWAY_01,EA_CITY_01)")
@@ -484,8 +518,8 @@ Note:
     else:
         num_ea = args.ea
         num_aa = args.aa
-        # TLM da argomenti: True diventa 1, False diventa 0
-        num_tlm = 1 if args.tlm else 0
+        # TLM da argomenti: default True, disabilitato con --no-tlm
+        num_tlm = 0 if args.no_tlm else 1
     
     # Determina se creare/verificare RootCA
     ensure_root_ca = not args.no_root_ca

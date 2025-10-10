@@ -49,7 +49,7 @@ class EnrollmentAuthority:
         self.log_dir = os.path.join(base_dir, "logs/")
         self.backup_dir = os.path.join(base_dir, "backup/")
         
-        # Inizializza logger (ea_id contiene già il prefisso "EA_")
+        # Inizializza logger (ea_id contiene gi il prefisso "EA_")
         self.logger = PKILogger.get_logger(
             name=ea_id,
             log_dir=self.log_dir,
@@ -66,8 +66,12 @@ class EnrollmentAuthority:
         self.root_ca = root_ca
         self.private_key = None
         self.certificate = None
-        # Use the certificate directly from RootCA instance
-        self.root_ca_certificate = root_ca.certificate
+        
+        # IMPORTANT: Load Root CA certificate from file (not memory reference)
+        # This ensures we always use the latest Root CA cert, even after rotation
+        root_ca_cert_path = os.path.join("data/root_ca/certificates", "root_ca_certificate.pem")
+        from utils.cert_cache import load_certificate_cached
+        self.root_ca_certificate = load_certificate_cached(root_ca_cert_path)
 
         self.logger.info("Creando directory necessarie...")
         PKIFileHandler.ensure_directories(
@@ -164,7 +168,7 @@ class EnrollmentAuthority:
         # Usa utility per datetime UTC-aware
         valid_from = get_certificate_not_before(self.certificate)
         valid_to = get_certificate_expiry_time(self.certificate)
-        self.logger.info(f"Validità: dal {valid_from} al {valid_to}")
+        self.logger.info(f"Validit: dal {valid_from} al {valid_to}")
 
     # Emette EC da una richiesta CSR
     def process_csr(self, csr_pem, its_id, attributes=None):
@@ -184,17 +188,16 @@ class EnrollmentAuthority:
 
     # Firma la chiave pubblica ricevuta via CSR e crea il certificato EC
     def issue_enrollment_certificate(self, its_id, public_key, attributes=None):
-        self.logger.info(f"Emettendo Enrollment Certificate per ITS-S: {its_id}")
-        subject = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ITS-S"),
-                x509.NameAttribute(NameOID.COMMON_NAME, its_id),
-            ]
-        )
+        """Emette un Enrollment Certificate (ottimizzato per performance)."""
+        # Costruisci certificato (operazione veloce in memoria)
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ITS-S"),
+            x509.NameAttribute(NameOID.COMMON_NAME, its_id),
+        ])
 
         serial_number = x509.random_serial_number()
-        self.logger.info(f"Serial number assegnato: {serial_number}")
+        now_utc = datetime.now(timezone.utc)
 
         cert_builder = (
             x509.CertificateBuilder()
@@ -202,33 +205,26 @@ class EnrollmentAuthority:
             .issuer_name(self.certificate.subject)
             .public_key(public_key)
             .serial_number(serial_number)
-            .not_valid_before(datetime.now(timezone.utc))
-            .not_valid_after(
-                datetime.now(timezone.utc)
-                + timedelta(days=365)  # ETSI TS 102 941: EC validity 1-3 anni
-            )
-            .add_extension(
-                x509.BasicConstraints(ca=False, path_length=None),
-                critical=True,
-            )
+            .not_valid_before(now_utc)
+            .not_valid_after(now_utc + timedelta(days=365))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         )
 
+        # Firma certificato (operazione crittografica veloce)
         cert = cert_builder.sign(self.private_key, hashes.SHA256())
 
-        # Usa identificatore basato su Subject + SKI invece di serial number
+        # Salvataggio su disco (operazione I/O lenta)
         cert_id = get_short_identifier(cert)
         ec_path = os.path.join(self.ec_dir, f"EC_{cert_id}.pem")
-
-        self.logger.info(f"Salvando Enrollment Certificate in: {ec_path}")
-        os.makedirs(os.path.dirname(ec_path), exist_ok=True)
+        
+        # Scrittura ottimizzata senza makedirs ad ogni chiamata
         with open(ec_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
-        self.logger.info("Enrollment Certificate emesso e salvato con successo!")
-        self.logger.info(f"Identificatore: {cert_id}")
-        # Usa utility per datetime UTC-aware
-        valid_from = get_certificate_not_before(cert)
-        valid_to = get_certificate_expiry_time(cert)
-        self.logger.info(f"Validità EC: dal {valid_from} al {valid_to}")
+        
+        # Log minimo solo in debug mode
+        if self.logger.level <= 10:  # DEBUG level
+            self.logger.debug(f"EC emesso: {cert_id}, serial: {serial_number}")
+        
         return cert
 
     def revoke_certificate(self, serial_hex, reason=ReasonFlags.unspecified):
@@ -285,12 +281,12 @@ class EnrollmentAuthority:
         per consolidare tutte le Delta CRL in una nuova Full CRL.
 
         Args:
-            validity_days: Numero di giorni di validità della Full CRL (default: 7)
+            validity_days: Numero di giorni di validit della Full CRL (default: 7)
 
         Returns:
             Path del file CRL pubblicato
         """
-        self.logger.info(f"Pubblicando Full CRL EA (validità: {validity_days} giorni)...")
+        self.logger.info(f"Pubblicando Full CRL EA (validit: {validity_days} giorni)...")
         crl_path = self.crl_manager.publish_full_crl(validity_days=validity_days)
         self.logger.info("Full CRL EA pubblicata con successo!")
         return crl_path
@@ -317,7 +313,7 @@ class EnrollmentAuthority:
         """
         Processa una EnrollmentRequest ETSI TS 102941 (ASN.1 OER encoded).
 
-        🔄 FLUSSO COMPLETO:
+        ?? FLUSSO COMPLETO:
         1. Decripta e decodifica EnrollmentRequest (ASN.1 OER)
         2. Verifica Proof of Possession (firma ITS-S)
         3. Emette Enrollment Certificate
@@ -413,7 +409,7 @@ class EnrollmentAuthority:
         request_hash = compute_request_hash(request_bytes)
 
         # Per error response, non abbiamo la chiave pubblica ITS-S
-        # Usiamo una chiave temporanea (questo è un workaround)
+        # Usiamo una chiave temporanea (questo  un workaround)
         temp_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
 
         return self.message_encoder.encode_enrollment_response(
