@@ -53,25 +53,70 @@ def create_tlm_app(trust_list_manager: TrustListManager) -> Flask:
 
 ## Blueprint Disponibili
 
-### enrollment_bp
+### enrollment_bp (ETSI Conforme) ✅
 **File**: `blueprints/enrollment_bp.py`
 
-Gestisce le richieste di enrollment certificate.
+Gestisce le richieste di enrollment certificate secondo lo standard ETSI TS 102941.
 
-**Endpoint**:
+**Endpoint ETSI Conforme**:
 ```
-POST /api/v1/enrollment
+POST /api/enrollment/request
 Content-Type: application/octet-stream
-Authorization: Bearer <api_key>
+X-API-Key: <api_key>
 
-Body: ASN.1 OER encoded EnrollmentRequest
+Body: ASN.1 OER encoded EtsiTs102941Data-Encrypted {
+  version: 2,
+  encryptedData: OCTET STRING (contiene InnerEcRequest),
+  recipientId: HashedId8,
+  timestamp: Time32
+}
 
 Response:
-  200 OK: ASN.1 OER encoded EnrollmentResponse (con EC)
+  200 OK: ASN.1 OER encoded EtsiTs102941Data {
+    version: 2,
+    content: InnerEcResponse {
+      requestHash: OCTET STRING (SHA-256),
+      responseCode: EnrolmentResponseCode,
+      certificate: EtsiTs103097Certificate (se OK)
+    }
+  }
   400 Bad Request: Richiesta malformata
   401 Unauthorized: Autenticazione fallita
   500 Internal Server Error: Errore server
 ```
+
+### enrollment_simple_bp (Solo Testing) ⚠️
+**File**: `blueprints/enrollment_simple_bp.py`
+
+**⚠️ NON CONFORME ALLO STANDARD - SOLO PER TESTING/DEBUG**
+
+**Endpoint Semplificato**:
+```
+POST /api/enrollment/request/simple
+Content-Type: application/json
+X-API-Key: <api_key>
+
+Body:
+{
+  "its_id": "VEHICLE_001",
+  "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n",
+  "requested_attributes": {
+    "region": "EU",
+    "validity_period": "P3Y"
+  }
+}
+
+Response:
+{
+  "response_code": "OK",
+  "certificate_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "request_hash": "<hex_hash>"
+}
+```
+
+**Note**:
+- ✅ Usare `/api/enrollment/request` per produzione (conforme ETSI)
+- ⚠️ Usare `/api/enrollment/request/simple` solo per testing manuale con Swagger UI
 
 ### authorization_bp
 **File**: `blueprints/authorization_bp.py`

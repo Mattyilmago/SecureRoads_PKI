@@ -41,13 +41,15 @@ python examples/interactive_pki_tester.py --ea-url http://localhost:5000 --aa-ur
 ```
 
 **Tests Available:**
-1. Single vehicle enrollment (via `/api/enrollment/request/simple`)
+1. Single vehicle enrollment (standard ETSI endpoint + simplified JSON endpoint)
 2. Authorization ticket request (via REST API)
 3. Fleet enrollment (5 vehicles via REST API)
 4. V2V communication simulation
 5. Certificate validation
 6. Performance test (10 enrollments via REST API)
 7. Full test suite
+
+**Note**: Il tester supporta sia l'endpoint ETSI conforme (`/api/enrollment/request`) che quello semplificato JSON (`/api/enrollment/request/simple`) per confronto.
 
 📖 **[Full Documentation](./README_TESTING.md)**
 

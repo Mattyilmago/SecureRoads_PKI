@@ -131,14 +131,45 @@ python server.py --entity AA --id AA_001  # Auto: porta 5020-5039
 ```python
 import requests
 
-# Enrollment Request
+# ====================
+# OPZIONE 1: API ETSI Conforme (Produzione)
+# ====================
+# Usa ASN.1 OER encoding come da standard ETSI TS 102941
+
 EA_URL = "http://localhost:5000"  # Prima EA nel range
+
+# Codifica la richiesta in ASN.1 OER
+from protocols.etsi_message_encoder import ETSIMessageEncoder
+encoder = ETSIMessageEncoder()
+oer_request = encoder.encode_enrollment_request(
+    its_id="VEHICLE_001",
+    public_key=vehicle_public_key,
+    ea_certificate=ea_cert
+)
+
+response = requests.post(
+    f"{EA_URL}/api/enrollment/request",
+    data=oer_request,
+    headers={
+        "Content-Type": "application/octet-stream",
+        "X-API-Key": "your-api-key"
+    }
+)
+
+# Decodifica risposta ASN.1 OER
+enrollment_response = encoder.decode_enrollment_response(response.content)
+print(f"✅ EC ricevuto: {enrollment_response['certificate']}")
+
+# ====================
+# OPZIONE 2: API Simple (Solo Testing/Debug)
+# ====================
+# ⚠️ NON conforme ETSI - Usa JSON per testing manuale
 
 response = requests.post(
     f"{EA_URL}/api/enrollment/request/simple",
     json={
-        "vehicle_id": "Vehicle_001",
-        "public_key_pem": vehicle_public_key
+        "its_id": "VEHICLE_001",
+        "public_key": vehicle_public_key_pem
     },
     headers={"X-API-Key": "your-api-key"}
 )
@@ -146,7 +177,9 @@ response = requests.post(
 enrollment_cert = response.json()
 print(f"✅ EC ricevuto: {enrollment_cert['certificate_pem']}")
 
+# ====================
 # Authorization Request
+# ====================
 AA_URL = "http://localhost:5020"
 
 response = requests.post(
@@ -290,7 +323,8 @@ data/
 ### Endpoint Principali
 
 #### Enrollment Authority (EA)
-- `POST /api/enrollment/request/simple` - Richiesta EC
+- `POST /api/enrollment/request` - **Richiesta EC (ETSI conforme - ASN.1 OER)** ✅
+- `POST /api/enrollment/request/simple` - Richiesta EC (JSON - solo testing) ⚠️
 - `GET /api/crl/full` - Full CRL
 - `GET /api/crl/delta` - Delta CRL
 
@@ -307,6 +341,62 @@ data/
 #### Sistema
 - `GET /health` - Health check
 - `GET /api/docs` - OpenAPI/Swagger
+
+**Note:**
+- ✅ Endpoint con ASN.1 OER sono conformi allo standard ETSI TS 102941
+- ⚠️ Endpoint con JSON sono forniti solo per testing e debugging (non conformi)
+
+### Due Modalità di Enrollment
+
+#### 🏭 Modalità Produzione (ETSI Conforme)
+**Endpoint**: `POST /api/enrollment/request`
+
+✅ Conforme allo standard ETSI TS 102941  
+✅ Codifica ASN.1 OER (binaria)  
+✅ Crittografia end-to-end  
+✅ Proof of Possession (PoP)  
+
+**Esempio**:
+```python
+from protocols.etsi_message_encoder import ETSIMessageEncoder
+
+encoder = ETSIMessageEncoder()
+oer_request = encoder.encode_enrollment_request(
+    its_id="VEHICLE_001",
+    public_key=vehicle_pubkey,
+    ea_certificate=ea_cert
+)
+
+response = requests.post(
+    "http://localhost:5000/api/enrollment/request",
+    data=oer_request,
+    headers={"Content-Type": "application/octet-stream", "X-API-Key": "key"}
+)
+
+enrollment_response = encoder.decode_enrollment_response(response.content)
+```
+
+#### 🧪 Modalità Testing (JSON Semplificato)
+**Endpoint**: `POST /api/enrollment/request/simple`
+
+⚠️ **NON conforme allo standard** - Solo per testing  
+📝 JSON leggibile  
+🛠️ Ideale per Swagger UI e debugging  
+
+**Esempio**:
+```python
+response = requests.post(
+    "http://localhost:5000/api/enrollment/request/simple",
+    json={"its_id": "VEHICLE_001", "public_key": pubkey_pem},
+    headers={"X-API-Key": "key"}
+)
+
+cert = response.json()["certificate_pem"]
+```
+
+**Quando usare quale?**
+- 🏭 **Produzione**: Sempre usare `/api/enrollment/request` (ETSI conforme)
+- 🧪 **Testing manuale**: Usare `/api/enrollment/request/simple` per debug rapido
 
 ### Autenticazione
 
