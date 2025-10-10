@@ -245,7 +245,20 @@ is_revoked = any(
 print(f"Certificato revocato: {is_revoked}")
 ```
 
----
+### Esempio 4: Enrollment ETSI Conforme vs Testing
+
+```python
+# ====================
+# OPZIONE 1: API ETSI Conforme (Produzione)
+# ====================
+from protocols.etsi_message_encoder import ETSIMessageEncoder
+
+EA_URL = "http://localhost:5000"
+
+encoder = ETSIMessageEncoder()
+oer_request = encoder.encode_enrollment_request(
+    its_id="VEHICLE_001",
+    public_key=vehicle_pubkey,
     ea_certificate=ea_cert
 )
 
@@ -278,10 +291,12 @@ response = requests.post(
 
 enrollment_cert = response.json()
 print(f"✅ EC ricevuto: {enrollment_cert['certificate_pem']}")
+```
 
-# ====================
-# Authorization Request
-# ====================
+### Esempio 5: Authorization Request Completo
+
+```python
+# Authorization Ticket Request
 AA_URL = "http://localhost:5020"
 
 response = requests.post(
@@ -311,20 +326,6 @@ butterfly_response = requests.post(
 
 tickets = butterfly_response.json()["tickets"]
 print(f"✅ {len(tickets)} AT ricevuti (unlinkable)")
-```
-
-### Revoca e CRL Management
-
-```python
-# Revoca e pubblicazione CRL
-root_ca.revoke_certificate(compromised_cert, reason="key_compromise")
-root_ca.crl_manager.publish_delta_crl()
-
-# Verifica revoca via API
-response = requests.get(f"{EA_URL}/api/crl/delta")
-delta_crl = response.json()
-is_revoked = any(e["serial_number"] == cert.serial_number 
-                 for e in delta_crl["revoked_certificates"])
 ```
 
 ---
@@ -766,22 +767,6 @@ http://localhost:5000/api/docs
 - [x] Bulk entity generator
 - [x] Documentazione completa
 
-### In Sviluppo 🔄
-
-- [ ] Deployment Docker/Kubernetes
-- [ ] Performance optimization per >1000 veicoli
-- [ ] Geographic distribution (multi-region EA/AA)
-- [ ] Advanced monitoring e alerting
-
-### Futuro 🔮
-
-- [ ] Hardware Security Module (HSM) integration
-- [ ] Blockchain integration per audit trail
-- [ ] Machine Learning per anomaly detection
-- [ ] Mobile app per vehicle management
-
----
-
 ## 📝 Licenza
 
 MIT License
@@ -806,19 +791,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----
-
-## 👥 Autori e Contributori
-
-**Progetto sviluppato presso:**
-- Università degli Studi [Nome Università]
-- Corso: Sistemi ITS e Sicurezza V2X
-- Anno Accademico: 2024/2025
-
-**Team:**
-- [Il tuo nome] - Lead Developer
-
----
 
 ## 📧 Contatti e Supporto
 
@@ -828,18 +800,6 @@ SOFTWARE.
 
 **Per domande o supporto, apri una issue su GitHub.**
 
----
-
-## 🙏 Ringraziamenti
-
-Questo progetto è stato sviluppato seguendo gli standard ETSI e IEEE per sistemi ITS. 
-Ringraziamenti speciali a:
-- ETSI Technical Committee ITS
-- IEEE 1609 Working Group
-- Cryptography community
-- Open source contributors
-
----
 
 **SecureRoad-PKI** - Production-Ready PKI for Intelligent Transportation Systems 🚗🔐
 
