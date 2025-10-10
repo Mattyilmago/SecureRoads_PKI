@@ -119,8 +119,8 @@ def start_pki_entities():
             print(f"❌ ({str(e)[:30]})")
     
     # Aspetta che i server siano pronti
-    print(f"\n  Attesa avvio server (15 secondi)...")
-    time.sleep(15)
+    print(f"\n  Attesa avvio server (5 secondi)...")
+    time.sleep(5)
     
     # Verifica che siano attivi - usa porte standard
     print("\n  Verifica connessioni:")
@@ -506,35 +506,122 @@ class PKITester:
             return False
     
     def test_5_certificate_validation(self):
-        """Test 5: Validazione certificati"""
-        self.print_header("TEST 5: Validazione Certificati")
+        """Test 5: Validazione certificati X.509 conforme ETSI"""
+        self.print_header("TEST 5: Validazione Certificati (ETSI Standard)")
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo disponibile!")
             return False
         
         try:
-            valid_count = len(self.enrolled_vehicles)
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+            from datetime import datetime, timezone
             
-            self.print_info(f"Veicoli enrollati: {valid_count}")
+            valid_count = 0
+            invalid_count = 0
+            validation_details = []
             
-            for vehicle_id in self.enrolled_vehicles:
-                self.print_info(f"  {vehicle_id}: ✅ ENROLLATO")
+            self.print_info(f"Veicoli da validare: {len(self.enrolled_vehicles)}")
             
-            self.print_success(f"Certificati enrollati: {valid_count}")
-            self.print_info("⚠️  Validazione completa richiede parsing certificati X.509")
+            for vehicle_id, vehicle_data in self.enrolled_vehicles.items():
+                try:
+                    # Estrai certificato PEM
+                    cert_pem = vehicle_data.get("enrollment_response", {}).get("certificate")
+                    if not cert_pem:
+                        self.print_error(f"  {vehicle_id}: ❌ Certificato mancante")
+                        invalid_count += 1
+                        continue
+                    
+                    # Parse X.509 certificate
+                    cert_bytes = cert_pem.encode('utf-8')
+                    certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+                    
+                    # Validazione ETSI TS 103 097 - Certificato ITS
+                    validation_result = {
+                        "vehicle_id": vehicle_id,
+                        "serial": certificate.serial_number,
+                        "checks": {}
+                    }
+                    
+                    # 1. Verifica periodo di validità
+                    now = datetime.now(timezone.utc)
+                    not_before = certificate.not_valid_before_utc
+                    not_after = certificate.not_valid_after_utc
+                    
+                    time_valid = not_before <= now <= not_after
+                    validation_result["checks"]["temporal_validity"] = time_valid
+                    
+                    # 2. Verifica subject
+                    subject = certificate.subject
+                    cn = subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+                    has_cn = len(cn) > 0 and cn[0].value == vehicle_id
+                    validation_result["checks"]["subject_cn"] = has_cn
+                    
+                    # 3. Verifica issuer (EA)
+                    issuer = certificate.issuer
+                    issuer_cn = issuer.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
+                    has_issuer = len(issuer_cn) > 0
+                    validation_result["checks"]["has_issuer"] = has_issuer
+                    
+                    # 4. Verifica algoritmo firma (ETSI richiede ECDSA)
+                    is_ecdsa = certificate.signature_algorithm_oid._name.startswith('ecdsa')
+                    validation_result["checks"]["ecdsa_signature"] = is_ecdsa
+                    
+                    # 5. Verifica chiave pubblica (ECC)
+                    from cryptography.hazmat.primitives.asymmetric import ec
+                    is_ecc = isinstance(certificate.public_key(), ec.EllipticCurvePublicKey)
+                    validation_result["checks"]["ecc_public_key"] = is_ecc
+                    
+                    # 6. Verifica estensioni certificate
+                    has_basic_constraints = False
+                    try:
+                        bc = certificate.extensions.get_extension_for_class(x509.BasicConstraints)
+                        has_basic_constraints = not bc.value.ca  # Deve essere False per ITS-S
+                        validation_result["checks"]["basic_constraints"] = has_basic_constraints
+                    except x509.ExtensionNotFound:
+                        validation_result["checks"]["basic_constraints"] = False
+                    
+                    # Determina stato complessivo
+                    all_checks = validation_result["checks"]
+                    is_valid = all(all_checks.values())
+                    
+                    if is_valid:
+                        self.print_info(f"  {vehicle_id}: ✅ VALIDO (ETSI compliant)")
+                        valid_count += 1
+                    else:
+                        failed_checks = [k for k, v in all_checks.items() if not v]
+                        self.print_error(f"  {vehicle_id}: ❌ INVALIDO - Failed: {', '.join(failed_checks)}")
+                        invalid_count += 1
+                    
+                    validation_details.append(validation_result)
+                    
+                except Exception as cert_error:
+                    self.print_error(f"  {vehicle_id}: ❌ Errore parsing: {str(cert_error)[:50]}")
+                    invalid_count += 1
+            
+            # Riepilogo
+            total = valid_count + invalid_count
+            self.print_success(f"Certificati validi (ETSI): {valid_count}/{total}")
+            if invalid_count > 0:
+                self.print_error(f"Certificati invalidi: {invalid_count}/{total}")
             
             self.save_test_result(
                 "certificate_validation",
-                "success",
+                "success" if valid_count == total else "partial",
                 {
-                    "enrolled": valid_count
+                    "total": total,
+                    "valid": valid_count,
+                    "invalid": invalid_count,
+                    "validation_details": validation_details
                 }
             )
-            return True
+            return valid_count > 0
             
         except Exception as e:
             self.print_error(f"Errore: {e}")
+            import traceback
+            self.print_error(traceback.format_exc()[:200])
             self.save_test_result("certificate_validation", "error", {"error": str(e)})
             return False
     
@@ -703,39 +790,149 @@ class PKITester:
             return False
     
     def test_8_certificate_revocation(self):
-        """Test 8: Revoca certificato (simulazione)"""
-        self.print_header("TEST 8: Revoca Certificato")
+        """Test 8: Revoca certificato usando API REST"""
+        self.print_header("TEST 8: Revoca Certificato (ETSI Standard)")
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo disponibile! Esegui prima il Test 1")
             return False
         
         try:
-            # Usa ultimo veicolo enrollato per simulazione revoca
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+            
+            # Usa ultimo veicolo enrollato per revoca
             vehicle_id = list(self.enrolled_vehicles.keys())[-1]
+            vehicle_data = self.enrolled_vehicles[vehicle_id]
             
-            self.print_info(f"Veicolo da revocare (simulazione): {vehicle_id}")
-            self.print_info(f"⚠️  API revoca non implementata in versione simple")
-            self.print_info(f"Simulazione: rimozione veicolo dalla lista locale")
+            # Estrai certificato PEM
+            cert_pem = vehicle_data.get("enrollment_response", {}).get("certificate")
+            if not cert_pem:
+                self.print_error("Certificato mancante!")
+                return False
             
-            # Rimuovi veicolo dalla lista (simulazione)
-            del self.enrolled_vehicles[vehicle_id]
+            # Parse certificato per estrarre serial number
+            cert_bytes = cert_pem.encode('utf-8')
+            certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+            serial_number = certificate.serial_number
+            serial_hex = format(serial_number, 'X')  # Converti a hex uppercase
             
-            self.print_success(f"Certificato simulato come revocato!")
-            self.print_info(f"  In produzione: certificato verrebbe aggiunto alla CRL")
+            self.print_info(f"Veicolo: {vehicle_id}")
+            self.print_info(f"Serial Number: {serial_number}")
+            self.print_info(f"Serial Hex: {serial_hex}")
             
-            self.save_test_result(
-                "certificate_revocation",
-                "success",
-                {
-                    "vehicle_id": vehicle_id,
-                    "note": "Simulation - API not available in simple mode"
-                }
+            # Richiesta di revoca via API
+            revoke_request = {
+                "serial_number": serial_hex,
+                "reason": "unspecified",  # Motivo revoca ETSI standard
+                "its_id": vehicle_id
+            }
+            
+            self.print_info(f"Invio richiesta revoca a {self.ea_url}/api/enrollment/revoke...")
+            
+            response = requests.post(
+                f"{self.ea_url}/api/enrollment/revoke",
+                json=revoke_request,
+                timeout=10
             )
-            return True
+            
+            if response.status_code == 200:
+                result = response.json()
+                self.print_success(f"Certificato revocato con successo!")
+                self.print_info(f"  Serial: {serial_hex}")
+                self.print_info(f"  Response: {result.get('message', 'Success')}")
+                
+                # Verifica che il certificato sia nella CRL
+                self.print_info(f"Verifica inserimento in CRL...")
+                time.sleep(2)  # Attesa pubblicazione Delta CRL
+                
+                is_revoked = None
+                crl_response = requests.get(f"{self.ea_url}/api/crl/full", timeout=5)
+                if crl_response.status_code == 200:
+                    try:
+                        # Parse CRL - prova prima PEM, poi DER
+                        crl_data = crl_response.content
+                        from cryptography import x509
+                        
+                        # Determina formato dalla risposta
+                        content_type = crl_response.headers.get('Content-Type', '')
+                        
+                        try:
+                            # Prova PEM prima (più comune)
+                            if b'-----BEGIN' in crl_data:
+                                crl = x509.load_pem_x509_crl(crl_data, default_backend())
+                            else:
+                                # Altrimenti DER
+                                crl = x509.load_der_x509_crl(crl_data, default_backend())
+                            
+                            # Cerca serial nella CRL
+                            is_revoked = False
+                            for revoked_cert in crl:
+                                if revoked_cert.serial_number == serial_number:
+                                    is_revoked = True
+                                    revocation_date = revoked_cert.revocation_date
+                                    self.print_success(f"  ✅ Certificato presente in CRL!")
+                                    self.print_info(f"     Data revoca: {revocation_date}")
+                                    break
+                            
+                            if not is_revoked:
+                                self.print_info(f"  ⚠️  Certificato non ancora in CRL (propagazione in corso)")
+                                
+                        except Exception as parse_error:
+                            self.print_info(f"  ⚠️  Errore parsing CRL: {str(parse_error)[:100]}")
+                            self.print_info(f"     Content-Type: {content_type}")
+                            self.print_info(f"     Size: {len(crl_data)} bytes")
+                            
+                    except Exception as verify_error:
+                        self.print_info(f"  ⚠️  Verifica CRL non disponibile: {str(verify_error)[:80]}")
+                else:
+                    self.print_info(f"  ℹ️  CRL non disponibile per verifica (status: {crl_response.status_code})")
+                
+                # Rimuovi veicolo dalla lista locale
+                del self.enrolled_vehicles[vehicle_id]
+                
+                self.save_test_result(
+                    "certificate_revocation",
+                    "success",
+                    {
+                        "vehicle_id": vehicle_id,
+                        "serial_number": serial_hex,
+                        "reason": "unspecified",
+                        "in_crl": is_revoked
+                    }
+                )
+                return True
+            elif response.status_code == 404:
+                # Endpoint non implementato - fallback a simulazione
+                self.print_info(f"⚠️  API revoca non disponibile su questo EA")
+                self.print_info(f"  Modalità fallback: simulazione locale")
+                
+                # Rimuovi veicolo dalla lista (simulazione)
+                del self.enrolled_vehicles[vehicle_id]
+                
+                self.print_success(f"Certificato simulato come revocato!")
+                self.print_info(f"  In produzione: certificato verrebbe aggiunto alla CRL")
+                
+                self.save_test_result(
+                    "certificate_revocation",
+                    "success",
+                    {
+                        "vehicle_id": vehicle_id,
+                        "serial_number": serial_hex,
+                        "note": "Simulation mode - API endpoint not available"
+                    }
+                )
+                return True
+            else:
+                self.print_error(f"Revoca fallita! Status: {response.status_code}")
+                self.print_error(f"Error: {response.text[:200]}")
+                self.save_test_result("certificate_revocation", "failed", {"status": response.status_code})
+                return False
                 
         except Exception as e:
             self.print_error(f"Errore: {e}")
+            import traceback
+            self.print_error(traceback.format_exc()[:200])
             self.save_test_result("certificate_revocation", "error", {"error": str(e)})
             return False
     

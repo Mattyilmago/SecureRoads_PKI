@@ -55,19 +55,18 @@ from protocols.etsi_message_types import InnerAtRequest, ResponseCode, SharedAtR
 
 
 @pytest.fixture(scope="class")
-def pki_setup():
+def pki_setup(root_ca, test_base_dir):
     """Setup completo PKI per test avanzati"""
-    root_ca = RootCA(base_dir="./data/root_ca")
-    tlm = TrustListManager(base_dir="./data/tlm", root_ca=root_ca)
+    tlm = TrustListManager(base_dir=os.path.join(test_base_dir, "tlm"), root_ca=root_ca)
     ea = EnrollmentAuthority(
         ea_id="EA_BUTTERFLY_ADVANCED_TEST",
-        base_dir="./data/ea/EA_BUTTERFLY_ADVANCED_TEST",
+        base_dir=os.path.join(test_base_dir, "ea_butterfly_adv"),
         root_ca=root_ca,
     )
     tlm.add_trust_anchor(ea.certificate, authority_type="EA")
     aa = AuthorizationAuthority(
         aa_id="AA_BUTTERFLY_ADVANCED_TEST",
-        base_dir="./data/aa/AA_BUTTERFLY_ADVANCED_TEST",
+        base_dir=os.path.join(test_base_dir, "aa_butterfly_adv"),
         root_ca=root_ca,
         tlm=tlm,
     )

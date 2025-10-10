@@ -926,7 +926,25 @@ class TrustListManager:
         Salva metadata TLM su file JSON per persistenza.
 
         Simile a CRLManager, mantiene stato tra restart.
+        Salva anche i trust anchors in formato serializzabile.
         """
+        # Serializza trust anchors (solo i campi necessari, non il certificato completo)
+        serialized_anchors = []
+        for anchor in self.trust_anchors:
+            cert = anchor["certificate"]
+            cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+            
+            serialized_anchors.append({
+                "certificate_pem": cert_pem,
+                "cert_id": anchor["cert_id"],
+                "ski": anchor["ski"],
+                "subject_name": anchor["subject_name"],
+                "authority_type": anchor["authority_type"],
+                "added_date": anchor["added_date"].isoformat(),
+                "expiry_date": anchor["expiry_date"].isoformat(),
+                "serial_number": anchor["serial_number"],
+            })
+        
         metadata = {
             "ctl_number": self.ctl_number,
             "base_ctl_number": self.base_ctl_number,
@@ -934,6 +952,7 @@ class TrustListManager:
                 self.last_full_ctl_time.isoformat() if self.last_full_ctl_time else None
             ),
             "trust_anchors_count": len(self.trust_anchors),
+            "trust_anchors": serialized_anchors,  # NUOVO: salva trust anchors
             "delta_additions_pending": len(self.delta_additions),
             "delta_removals_pending": len(self.delta_removals),
             "link_certificates_count": len(self.link_certificates),
@@ -943,10 +962,12 @@ class TrustListManager:
             json.dump(metadata, f, indent=2)
 
         self.logger.info(f"Metadata salvati: {self.metadata_path}")
+        self.logger.info(f"  Trust anchors salvati: {len(serialized_anchors)}")
 
     def load_metadata(self):
         """
         Carica metadata TLM da file JSON.
+        Ricarica anche i trust anchors salvati.
         """
         if not os.path.exists(self.metadata_path):
             self.logger.info(f"Nessun metadata esistente, inizializzo nuovo")
@@ -963,9 +984,36 @@ class TrustListManager:
             if last_full:
                 self.last_full_ctl_time = datetime.fromisoformat(last_full)
 
+            # NUOVO: Ricarica trust anchors
+            serialized_anchors = metadata.get("trust_anchors", [])
+            if serialized_anchors:
+                self.logger.info(f"Ricaricando {len(serialized_anchors)} trust anchors...")
+                for ser_anchor in serialized_anchors:
+                    try:
+                        # Deserializza certificato da PEM
+                        cert_pem = ser_anchor["certificate_pem"].encode("utf-8")
+                        certificate = x509.load_pem_x509_certificate(cert_pem)
+                        
+                        # Ricostruisci anchor entry
+                        anchor_entry = {
+                            "certificate": certificate,
+                            "cert_id": ser_anchor["cert_id"],
+                            "ski": ser_anchor["ski"],
+                            "subject_name": ser_anchor["subject_name"],
+                            "authority_type": ser_anchor["authority_type"],
+                            "added_date": datetime.fromisoformat(ser_anchor["added_date"]),
+                            "expiry_date": datetime.fromisoformat(ser_anchor["expiry_date"]),
+                            "serial_number": ser_anchor["serial_number"],
+                        }
+                        self.trust_anchors.append(anchor_entry)
+                        
+                    except Exception as e:
+                        self.logger.error(f"Errore ricaricamento trust anchor: {e}")
+
             self.logger.info(f"Metadata caricati con successo")
             self.logger.info(f"  CTL Number: {self.ctl_number}")
             self.logger.info(f"  Base CTL Number: {self.base_ctl_number}")
+            self.logger.info(f"  Trust anchors ricaricati: {len(self.trust_anchors)}")
 
         except Exception as e:
             self.logger.info(f"Errore caricamento metadata: {e}")

@@ -76,7 +76,7 @@ if (-not $SkipEntities) {
         Write-Host "      ERRORE: Impossibile avviare RootCA" -ForegroundColor Red
     }
     
-    Start-Sleep -Seconds 3
+    Start-Sleep -Seconds 1
     
     # Avvia TLM (porta 5050)
     Write-Host "[2/2] Avvio TLM sulla porta 5050..." -ForegroundColor Cyan
@@ -94,9 +94,9 @@ if (-not $SkipEntities) {
     }
     
     # Attesa avvio entities
-    Write-Host ""
-    Write-Host "Attesa avvio entities (10 secondi)..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 10
+    # Write-Host ""
+    # Write-Host "Attesa avvio entities (10 secondi)..." -ForegroundColor Yellow
+    # Start-Sleep -Seconds 10
     
     # Verifica che siano attivi
     Write-Host ""

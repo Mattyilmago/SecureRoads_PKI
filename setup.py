@@ -21,25 +21,53 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from entities.root_ca import RootCA
-from entities.enrollment_authority import EnrollmentAuthority
+# Singleton instance cache
+_root_ca_instance = None
+
+def get_or_create_root_ca(base_dir="./data/root_ca"):
+    """Get or create RootCA singleton instance."""
+    global _root_ca_instance
+    if _root_ca_instance is None:
+        from entities.root_ca import RootCA
+        _root_ca_instance = RootCA(base_dir=base_dir)
+    return _root_ca_instance
 from entities.authorization_authority import AuthorizationAuthority
 from managers.trust_list_manager import TrustListManager
 
 
 def find_existing_entities(entity_type, base_dir="./data"):
-    """Trova entità esistenti di un tipo"""
+    """
+    Trova entità esistenti di un tipo, controllando sia le directory che entity_configs.json.
+    Questo previene il riutilizzo di nomi di entità che sono state cancellate ma potrebbero
+    avere ancora configurazioni o dati residui.
+    """
+    existing = []
+    
+    # 1. Controlla le directory esistenti in data/
     entity_type_lower = entity_type.lower()
     entity_dir = os.path.join(base_dir, entity_type_lower)
     
-    if not os.path.exists(entity_dir):
-        return []
+    if os.path.exists(entity_dir):
+        for item in os.listdir(entity_dir):
+            item_path = os.path.join(entity_dir, item)
+            if os.path.isdir(item_path) and item.startswith(entity_type):
+                existing.append(item)
     
-    existing = []
-    for item in os.listdir(entity_dir):
-        item_path = os.path.join(entity_dir, item)
-        if os.path.isdir(item_path) and item.startswith(entity_type):
-            existing.append(item)
+    # 2. Controlla entity_configs.json per entità già configurate
+    config_file = Path("entity_configs.json")
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            
+            # Estrai nomi entità dai start_commands
+            for cmd_entry in config.get('start_commands', []):
+                entity_name = cmd_entry.get('entity', '')
+                if entity_name.startswith(f"{entity_type}_") and entity_name not in existing:
+                    existing.append(entity_name)
+        except Exception as e:
+            # Se non riusciamo a leggere il config, continua con le directory
+            pass
     
     return existing
 
@@ -57,7 +85,7 @@ def ensure_root_ca_exists(base_dir="./data/root_ca"):
     if root_ca_cert_path.exists():
         print(f"✅ RootCA esistente trovata in: {base_dir}")
         try:
-            root_ca = RootCA(base_dir=str(root_ca_path))
+            root_ca = get_or_create_root_ca(base_dir=str(root_ca_path))
             return root_ca, False
         except Exception as e:
             print(f"⚠️  Errore caricamento RootCA esistente: {e}")
@@ -68,7 +96,7 @@ def ensure_root_ca_exists(base_dir="./data/root_ca"):
     print(f"   Directory: {base_dir}")
     
     try:
-        root_ca = RootCA(base_dir=str(root_ca_path))
+        root_ca = get_or_create_root_ca(base_dir=str(root_ca_path))
         print(f"✅ Root CA creata con successo!")
         print(f"   Certificato: {root_ca.ca_certificate_path}")
         return root_ca, True
@@ -176,7 +204,8 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
                 ea_id = ea_names[i]
                 # Verifica che non esista già
                 if ea_id in existing_eas:
-                    print(f"  ⚠️  EA '{ea_id}' già esistente, verrà riutilizzato")
+                    print(f"  ⚠️  EA '{ea_id}' già esistente, SKIP (non verrà duplicato)")
+                    continue  # Skip this entity, don't add it again
             else:
                 # Trova prossimo numero disponibile
                 ea_num = 1
@@ -208,7 +237,8 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
                 aa_id = aa_names[i]
                 # Verifica che non esista già
                 if aa_id in existing_aas:
-                    print(f"  ⚠️  AA '{aa_id}' già esistente, verrà riutilizzato")
+                    print(f"  ⚠️  AA '{aa_id}' già esistente, SKIP (non verrà duplicato)")
+                    continue  # Skip this entity, don't add it again
             else:
                 # Trova prossimo numero disponibile
                 aa_num = 1
@@ -262,9 +292,58 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
 
 
 def save_config(config, output_file="entity_configs.json"):
-    """Salva configurazione su file JSON"""
+    """
+    Salva/Aggiorna configurazione su file JSON.
+    Se il file esiste, AGGIORNA la lista start_commands invece di sovrascriverla.
+    """
+    existing_config = None
+    
+    # Leggi configurazione esistente se presente
+    if os.path.exists(output_file):
+        try:
+            with open(output_file, 'r') as f:
+                existing_config = json.load(f)
+            print(f"📄 File {output_file} esistente trovato, verrà aggiornato...")
+        except Exception as e:
+            print(f"⚠️  Errore leggendo {output_file}: {e}")
+            print(f"   Creerò un nuovo file...")
+            existing_config = None
+    
+    if existing_config:
+        # MODALITÀ AGGIORNAMENTO: Merge dei start_commands
+        # Mantieni port_ranges esistenti
+        config["port_ranges"] = existing_config.get("port_ranges", config["port_ranges"])
+        
+        # Crea set di entity_id esistenti per evitare duplicati
+        existing_entities = {cmd.get("entity") for cmd in existing_config.get("start_commands", [])}
+        new_entities = {cmd.get("entity") for cmd in config.get("start_commands", [])}
+        
+        # Merge: mantieni esistenti + aggiungi nuovi (no duplicati)
+        merged_commands = existing_config.get("start_commands", [])
+        
+        for new_cmd in config["start_commands"]:
+            new_entity_id = new_cmd.get("entity")
+            if new_entity_id not in existing_entities:
+                merged_commands.append(new_cmd)
+                print(f"  ➕ Aggiunta entità: {new_entity_id}")
+            else:
+                # Aggiorna comando esistente (caso in cui l'entità esiste ma il comando è cambiato)
+                for i, existing_cmd in enumerate(merged_commands):
+                    if existing_cmd.get("entity") == new_entity_id:
+                        merged_commands[i] = new_cmd
+                        print(f"  🔄 Aggiornata entità: {new_entity_id}")
+                        break
+        
+        config["start_commands"] = merged_commands
+        print(f"  ✅ Totale entità configurate: {len(merged_commands)}")
+    else:
+        # MODALITÀ CREAZIONE: Nuovo file
+        print(f"  🆕 Creazione nuovo file di configurazione...")
+    
+    # Salva configurazione (sovrascrittura completa con dati merged)
     with open(output_file, 'w') as f:
         json.dump(config, f, indent=2)
+    
     print(f"💾 Configurazione salvata in: {output_file}\n")
 
 

@@ -27,15 +27,15 @@ from protocols.etsi_link_certificate import (
 
 
 @pytest.fixture(scope="module")
-def root_ca():
-    """Create RootCA instance"""
-    return RootCA(base_dir="data/root_ca")
+def root_ca_link(root_ca):
+    """Use shared RootCA instance"""
+    return root_ca
 
 
 @pytest.fixture(scope="module")
-def ea(root_ca):
+def ea(root_ca_link, test_base_dir):
     """Create EA instance"""
-    return EnrollmentAuthority(root_ca=root_ca, ea_id="EA_ETSI_TEST", base_dir="data/ea")
+    return EnrollmentAuthority(root_ca=root_ca_link, ea_id="EA_ETSI_TEST", base_dir=os.path.join(test_base_dir, "ea_etsi"))
 
 
 @pytest.fixture

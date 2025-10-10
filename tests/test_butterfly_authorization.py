@@ -156,23 +156,20 @@ class TestButterflyATIssuance:
     """Test suite for batch AT issuance"""
 
     @pytest.fixture
-    def pki_setup(self):
+    def pki_setup(self, root_ca, test_base_dir):
         """Setup completo PKI per testing butterfly"""
-        # Root CA
-        root_ca = RootCA(base_dir="./data/root_ca")
-
         # Trust List Manager
-        tlm = TrustListManager(root_ca=root_ca, base_dir="./data/tlm")
+        tlm = TrustListManager(root_ca=root_ca, base_dir=os.path.join(test_base_dir, "tlm"))
 
         # Enrollment Authority
-        ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_BUTTERFLY_TEST", base_dir="./data/ea")
+        ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_BUTTERFLY_TEST", base_dir=os.path.join(test_base_dir, "ea"))
 
         # Registra EA nel TLM
         tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 
         # Authorization Authority con TLM
         aa = AuthorizationAuthority(
-            root_ca=root_ca, tlm=tlm, aa_id="AA_BUTTERFLY_TEST", base_dir="./data/aa"
+            root_ca=root_ca, tlm=tlm, aa_id="AA_BUTTERFLY_TEST", base_dir=os.path.join(test_base_dir, "aa")
         )
 
         return {
@@ -259,23 +256,20 @@ class TestButterflyResponseEncoding:
     """Test suite for butterfly response encoding"""
 
     @pytest.fixture
-    def pki_setup(self):
+    def pki_setup(self, root_ca, test_base_dir):
         """Setup completo PKI per testing butterfly"""
-        # Root CA
-        root_ca = RootCA(base_dir="./data/root_ca")
-
         # Trust List Manager
-        tlm = TrustListManager(root_ca=root_ca, base_dir="./data/tlm")
+        tlm = TrustListManager(root_ca=root_ca, base_dir=os.path.join(test_base_dir, "tlm"))
 
         # Enrollment Authority
-        ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_BUTTERFLY_RESPONSE_TEST", base_dir="./data/ea")
+        ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_BUTTERFLY_RESPONSE_TEST", base_dir=os.path.join(test_base_dir, "ea"))
 
         # Registra EA nel TLM
         tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 
         # Authorization Authority con TLM
         aa = AuthorizationAuthority(
-            root_ca=root_ca, tlm=tlm, aa_id="AA_BUTTERFLY_RESPONSE_TEST", base_dir="./data/aa"
+            root_ca=root_ca, tlm=tlm, aa_id="AA_BUTTERFLY_RESPONSE_TEST", base_dir=os.path.join(test_base_dir, "aa")
         )
 
         return {

@@ -279,6 +279,11 @@ def create_app(
     # Register monitoring blueprint (available for all entity types)
     try:
         from .blueprints.monitoring_bp import monitoring_bp
+        
+        # Attach entity instance and type to monitoring blueprint
+        monitoring_bp.entity = entity_instance
+        monitoring_bp.entity_type = entity_type
+        
         app.register_blueprint(monitoring_bp, url_prefix="/api/monitoring")
         
         app.logger.info("Registered monitoring endpoints:")
@@ -291,6 +296,19 @@ def create_app(
         app.logger.info("  GET /api/monitoring/health/live")
     except ImportError as e:
         app.logger.warning(f"Could not import monitoring blueprint: {e}")
+    
+    # Register management blueprint (available for all entity types)
+    try:
+        from .blueprints.management_bp import management_bp
+        
+        app.register_blueprint(management_bp, url_prefix="/api/management")
+        
+        app.logger.info("Registered management endpoints:")
+        app.logger.info("  GET    /api/management/entities")
+        app.logger.info("  DELETE /api/management/entities/<entity_id>")
+        app.logger.info("  POST   /api/management/entities/bulk-delete")
+    except ImportError as e:
+        app.logger.warning(f"Could not import management blueprint: {e}")
 
     # Global error handlers
     @app.errorhandler(400)

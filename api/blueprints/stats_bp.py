@@ -39,17 +39,34 @@ def create_stats_blueprint(entity_instance, entity_type):
             
             if bp.entity_type == "EA":
                 stats["entity_id"] = bp.entity.ea_id
-                # Count issued certificates from data directory
+                # Count issued Enrollment Certificates from enrollment_certificates directory
                 import os
                 from pathlib import Path
                 
-                cert_dir = Path(bp.entity.base_dir) / "certificates"
-                if cert_dir.exists():
-                    cert_count = len(list(cert_dir.glob("*.pem")))
+                # EA stores issued ECs in enrollment_certificates/
+                ec_dir = Path(bp.entity.base_dir) / "enrollment_certificates"
+                if ec_dir.exists():
+                    ec_issued = len(list(ec_dir.glob("EC_*.pem")))
                 else:
-                    cert_count = 0
+                    ec_issued = 0
                 
-                stats["certificates_issued"] = cert_count
+                # Count revoked certificates from CRL
+                ec_revoked = 0
+                if hasattr(bp.entity, 'crl_manager'):
+                    try:
+                        # Get revoked count from CRL metadata
+                        metadata_path = bp.entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
+                        if os.path.exists(metadata_path):
+                            import json
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                                ec_revoked = len(metadata.get('revoked_certificates', []))
+                    except:
+                        pass
+                
+                stats["certificates_issued"] = ec_issued
+                stats["revoked_certificates"] = ec_revoked
+                stats["active_certificates"] = ec_issued - ec_revoked
                 stats["certificate_type"] = "Enrollment Certificate (EC)"
                 
                 # Get CRL info if available
@@ -70,59 +87,80 @@ def create_stats_blueprint(entity_instance, entity_type):
             elif bp.entity_type == "AA":
                 stats["entity_id"] = bp.entity.aa_id
                 
-                # Count issued AT
+                # Count issued Authorization Tickets from tickets directory
                 import os
                 from pathlib import Path
                 
-                cert_dir = Path(bp.entity.base_dir) / "certificates"
-                if cert_dir.exists():
-                    cert_count = len(list(cert_dir.glob("*.pem")))
+                # AA stores issued ATs in tickets/
+                at_dir = Path(bp.entity.base_dir) / "tickets"
+                if at_dir.exists():
+                    at_issued = len(list(at_dir.glob("AT_*.pem")))
                 else:
-                    cert_count = 0
+                    at_issued = 0
                 
-                stats["certificates_issued"] = cert_count
+                # Count revoked certificates from CRL
+                at_revoked = 0
+                if hasattr(bp.entity, 'crl_manager'):
+                    try:
+                        # Get revoked count from CRL metadata
+                        metadata_path = bp.entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
+                        if os.path.exists(metadata_path):
+                            import json
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                                at_revoked = len(metadata.get('revoked_certificates', []))
+                    except:
+                        pass
+                
+                stats["certificates_issued"] = at_issued
+                stats["revoked_certificates"] = at_revoked
+                stats["active_certificates"] = at_issued - at_revoked
                 stats["certificate_type"] = "Authorization Ticket (AT)"
                 
             elif bp.entity_type == "TLM":
                 stats["entity_id"] = "TLM_MAIN"
                 
-                # Count enrolled EAs and AAs from link certificates
+                # Count trust anchors directly from TLM instance
                 import os
                 from pathlib import Path
                 
-                # TLM stores link certificates for each EA/AA
-                link_cert_dir = Path(bp.entity.base_dir) / "link_certificates"
+                trust_anchors_count = 0
+                if hasattr(bp.entity, 'trust_anchors'):
+                    trust_anchors_count = len(bp.entity.trust_anchors)
+                
+                # Count by type
                 ea_count = 0
                 aa_count = 0
-                
-                if link_cert_dir.exists():
-                    # Count EA and AA link certificates
-                    for cert_file in link_cert_dir.glob("*_link.pem"):
-                        if "EA_" in cert_file.name:
+                if hasattr(bp.entity, 'trust_anchors'):
+                    for anchor in bp.entity.trust_anchors:
+                        auth_type = anchor.get('authority_type', 'UNKNOWN')
+                        if auth_type == 'EA':
                             ea_count += 1
-                        elif "AA_" in cert_file.name:
+                        elif auth_type == 'AA':
                             aa_count += 1
                 
+                stats["trust_anchors"] = trust_anchors_count
+                stats["active_certificates"] = trust_anchors_count  # For dashboard consistency
                 stats["enrolled_eas"] = ea_count
                 stats["enrolled_aas"] = aa_count
                 stats["trust_list_version"] = "v1.0"
                 
-                # Check CTL (Certificate Trust List) file for last update
-                ctl_dir = Path(bp.entity.base_dir) / "ctl"
-                trust_list_file = None
+                # Check CTL (Certificate Trust List) metadata for last update
+                ctl_metadata_path = Path(bp.entity.base_dir) / "ctl" / "ctl_metadata.json"
                 
-                if ctl_dir.exists():
-                    # Look for latest CTL file
-                    ctl_files = list(ctl_dir.glob("*.ctl"))
-                    if ctl_files:
-                        # Get most recent
-                        trust_list_file = max(ctl_files, key=lambda p: p.stat().st_mtime)
-                
-                if trust_list_file and trust_list_file.exists():
+                if ctl_metadata_path.exists():
                     import datetime
-                    mtime = os.path.getmtime(trust_list_file)
-                    last_update = datetime.datetime.fromtimestamp(mtime).isoformat()
-                    stats["last_update"] = last_update
+                    import json
+                    try:
+                        with open(ctl_metadata_path, 'r') as f:
+                            ctl_meta = json.load(f)
+                            last_full_time = ctl_meta.get('last_full_ctl_time')
+                            if last_full_time:
+                                stats["last_update"] = last_full_time
+                            stats["ctl_number"] = ctl_meta.get('ctl_number', 0)
+                    except:
+                        import datetime
+                        stats["last_update"] = datetime.datetime.utcnow().isoformat()
                 else:
                     import datetime
                     stats["last_update"] = datetime.datetime.utcnow().isoformat()

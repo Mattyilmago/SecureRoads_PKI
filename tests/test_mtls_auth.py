@@ -49,10 +49,24 @@ def enrollment_authority(root_ca, temp_dir):
 
 
 @pytest.fixture
-def authorization_authority(root_ca, temp_dir):
-    """Crea AA con certificato firmato da Root CA"""
+def trust_list_manager(root_ca, enrollment_authority, temp_dir):
+    """Crea TLM e registra EA"""
+    from managers.trust_list_manager import TrustListManager
+    tlm = TrustListManager(
+        root_ca=root_ca,
+        base_dir=os.path.join(temp_dir, "tlm")
+    )
+    # Aggiungi EA ai trust anchors
+    tlm.add_trust_anchor(enrollment_authority.certificate, authority_type="EA")
+    return tlm
+
+
+@pytest.fixture
+def authorization_authority(root_ca, trust_list_manager, temp_dir):
+    """Crea AA con certificato firmato da Root CA e TLM"""
     aa = AuthorizationAuthority(
         root_ca=root_ca,
+        tlm=trust_list_manager,
         aa_id="AA_TEST",
         base_dir=os.path.join(temp_dir, "aa")
     )

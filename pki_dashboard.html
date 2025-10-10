@@ -898,9 +898,89 @@
                     </div>
                 </div>
 
+                <!-- Entity Management Panel (NEW) -->
+                <div class="panel full-width">
+                    <h2>🗑️ Entity Management</h2>
+                    <p style="color: #666; margin-bottom: 20px; font-size: 0.9em;">Manage configured EA and AA entities - Remove unused entities</p>
+                    
+                    <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 25px; border-radius: 10px; color: white;">
+                        <div style="font-size: 2.5em; margin-bottom: 15px;">⚠️</div>
+                        <h3 style="margin-bottom: 15px;">Delete Entity</h3>
+                        <p style="font-size: 0.95em; opacity: 0.95; margin-bottom: 20px; line-height: 1.6;">
+                            <strong>Warning:</strong> This will permanently delete the selected entity from <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">entity_configs.json</code> 
+                            and remove all its data (certificates, keys, CRL) from the <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">data/</code> directory, 
+                            including archived certificates in RootCA.
+                        </p>
+                        
+                        <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 10px; font-weight: 600;">Select Entity to Delete:</label>
+                            <select id="entityToDelete" style="width: 100%; padding: 12px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.95); color: #333; font-weight: 500; cursor: pointer; font-size: 1em; margin-bottom: 15px;">
+                                <option value="">🔍 Loading entities...</option>
+                            </select>
+                            
+                            <div id="entityDeleteInfo" style="padding: 12px; background: rgba(255,255,255,0.1); border-radius: 6px; font-size: 0.9em; line-height: 1.6; margin-bottom: 15px; display: none;">
+                                <strong>⚠️ This will delete:</strong>
+                                <ul style="margin: 10px 0 0 20px; padding: 0;">
+                                    <li>Entry from <code>entity_configs.json</code></li>
+                                    <li>Data directory: <code id="entityDataPath">-</code></li>
+                                    <li>All certificates, keys, and CRL files</li>
+                                    <li>Archived certificates from RootCA subordinates</li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button onclick="refreshEntityDeleteList()" 
+                                    style="flex: 1; min-width: 150px; padding: 12px 20px; background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1em;">
+                                🔄 Refresh List
+                            </button>
+                            <button onclick="confirmDeleteEntity()" 
+                                    style="flex: 2; min-width: 200px; padding: 12px 20px; background: rgba(220, 38, 38, 0.9); border: 2px solid rgba(255,255,255,0.6); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1.1em;">
+                                🗑️ DELETE ENTITY (PERMANENT)
+                            </button>
+                        </div>
+                        
+                        <!-- DELETE ALL BUTTON (ENHANCED - Kills processes too!) -->
+                        <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid rgba(255,255,255,0.2);">
+                            <button onclick="deleteAllEaAa()" 
+                                    style="width: 100%; padding: 15px 20px; background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%); border: 3px solid rgba(255,255,255,0.5); color: white; border-radius: 8px; cursor: pointer; font-weight: 700; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1.2em; text-shadow: 0 2px 4px rgba(0,0,0,0.3); margin-bottom: 10px;">
+                                💥 DELETE ALL EA/AA (INSTANT)
+                            </button>
+                            <p style="margin: 0 0 15px; font-size: 0.85em; opacity: 0.9; text-align: center;">
+                                Removes config, deletes data, kills processes, and cleans RootCA archive
+                            </p>
+                            
+                            <div style="background: rgba(16, 185, 129, 0.2); padding: 15px; border-radius: 8px; border-left: 4px solid rgba(16, 185, 129, 0.8);">
+                                <p style="margin: 0; font-size: 0.95em; line-height: 1.5;">
+                                    ✅ <strong>This button now does everything:</strong>
+                                </p>
+                                <ul style="margin: 10px 0 0 20px; padding: 0; font-size: 0.9em; line-height: 1.8; opacity: 0.95;">
+                                    <li>Kills all EA/AA Python processes</li>
+                                    <li>Removes entities from entity_configs.json</li>
+                                    <li>Deletes data directories (certificates, keys, CRL)</li>
+                                    <li>Removes archived certificates from RootCA</li>
+                                    <li>Dashboard updates automatically after 3 seconds</li>
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; border-left: 4px solid rgba(251, 191, 36, 0.8);">
+                            <p style="margin: 0; font-size: 0.9em; line-height: 1.5;">
+                                💡 <strong>Note:</strong> ROOT_CA and TLM_MAIN are preserved as they are system entities required for PKI operation.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- System Logs Panel -->
                 <div class="panel full-width">
-                    <h2>📋 System Logs</h2>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h2 style="margin: 0;">📋 System Logs</h2>
+                        <div id="autoScrollIndicator" style="padding: 6px 12px; background: #10b981; color: white; border-radius: 6px; font-size: 0.85em; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                            <span>🔄</span>
+                            <span>Auto-scroll ON</span>
+                        </div>
+                    </div>
                     <div class="log-viewer" id="logViewer">
                         <div class="log-line info">[INFO] Dashboard initialized</div>
                     </div>
@@ -993,19 +1073,60 @@
                 <p style="color: #666; margin-bottom: 20px;">Test PKI API endpoints interactively</p>
                 
                 <!-- Configuration Section -->
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                    <h3 style="color: #667eea; margin-bottom: 15px;">Configuration</h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                        <div>
-                            <label style="display: block; margin-bottom: 5px; font-weight: 500;">Base URL:</label>
-                            <input type="text" id="apiBaseUrl" value="http://localhost:5000" 
-                                   style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 5px;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; margin-bottom: 20px; color: white; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                    <h3 style="color: white; margin-bottom: 20px; font-size: 1.3em;">⚙️ Entity Selection</h3>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                        <!-- EA Selection -->
+                        <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                            <label style="display: block; margin-bottom: 10px; font-weight: 600; font-size: 1.05em;">
+                                📝 Enrollment Authority (EA)
+                            </label>
+                            <select id="selectedEA" onchange="updateEAUrl()" 
+                                    style="width: 100%; padding: 10px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.95); color: #333; font-weight: 500; cursor: pointer; font-size: 1em;">
+                                <option value="">🔍 Scanning for EA...</option>
+                            </select>
+                            <div id="eaUrlDisplay" style="margin-top: 10px; padding: 8px; background: rgba(255,255,255,0.2); border-radius: 6px; font-size: 0.9em; font-family: 'Courier New', monospace; word-break: break-all;">
+                                URL: -
+                            </div>
                         </div>
-                        <div>
-                            <label style="display: block; margin-bottom: 5px; font-weight: 500;">API Key:</label>
-                            <input type="text" id="apiKey" value="test-api-key-123" 
-                                   style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 5px;">
+
+                        <!-- AA Selection -->
+                        <div style="background: rgba(255,255,255,0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                            <label style="display: block; margin-bottom: 10px; font-weight: 600; font-size: 1.05em;">
+                                🎫 Authorization Authority (AA)
+                            </label>
+                            <select id="selectedAA" onchange="updateAAUrl()" 
+                                    style="width: 100%; padding: 10px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.95); color: #333; font-weight: 500; cursor: pointer; font-size: 1em;">
+                                <option value="">🔍 Scanning for AA...</option>
+                            </select>
+                            <div id="aaUrlDisplay" style="margin-top: 10px; padding: 8px; background: rgba(255,255,255,0.2); border-radius: 6px; font-size: 0.9em; font-family: 'Courier New', monospace; word-break: break-all;">
+                                URL: -
+                            </div>
                         </div>
+                    </div>
+
+                    <!-- Quick Actions -->
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button onclick="refreshEntityList()" 
+                                style="padding: 10px 20px; background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s;">
+                            🔄 Refresh Entities
+                        </button>
+                        <button onclick="testSelectedEA()" 
+                                style="padding: 10px 20px; background: rgba(16, 185, 129, 0.8); border: 2px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s;">
+                            ✅ Test EA Connection
+                        </button>
+                        <button onclick="testSelectedAA()" 
+                                style="padding: 10px 20px; background: rgba(59, 130, 246, 0.8); border: 2px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s;">
+                            ✅ Test AA Connection
+                        </button>
+                    </div>
+
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; border-left: 4px solid rgba(251, 191, 36, 0.8);">
+                        <p style="margin: 0; font-size: 0.9em; line-height: 1.5;">
+                            💡 <strong>Tip:</strong> Select an EA to test enrollment endpoints and an AA to test authorization endpoints. 
+                            The dropdown automatically detects all active entities.
+                        </p>
                     </div>
                 </div>
 
@@ -1696,7 +1817,10 @@
     </div>
 
     <script>
-        // Entity port configuration
+        // Entity configuration loaded from entity_configs.json
+        let CONFIGURED_ENTITIES = null;
+        
+        // Entity port configuration (fallback if config load fails)
         const ENTITY_PORTS = {
             'EA': Array.from({length: 20}, (_, i) => 5000 + i),
             'AA': Array.from({length: 20}, (_, i) => 5020 + i),
@@ -1719,11 +1843,82 @@
         let entityStatsRefreshInterval = null; // For auto-refresh in modal
         let currentEntityStats = null; // Store current entity data for refresh
 
+        // Load entity configuration
+        async function loadEntityConfig() {
+            try {
+                const response = await fetch('entity_configs.json');
+                const config = await response.json();
+                
+                // Parse configured entities from start_commands
+                CONFIGURED_ENTITIES = {
+                    'RootCA': [],
+                    'TLM': [],
+                    'EA': [],
+                    'AA': []
+                };
+                
+                config.start_commands.forEach(cmd => {
+                    const entity = cmd.entity;
+                    
+                    if (entity === 'ROOT_CA') {
+                        CONFIGURED_ENTITIES['RootCA'].push({
+                            id: 'RootCA',
+                            port: 5999,
+                            entity: 'ROOT_CA'
+                        });
+                    } else if (entity === 'TLM_MAIN') {
+                        CONFIGURED_ENTITIES['TLM'].push({
+                            id: 'TLM_MAIN',
+                            port: 5050,
+                            entity: 'TLM_MAIN'
+                        });
+                    } else if (entity.startsWith('EA_')) {
+                        // Extract port from config or use default range
+                        const portMatch = cmd.command.match(/--port\s+(\d+)/);
+                        const port = portMatch ? parseInt(portMatch[1]) : null;
+                        
+                        CONFIGURED_ENTITIES['EA'].push({
+                            id: entity,
+                            port: port || (5000 + CONFIGURED_ENTITIES['EA'].length),
+                            entity: entity
+                        });
+                    } else if (entity.startsWith('AA_')) {
+                        const portMatch = cmd.command.match(/--port\s+(\d+)/);
+                        const port = portMatch ? parseInt(portMatch[1]) : null;
+                        
+                        CONFIGURED_ENTITIES['AA'].push({
+                            id: entity,
+                            port: port || (5020 + CONFIGURED_ENTITIES['AA'].length),
+                            entity: entity
+                        });
+                    }
+                });
+                
+                addLog(`✅ Loaded configuration: ${CONFIGURED_ENTITIES['EA'].length} EA, ${CONFIGURED_ENTITIES['AA'].length} AA`, 'info');
+                return true;
+            } catch (error) {
+                addLog(`⚠️ Failed to load entity_configs.json: ${error.message}. Using port scan fallback.`, 'warning');
+                return false;
+            }
+        }
+
         // Initialize on load
-        window.onload = function() {
+        window.onload = async function() {
             addLog('✅ Dashboard initialized successfully', 'info');
+            
+            // Initialize log scroll detection
+            initLogScrollDetection();
+            
+            // Load entity configuration first
+            await loadEntityConfig();
+            
             scanAllInstances();
             updateMetrics();
+            
+            // Load entity deletion list
+            setTimeout(() => {
+                loadEntityDeleteList();
+            }, 2000);  // Wait 2s for entities to start
             
             // Auto-refresh every 5 seconds
             scanInterval = setInterval(scanAllInstances, 5000);
@@ -1755,29 +1950,59 @@
             
             const scanPromises = [];
             
+            // Use configured entities if available, otherwise fallback to port scanning
+            const entitiesToScan = CONFIGURED_ENTITIES || {};
+            
             for (const entityType of Object.keys(ENTITY_PORTS)) {
-                const ports = ENTITY_PORTS[entityType];
+                let entityScanPromise;
                 
-                const entityScanPromise = Promise.all(
-                    ports.map(async (port) => {
-                        const baseUrl = `http://localhost:${port}`;
-                        const isActive = await checkInstanceHealth(baseUrl);
-                        
-                        if (isActive) {
-                            const entityInfo = await getEntityInfo(baseUrl);
-                            return {
-                                port: port,
-                                url: baseUrl,
-                                id: entityInfo.id || `${entityType}_${port}`,
-                                uptime: entityInfo.uptime || 'N/A'
-                            };
-                        }
-                        return null;
-                    })
-                ).then(results => ({
-                    entityType,
-                    activeList: results.filter(r => r !== null)
-                }));
+                if (entitiesToScan[entityType] && entitiesToScan[entityType].length > 0) {
+                    // Scan only configured entities
+                    entityScanPromise = Promise.all(
+                        entitiesToScan[entityType].map(async (config) => {
+                            const baseUrl = `http://localhost:${config.port}`;
+                            const isActive = await checkInstanceHealth(baseUrl);
+                            
+                            if (isActive) {
+                                const entityInfo = await getEntityInfo(baseUrl);
+                                return {
+                                    port: config.port,
+                                    url: baseUrl,
+                                    id: config.id || entityInfo.id || `${entityType}_${config.port}`,
+                                    uptime: entityInfo.uptime || 'N/A'
+                                };
+                            }
+                            return null;
+                        })
+                    ).then(results => ({
+                        entityType,
+                        activeList: results.filter(r => r !== null)
+                    }));
+                } else {
+                    // Fallback: scan all ports in range
+                    const ports = ENTITY_PORTS[entityType];
+                    
+                    entityScanPromise = Promise.all(
+                        ports.map(async (port) => {
+                            const baseUrl = `http://localhost:${port}`;
+                            const isActive = await checkInstanceHealth(baseUrl);
+                            
+                            if (isActive) {
+                                const entityInfo = await getEntityInfo(baseUrl);
+                                return {
+                                    port: port,
+                                    url: baseUrl,
+                                    id: entityInfo.id || `${entityType}_${port}`,
+                                    uptime: entityInfo.uptime || 'N/A'
+                                };
+                            }
+                            return null;
+                        })
+                    ).then(results => ({
+                        entityType,
+                        activeList: results.filter(r => r !== null)
+                    }));
+                }
                 
                 scanPromises.push(entityScanPromise);
             }
@@ -1813,6 +2038,15 @@
             document.getElementById('lastScanTime').textContent = timeStr;
             
             addLog(`✅ Scan complete: ${totalActive} active instances found`, 'info');
+            console.log('[scanAllInstances] Scan complete. activeInstances:', JSON.stringify(activeInstances));
+            
+            // Auto-update entity delete dropdown (uses same data!)
+            if (typeof loadEntityDeleteList === 'function') {
+                console.log('[scanAllInstances] Calling loadEntityDeleteList()...');
+                loadEntityDeleteList();
+            } else {
+                console.error('[scanAllInstances] loadEntityDeleteList is not a function!');
+            }
         }
 
         // Check instance health
@@ -1883,7 +2117,450 @@
                     </div>
                 `).join('');
             }
+            
+            // Update API Tester dropdowns when instances are scanned
+            if (entityType === 'EA') {
+                updateEADropdown(instances);
+            } else if (entityType === 'AA') {
+                updateAADropdown(instances);
+            }
         }
+        
+        // Update EA dropdown with active instances
+        function updateEADropdown(instances) {
+            const dropdown = document.getElementById('selectedEA');
+            if (!dropdown) return;
+            
+            // Save current selection before updating
+            const currentSelection = dropdown.value;
+            
+            if (instances.length === 0) {
+                dropdown.innerHTML = '<option value="">❌ No EA instances found</option>';
+                document.getElementById('eaUrlDisplay').textContent = 'URL: -';
+                return;
+            }
+            
+            dropdown.innerHTML = instances.map(inst => 
+                `<option value="${inst.port}">${inst.id} - Port ${inst.port}</option>`
+            ).join('');
+            
+            // Restore previous selection if still available, otherwise use first
+            const isStillAvailable = instances.some(inst => inst.port == currentSelection);
+            if (currentSelection && isStillAvailable) {
+                dropdown.value = currentSelection;
+            } else {
+                dropdown.value = instances[0].port;
+            }
+            
+            updateEAUrl();
+        }
+        
+        // Update AA dropdown with active instances
+        function updateAADropdown(instances) {
+            const dropdown = document.getElementById('selectedAA');
+            if (!dropdown) return;
+            
+            // Save current selection before updating
+            const currentSelection = dropdown.value;
+            
+            if (instances.length === 0) {
+                dropdown.innerHTML = '<option value="">❌ No AA instances found</option>';
+                document.getElementById('aaUrlDisplay').textContent = 'URL: -';
+                return;
+            }
+            
+            dropdown.innerHTML = instances.map(inst => 
+                `<option value="${inst.port}">${inst.id} - Port ${inst.port}</option>`
+            ).join('');
+            
+            // Restore previous selection if still available, otherwise use first
+            const isStillAvailable = instances.some(inst => inst.port == currentSelection);
+            if (currentSelection && isStillAvailable) {
+                dropdown.value = currentSelection;
+            } else {
+                dropdown.value = instances[0].port;
+            }
+            
+            updateAAUrl();
+        }
+        
+        // Update EA URL display
+        function updateEAUrl() {
+            const dropdown = document.getElementById('selectedEA');
+            const display = document.getElementById('eaUrlDisplay');
+            
+            if (dropdown.value) {
+                const url = `http://localhost:${dropdown.value}`;
+                display.textContent = `URL: ${url}`;
+                addLog(`📝 EA selected: ${url}`, 'info');
+            } else {
+                display.textContent = 'URL: -';
+            }
+        }
+        
+        // Update AA URL display
+        function updateAAUrl() {
+            const dropdown = document.getElementById('selectedAA');
+            const display = document.getElementById('aaUrlDisplay');
+            
+            if (dropdown.value) {
+                const url = `http://localhost:${dropdown.value}`;
+                display.textContent = `URL: ${url}`;
+                addLog(`🎫 AA selected: ${url}`, 'info');
+            } else {
+                display.textContent = 'URL: -';
+            }
+        }
+        
+        // Refresh entity list (re-scan all instances)
+        function refreshEntityList() {
+            addLog('🔄 Refreshing entity list...', 'info');
+            scanAllInstances();
+        }
+        
+        // Test selected EA connection
+        async function testSelectedEA() {
+            const dropdown = document.getElementById('selectedEA');
+            if (!dropdown.value) {
+                addLog('❌ No EA selected!', 'error');
+                return;
+            }
+            
+            const url = `http://localhost:${dropdown.value}/health`;
+            addLog(`🧪 Testing EA connection: ${url}`, 'info');
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    addLog(`✅ EA is healthy! Entity: ${data.entity_id || 'Unknown'}, Uptime: ${data.uptime || 'N/A'}`, 'success');
+                } else {
+                    addLog(`⚠️ EA responded but with error: ${response.status}`, 'warning');
+                }
+            } catch (error) {
+                addLog(`❌ EA connection failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // Test selected AA connection
+        async function testSelectedAA() {
+            const dropdown = document.getElementById('selectedAA');
+            if (!dropdown.value) {
+                addLog('❌ No AA selected!', 'error');
+                return;
+            }
+            
+            const url = `http://localhost:${dropdown.value}/health`;
+            addLog(`🧪 Testing AA connection: ${url}`, 'info');
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    addLog(`✅ AA is healthy! Entity: ${data.entity_id || 'Unknown'}, Uptime: ${data.uptime || 'N/A'}`, 'success');
+                } else {
+                    addLog(`⚠️ AA responded but with error: ${response.status}`, 'warning');
+                }
+            } catch (error) {
+                addLog(`❌ AA connection failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // ========================================
+        // ENTITY MANAGEMENT FUNCTIONS
+        // ========================================
+        
+        // Load entities for deletion dropdown - uses SAME data as Running Instances panel
+        async function loadEntityDeleteList() {
+            console.log('[loadEntityDeleteList] Function called');
+            const dropdown = document.getElementById('entityToDelete');
+            
+            if (!dropdown) {
+                console.error('[loadEntityDeleteList] Dropdown element not found!');
+                addLog('❌ Error: Entity dropdown not found', 'error');
+                return;
+            }
+            
+            console.log('[loadEntityDeleteList] activeInstances:', JSON.stringify(activeInstances));
+            
+            // Load entity_configs.json to get ALL configured entities
+            let configuredEntities = [];
+            try {
+                const configResponse = await fetch('/entity_configs.json');
+                if (configResponse.ok) {
+                    const config = await configResponse.json();
+                    const startCommands = config.start_commands || [];
+                    
+                    // Extract EA and AA entities from start_commands
+                    configuredEntities = startCommands
+                        .filter(cmd => cmd.entity.startsWith('EA_') || cmd.entity.startsWith('AA_'))
+                        .map(cmd => {
+                            const entityId = cmd.entity;
+                            const entityType = entityId.startsWith('EA_') ? 'EA' : 'AA';
+                            
+                            // Check if this entity is currently active
+                            const activeEntity = (activeInstances[entityType] || [])
+                                .find(inst => inst.id === entityId);
+                            
+                            return {
+                                id: entityId,
+                                type: entityType,
+                                port: activeEntity ? activeEntity.port : 'N/A',
+                                status: activeEntity ? 'running' : 'stopped'
+                            };
+                        });
+                    
+                    console.log(`[loadEntityDeleteList] Loaded ${configuredEntities.length} configured entities`);
+                } else {
+                    console.error('[loadEntityDeleteList] Failed to load entity_configs.json');
+                }
+            } catch (error) {
+                console.error('[loadEntityDeleteList] Error loading entity_configs.json:', error);
+            }
+            
+            // Fallback: if no configured entities found, use only active instances
+            if (configuredEntities.length === 0) {
+                console.log('[loadEntityDeleteList] No configured entities, falling back to active instances');
+                ['EA', 'AA'].forEach(type => {
+                    const instances = activeInstances[type] || [];
+                    console.log(`[loadEntityDeleteList] Processing ${type}: ${instances.length} instances`);
+                    instances.forEach(instance => {
+                        configuredEntities.push({
+                            id: instance.id,
+                            type: type,
+                            port: instance.port,
+                            status: 'running'
+                        });
+                    });
+                });
+            }
+            
+            console.log(`[loadEntityDeleteList] Total entities to show: ${configuredEntities.length}`);
+            
+            // Populate dropdown
+            if (configuredEntities.length === 0) {
+                dropdown.innerHTML = '<option value="">❌ No EA/AA entities configured</option>';
+                return;
+            }
+            
+            const sortedEntities = configuredEntities.sort((a, b) => a.id.localeCompare(b.id));
+            
+            dropdown.innerHTML = '<option value="">-- Select Entity to Delete --</option>' +
+                sortedEntities.map(entity => {
+                    const statusIcon = entity.status === 'running' ? '🟢' : '⚪';
+                    const portInfo = entity.port !== 'N/A' ? ` - Port ${entity.port}` : '';
+                    return `<option value="${entity.id}" data-type="${entity.type}" data-port="${entity.port}">${statusIcon} ${entity.id} (${entity.type})${portInfo}</option>`;
+                }).join('');
+            
+            console.log(`[loadEntityDeleteList] Dropdown populated with ${configuredEntities.length} entities`);
+            addLog(`✅ Loaded ${configuredEntities.length} entities (${configuredEntities.filter(e => e.status === 'running').length} active)`, 'success');
+        }
+        
+        // Refresh entity deletion list
+        function refreshEntityDeleteList() {
+            addLog('🔄 Refreshing entity list...', 'info');
+            loadEntityDeleteList();
+        }
+        
+        // Update entity delete info when selection changes
+        document.addEventListener('DOMContentLoaded', function() {
+            const dropdown = document.getElementById('entityToDelete');
+            const infoDiv = document.getElementById('entityDeleteInfo');
+            const pathEl = document.getElementById('entityDataPath');
+            
+            if (dropdown) {
+                dropdown.addEventListener('change', function() {
+                    if (this.value) {
+                        const entityType = this.options[this.selectedIndex].dataset.type;
+                        const entityId = this.value;
+                        
+                        let dataPath = '';
+                        if (entityType === 'EA') {
+                            dataPath = `data/ea/${entityId}/`;
+                        } else if (entityType === 'AA') {
+                            dataPath = `data/aa/${entityId}/`;
+                        }
+                        
+                        pathEl.textContent = dataPath;
+                        infoDiv.style.display = 'block';
+                    } else {
+                        infoDiv.style.display = 'none';
+                    }
+                });
+            }
+        });
+        
+        // Delete entity (NO CONFIRMATION) - kills process too!
+        async function confirmDeleteEntity() {
+            const dropdown = document.getElementById('entityToDelete');
+            const entityId = dropdown.value;
+            
+            if (!entityId) {
+                addLog('❌ Please select an entity to delete', 'error');
+                return;
+            }
+            
+            const selectedOption = dropdown.options[dropdown.selectedIndex];
+            const entityType = selectedOption.dataset.type;
+            const entityPort = selectedOption.dataset.port;
+            
+            // INSTANT DELETION - NO CONFIRMATION
+            addLog(`🗑️ Deleting ${entityId} (${entityType} on port ${entityPort})...`, 'warning');
+            
+            // Try to delete from multiple ports (find an active entity with management API)
+            const portsToTry = [5000, 5001, 5020, 5021, 5999, 5050];
+            let deletionAttempted = false;
+            
+            for (const port of portsToTry) {
+                try {
+                    addLog(`  🔍 Trying management API on port ${port}...`, 'info');
+                    
+                    const response = await fetch(`http://localhost:${port}/api/management/entities/${entityId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        addLog(`  ⚠️ Port ${port} responded with status ${response.status}`, 'warning');
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    deletionAttempted = true;
+                    
+                    if (data.success) {
+                        addLog(`✅ Successfully deleted ${entityId}!`, 'success');
+                        
+                        if (data.process_killed) {
+                            addLog(`  ✓ Killed process (PID: ${data.killed_pid})`, 'success');
+                        }
+                        if (data.config_removed) {
+                            addLog(`  ✓ Removed from entity_configs.json`, 'success');
+                        }
+                        if (data.data_removed) {
+                            addLog(`  ✓ Deleted data directory: ${data.data_path}`, 'success');
+                        }
+                        if (data.rootca_cert_removed) {
+                            addLog(`  ✓ Removed ${data.rootca_certs.length} certificate(s) from RootCA archive`, 'success');
+                            data.rootca_certs.forEach(cert => addLog(`    • ${cert}`, 'success'));
+                        }
+                        if (data.errors && data.errors.length > 0) {
+                            data.errors.forEach(err => addLog(`  ⚠️ ${err}`, 'warning'));
+                        }
+                        
+                        // Refresh dashboard after 3 seconds (give time for process to die and data deletion)
+                        addLog(`🔄 Refreshing dashboard in 3 seconds...`, 'info');
+                        setTimeout(() => {
+                            scanAllInstances(); // This will auto-update the delete dropdown too
+                            loadEntityDeleteList(); // Explicitly refresh the delete list
+                        }, 3000);
+                        
+                        return;
+                    } else {
+                        addLog(`❌ Failed to delete: ${data.message}`, 'error');
+                        if (data.errors) {
+                            data.errors.forEach(err => addLog(`  • ${err}`, 'error'));
+                        }
+                        return;
+                    }
+                } catch (error) {
+                    // Try next port silently
+                    continue;
+                }
+            }
+            
+            if (deletionAttempted) {
+                addLog('❌ Entity deletion was attempted but failed. Check logs above.', 'error');
+            } else {
+                addLog('❌ Could not connect to management API on any port. Make sure at least one entity (EA, AA, TLM, or RootCA) is running.', 'error');
+            }
+        }
+        
+        // Delete ALL EA and AA entities at once (NO CONFIRMATION)
+        async function deleteAllEaAa() {
+            addLog('💥 Deleting ALL EA and AA entities AND stopping processes...', 'warning');
+            
+            // Try multiple ports
+            const portsToTry = [5000, 5001, 5020, 5021, 5999, 5050];
+            let deletionAttempted = false;
+            
+            for (const port of portsToTry) {
+                try {
+                    addLog(`  🔍 Trying management API on port ${port}...`, 'info');
+                    
+                    const response = await fetch(`http://localhost:${port}/api/management/entities/delete-all-ea-aa`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        addLog(`  ⚠️ Port ${port} responded with status ${response.status}`, 'warning');
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    deletionAttempted = true;
+                    
+                    if (data.success) {
+                        addLog(`✅ Successfully deleted ${data.total} entities and stopped processes!`, 'success');
+                        
+                        if (data.deleted && data.deleted.length > 0) {
+                            addLog(`  ✓ Removed from config: ${data.deleted.join(', ')}`, 'success');
+                        }
+                        
+                        if (data.processes_killed && data.processes_killed.length > 0) {
+                            addLog(`  ✓ Killed ${data.processes_killed.length} Python processes`, 'success');
+                            data.processes_killed.forEach(proc => {
+                                addLog(`    • PID ${proc.pid}: ${proc.cmdline}`, 'success');
+                            });
+                        }
+                        
+                        if (data.rootca_certs_removed && data.rootca_certs_removed.length > 0) {
+                            addLog(`  ✓ Removed ${data.rootca_certs_removed.length} certificate(s) from RootCA archive`, 'success');
+                            data.rootca_certs_removed.forEach(cert => {
+                                addLog(`    • ${cert}`, 'success');
+                            });
+                        }
+                        
+                        if (data.failed && data.failed.length > 0) {
+                            addLog(`  ⚠️ Some data directories could not be deleted:`, 'warning');
+                            data.failed.forEach(fail => {
+                                addLog(`    • ${fail.entity_id}: ${fail.reason}`, 'warning');
+                            });
+                        }
+                        
+                        addLog(`🔄 Dashboard will update in 3 seconds...`, 'info');
+                        
+                        // Refresh entity list immediately
+                        setTimeout(() => {
+                            scanAllInstances();
+                            loadEntityDeleteList();
+                            addLog(`✅ Dashboard updated - all EA/AA removed!`, 'success');
+                        }, 3000);
+                        
+                        return;
+                    } else {
+                        addLog(`⚠️ ${data.message}`, 'warning');
+                        return;
+                    }
+                } catch (error) {
+                    continue;
+                }
+            }
+            
+            if (deletionAttempted) {
+                addLog('❌ Bulk deletion was attempted but failed. Check logs above.', 'error');
+            } else {
+                addLog('❌ Could not connect to management API on any port. Make sure at least one entity (EA, AA, TLM, or RootCA) is running.', 'error');
+            }
+        }
+        
         
         // Show Entity Statistics Modal
         async function showEntityStats(entityType, entityId, port) {
@@ -2146,6 +2823,10 @@
             document.getElementById('metric-uptime').textContent = `${hours}h ${minutes}m`;
         }
 
+        // Track if user has manually scrolled the log viewer
+        let userHasScrolled = false;
+        let logScrollTimeout = null;
+
         // Add log entry
         function addLog(message, type = 'info') {
             const logViewer = document.getElementById('logViewer');
@@ -2161,13 +2842,46 @@
                 logViewer.removeChild(logViewer.firstChild);
             }
             
-            // Auto-scroll to bottom
-            logViewer.scrollTop = logViewer.scrollHeight;
+            // Auto-scroll to bottom ONLY if user hasn't manually scrolled
+            if (!userHasScrolled) {
+                logViewer.scrollTop = logViewer.scrollHeight;
+            }
+        }
+        
+        // Detect manual scroll by user
+        function initLogScrollDetection() {
+            const logViewer = document.getElementById('logViewer');
+            const indicator = document.getElementById('autoScrollIndicator');
+            
+            logViewer.addEventListener('scroll', function() {
+                // Check if user scrolled away from bottom (tolerance: 50px)
+                const isAtBottom = (logViewer.scrollHeight - logViewer.scrollTop - logViewer.clientHeight) < 50;
+                
+                if (!isAtBottom) {
+                    // User scrolled up - disable auto-scroll
+                    userHasScrolled = true;
+                    indicator.style.background = '#ef4444';
+                    indicator.innerHTML = '<span>⏸️</span><span>Auto-scroll OFF</span>';
+                } else {
+                    // User scrolled back to bottom - re-enable auto-scroll
+                    userHasScrolled = false;
+                    indicator.style.background = '#10b981';
+                    indicator.innerHTML = '<span>🔄</span><span>Auto-scroll ON</span>';
+                }
+            });
         }
 
         // ============================================
         // BULK ENTITY GENERATOR FUNCTIONS
         // ============================================
+
+        // Global variable to store entity generation config
+        let pendingEntityConfig = {
+            num_ea: 0,
+            num_aa: 0,
+            ea_names: [],
+            aa_names: []
+        };
 
         // Show Entity Generator Form
         function showEntityGeneratorForm() {
@@ -2328,6 +3042,14 @@
             
             closeEntityGeneratorModal();
             
+            // Save config globally for START NOW button
+            pendingEntityConfig = {
+                num_ea: num_ea,
+                num_aa: num_aa,
+                ea_names: ea_names.filter(n => n.length > 0),
+                aa_names: aa_names.filter(n => n.length > 0)
+            };
+            
             addLog(`Generating ${num_ea} EAs, ${num_aa} AAs + TLM (auto)...`, 'info');
             
             let command = 'python setup.py';
@@ -2353,31 +3075,39 @@
             // Auto-copy command to clipboard
             copyCommandToClipboard(command);
             
-            showGeneratedEntitiesInstructions(command, num_ea, num_aa);
+            showGeneratedEntitiesInstructions(command, num_ea, num_aa, ea_names, aa_names);
             
             addLog('✅ Entity generation configured! Command copied to clipboard.', 'info');
         }
 
         // Show instructions
-        function showGeneratedEntitiesInstructions(command, num_ea, num_aa) {
+        function showGeneratedEntitiesInstructions(command, num_ea, num_aa, ea_names = [], aa_names = []) {
             const modalContent = `
                 <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation Commands</h3>
                 
                 <div style="background: #1f2937; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                    <p style="color: #10b981; margin-bottom: 10px;"><strong>Run this command in PowerShell:</strong></p>
+                    <p style="color: #10b981; margin-bottom: 10px;"><strong>PowerShell Command:</strong></p>
                     <code style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all; word-wrap: break-word; white-space: pre-wrap;" onclick="copyCommandToClipboard(this.textContent)">${command}</code>
                     <p style="color: #9ca3af; font-size: 0.85em; margin-top: 5px;">Click to copy</p>
                 </div>
                 
                 <div style="background: #dcfce7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #10b981;">
-                    <p style="color: #065f46; margin-bottom: 10px;"><strong>✨ Automatic Start</strong></p>
-                    <p style="color: #047857; font-size: 0.9em;">
-                        All entities will automatically start in separate PowerShell terminals!
+                    <p style="color: #065f46; margin-bottom: 10px;"><strong>✨ Quick Options</strong></p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <button onclick="copyCommandToClipboard('${command}')" style="padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #6366f1; color: white; font-weight: bold; transition: all 0.3s;">
+                            📋 Copy Command
+                        </button>
+                        <button onclick="executeSetupDirectly()" style="padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; font-weight: bold; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4); transition: all 0.3s;">
+                            ▶️ START NOW
+                        </button>
+                    </div>
+                    <p style="color: #047857; font-size: 0.85em; margin-top: 10px; text-align: center;">
+                        START NOW will execute setup.py and auto-start entities
                     </p>
                 </div>
                 
-                <button onclick="closeInstructionsModal()" style="width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #667eea; color: white; font-weight: bold;">
-                    ✅ Got it!
+                <button onclick="closeInstructionsModal()" style="width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #e5e7eb; color: #374151; font-weight: bold;">
+                    ✅ Close
                 </button>
             `;
             
@@ -2410,6 +3140,135 @@
             
             modal.appendChild(modalContainer);
             document.body.appendChild(modal);
+        }
+
+        // Execute setup.py directly via API
+        async function executeSetupDirectly() {
+            // Use global config - with validation
+            if (!pendingEntityConfig || (!pendingEntityConfig.num_ea && !pendingEntityConfig.num_aa)) {
+                addLog('❌ No entity configuration found. Please configure entities first.', 'error');
+                return;
+            }
+            
+            const { num_ea, num_aa, ea_names, aa_names } = pendingEntityConfig;
+            
+            addLog(`🚀 Creating ${num_ea} EA and ${num_aa} AA entities...`, 'info');
+            
+            const requestBody = {
+                num_ea: num_ea || 0,
+                num_aa: num_aa || 0,
+                ea_names: ea_names || [],
+                aa_names: aa_names || [],
+                auto_start: false  // Don't auto-start yet, we'll start them ourselves
+            };
+            
+            // Try multiple ports to find an active entity
+            const portsToTry = [5000, 5001, 5020, 5021, 5999, 5050];
+            let setupAttempted = false;
+            
+            for (const port of portsToTry) {
+                try {
+                    addLog(`  🔍 Trying setup API on port ${port}...`, 'info');
+                    
+                    // Step 1: Create entities via setup.py
+                    const setupResponse = await fetch(`http://localhost:${port}/api/management/setup`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    if (!setupResponse.ok) {
+                        addLog(`  ⚠️ Port ${port} responded with status ${setupResponse.status}`, 'warning');
+                        continue;
+                    }
+                    
+                    const setupData = await setupResponse.json();
+                    setupAttempted = true;
+                    
+                    if (setupData.success) {
+                        addLog(`✅ Entities created successfully!`, 'success');
+                        
+                        // Extract entity IDs from output
+                        const createdEntities = [];
+                        if (ea_names && ea_names.length > 0) {
+                            createdEntities.push(...ea_names);
+                        } else {
+                            for (let i = 0; i < num_ea; i++) {
+                                createdEntities.push(`EA_${String(i+1).padStart(3, '0')}`);
+                            }
+                        }
+                        if (aa_names && aa_names.length > 0) {
+                            createdEntities.push(...aa_names);
+                        } else {
+                            for (let i = 0; i < num_aa; i++) {
+                                createdEntities.push(`AA_${String(i+1).padStart(3, '0')}`);
+                            }
+                        }
+                        
+                        addLog(`🚀 Starting ${createdEntities.length} entities in background...`, 'info');
+                        
+                        // Step 2: Start entities in background
+                        const startResponse = await fetch(`http://localhost:${port}/api/management/start-entities`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ entities: createdEntities })
+                        });
+                        
+                        const startData = await startResponse.json();
+                        
+                        if (startData.success && startData.started) {
+                            addLog(`✅ Successfully started ${startData.started.length} entities!`, 'success');
+                            startData.started.forEach(s => {
+                                addLog(`  ✓ ${s.entity} started`, 'success');
+                            });
+                        } else {
+                            addLog(`⚠️ Some entities could not be started`, 'warning');
+                        }
+                        
+                        if (startData.failed && startData.failed.length > 0) {
+                            addLog(`  ⚠️ Failed to start:`, 'warning');
+                            startData.failed.forEach(fail => {
+                                addLog(`    • ${fail.entity}: ${fail.reason}`, 'warning');
+                            });
+                        }
+                        
+                        // Close modals and refresh
+                        closeInstructionsModal();
+                        closeEntityGeneratorModal();
+                        
+                        addLog(`🔄 Refreshing dashboard in 5 seconds...`, 'info');
+                        setTimeout(() => {
+                            scanAllInstances();
+                            loadEntityDeleteList();
+                            addLog(`✅ Dashboard updated!`, 'success');
+                        }, 5000);
+
+                        
+                        return;
+                    } else {
+                        addLog(`❌ Setup failed: ${setupData.message}`, 'error');
+                        
+                        if (setupData.stderr) {
+                            addLog(`  Error: ${setupData.stderr.substring(0, 200)}`, 'error');
+                        }
+                        
+                        return;
+                    }
+                } catch (error) {
+                    // Try next port
+                    continue;
+                }
+            }
+            
+            if (setupAttempted) {
+                addLog('❌ Entity setup was attempted but failed. Check logs above.', 'error');
+            } else {
+                addLog('❌ Could not connect to management API on any port. Make sure at least one entity (EA, AA, TLM, or RootCA) is running.', 'error');
+            }
         }
 
         function copyCommandToClipboard(text) {

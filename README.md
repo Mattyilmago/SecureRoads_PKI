@@ -68,6 +68,16 @@ pip install -r requirements.txt
 python setup.py --ea 2 --ea-names "EA_HIGHWAY,EA_CITY" --aa 2 --aa-names "AA_TRAFFIC,AA_EMERGENCY" --tlm
 ```
 
+**💡 Gestione Automatica delle Porte:**  
+Il sistema assegna automaticamente le porte senza conflitti:
+- **RootCA**: Porta fissa 5999
+- **EA (Enrollment Authorities)**: Range 5000-5019 (max 20 istanze)
+- **AA (Authorization Authorities)**: Range 5020-5039 (max 20 istanze)  
+- **TLM**: Porta fissa 5050
+- **Dashboard**: Porta 8080
+
+Non è necessario specificare manualmente le porte: `server.py` trova automaticamente la prima porta disponibile nel range dedicato.
+
 ---
 
 ## 🎮 Avvio del Sistema

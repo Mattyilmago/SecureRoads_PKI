@@ -253,4 +253,116 @@ def create_simple_enrollment_blueprint(ea_instance):
                 "message": str(e)
             }), 500
 
+    @bp.route("/revoke", methods=["POST"])
+    def revoke_certificate():
+        """
+        POST /enrollment/revoke
+        
+        Revoke an Enrollment Certificate by serial number.
+        Conforms to ETSI TS 102 941 CRL management.
+        
+        Request Body (JSON):
+            {
+                "serial_number": "ABC123...",  # Hex string
+                "reason": "unspecified",       # Optional: unspecified, keyCompromise, etc.
+                "its_id": "VEHICLE_123"        # Optional: for logging
+            }
+        
+        Response Body (JSON):
+            {
+                "success": true,
+                "message": "Certificate revoked successfully",
+                "serial_number": "ABC123...",
+                "reason": "unspecified",
+                "delta_crl_published": true
+            }
+        """
+        current_app.logger.info("=" * 80)
+        current_app.logger.info("Certificate Revocation Request")
+        current_app.logger.info("=" * 80)
+        
+        try:
+            # Parse request
+            if not request.is_json:
+                return jsonify({
+                    "error": "Content-Type must be application/json"
+                }), 415
+            
+            data = request.get_json()
+            serial_hex = data.get("serial_number")
+            reason_str = data.get("reason", "unspecified")
+            its_id = data.get("its_id", "Unknown")
+            
+            # Validate serial number
+            if not serial_hex:
+                return jsonify({
+                    "error": "Missing serial_number in request"
+                }), 400
+            
+            current_app.logger.info(f"Revocation request:")
+            current_app.logger.info(f"  ITS-ID: {its_id}")
+            current_app.logger.info(f"  Serial (hex): {serial_hex}")
+            current_app.logger.info(f"  Reason: {reason_str}")
+            
+            # Map reason string to ReasonFlags
+            from cryptography.x509 import ReasonFlags
+            reason_map = {
+                "unspecified": ReasonFlags.unspecified,
+                "keyCompromise": ReasonFlags.key_compromise,
+                "caCompromise": ReasonFlags.ca_compromise,
+                "affiliationChanged": ReasonFlags.affiliation_changed,
+                "superseded": ReasonFlags.superseded,
+                "cessationOfOperation": ReasonFlags.cessation_of_operation,
+                "certificateHold": ReasonFlags.certificate_hold,
+                "privilegeWithdrawn": ReasonFlags.privilege_withdrawn,
+                "aaCompromise": ReasonFlags.aa_compromise
+            }
+            
+            reason = reason_map.get(reason_str, ReasonFlags.unspecified)
+            
+            # Check if EA has revoke capability
+            if not hasattr(bp.ea, 'revoke_certificate'):
+                return jsonify({
+                    "error": "Revocation not supported by this EA"
+                }), 501
+            
+            # Perform revocation
+            try:
+                bp.ea.revoke_certificate(serial_hex, reason)
+                
+                current_app.logger.info(f"✅ Certificate revoked: {serial_hex}")
+                current_app.logger.info(f"   Delta CRL published automatically")
+                
+                # Increment metrics
+                from utils.metrics import get_metrics_collector
+                metrics = get_metrics_collector()
+                metrics.increment_counter('certificates_revoked')
+                
+                return jsonify({
+                    "success": True,
+                    "message": "Certificate revoked successfully",
+                    "serial_number": serial_hex,
+                    "reason": reason_str,
+                    "delta_crl_published": True,
+                    "its_id": its_id
+                }), 200
+                
+            except Exception as revoke_error:
+                current_app.logger.error(f"Revocation failed: {revoke_error}")
+                import traceback
+                current_app.logger.error(traceback.format_exc())
+                return jsonify({
+                    "error": "Revocation failed",
+                    "message": str(revoke_error)
+                }), 500
+            
+        except Exception as e:
+            current_app.logger.error(f"Unexpected error: {e}")
+            import traceback
+            current_app.logger.error(traceback.format_exc())
+            return jsonify({
+                "error": "Internal server error",
+                "message": str(e)
+            }), 500
+
     return bp

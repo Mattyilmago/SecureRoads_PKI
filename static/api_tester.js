@@ -200,23 +200,45 @@ async function generateRealPublicKey() {
 async function makeApiRequest(method, endpoint, body = null) {
     clearApiLogs();
     
-    let baseUrl = document.getElementById('apiBaseUrl').value;
-    const apiKey = document.getElementById('apiKey').value;
+    let baseUrl;
     
-    // Auto-detect correct port based on endpoint
-    // Authorization endpoints → AA (port 5020)
-    // Enrollment endpoints → EA (port 5000)
-    if (endpoint.includes('/authorization/')) {
-        // Extract base URL and port
-        const urlMatch = baseUrl.match(/^(https?:\/\/[^:]+):(\d+)$/);
-        if (urlMatch) {
-            // Always use port 5020 for AA endpoints
-            baseUrl = `${urlMatch[1]}:5020`;
-        } else {
-            // Fallback: simple replace
-            baseUrl = baseUrl.replace(':5000', ':5020').replace(':5001', ':5020').replace(':5002', ':5020');
+    // Smart entity selection based on endpoint type
+    if (endpoint.includes('/enrollment/')) {
+        // Use selected EA
+        const selectedEA = document.getElementById('selectedEA');
+        if (!selectedEA || !selectedEA.value) {
+            addApiLog('❌ No EA selected! Please select an Enrollment Authority first.', 'error');
+            return;
         }
-        addApiLog('🔄 Auto-switching to AA port (5020) for authorization', 'info');
+        baseUrl = `http://localhost:${selectedEA.value}`;
+        addApiLog(`📝 Using Enrollment Authority: Port ${selectedEA.value}`, 'info');
+        
+    } else if (endpoint.includes('/authorization/')) {
+        // Use selected AA
+        const selectedAA = document.getElementById('selectedAA');
+        if (!selectedAA || !selectedAA.value) {
+            addApiLog('❌ No AA selected! Please select an Authorization Authority first.', 'error');
+            return;
+        }
+        baseUrl = `http://localhost:${selectedAA.value}`;
+        addApiLog(`🎫 Using Authorization Authority: Port ${selectedAA.value}`, 'info');
+        
+    } else {
+        // Fallback to old apiBaseUrl if exists (for backward compatibility)
+        const oldInput = document.getElementById('apiBaseUrl');
+        if (oldInput && oldInput.value) {
+            baseUrl = oldInput.value;
+        } else {
+            // Default to first EA if available
+            const selectedEA = document.getElementById('selectedEA');
+            if (selectedEA && selectedEA.value) {
+                baseUrl = `http://localhost:${selectedEA.value}`;
+                addApiLog(`ℹ️ Using default EA: Port ${selectedEA.value}`, 'info');
+            } else {
+                addApiLog('❌ No entity selected!', 'error');
+                return;
+            }
+        }
     }
     
     const url = `${baseUrl}${endpoint}`;
@@ -232,7 +254,6 @@ async function makeApiRequest(method, endpoint, body = null) {
             mode: 'cors',
             cache: 'no-cache',
             headers: {
-                'X-API-Key': apiKey,
                 'Content-Type': 'application/json'
             }
         };

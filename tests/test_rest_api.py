@@ -26,10 +26,13 @@ from managers.trust_list_manager import TrustListManager
 
 
 @pytest.fixture(scope="module")
-def ea_app():
-    """Create EA Flask app"""
-    root_ca = RootCA(base_dir="data/root_ca")
-    ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_API", base_dir="data/ea")
+def ea_app(root_ca, test_base_dir):
+    """Create EA Flask app - usa fixture condivise"""
+    ea = EnrollmentAuthority(
+        root_ca=root_ca, 
+        ea_id="EA_API", 
+        base_dir=os.path.join(test_base_dir, "ea_api")
+    )
 
     config = {
         "api_keys": ["test-api-key-123"],
@@ -43,16 +46,25 @@ def ea_app():
 
 
 @pytest.fixture(scope="module")
-def aa_app():
-    """Create AA Flask app"""
-    root_ca = RootCA(base_dir="data/root_ca")
-    ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_API", base_dir="data/ea")
+def aa_app(root_ca, test_base_dir):
+    """Create AA Flask app - usa fixture condivise"""
+    ea = EnrollmentAuthority(
+        root_ca=root_ca, 
+        ea_id="EA_API_AA", 
+        base_dir=os.path.join(test_base_dir, "ea_api_aa")
+    )
 
-    tlm = TrustListManager(root_ca=root_ca, base_dir="data/tlm")
+    tlm = TrustListManager(
+        root_ca=root_ca, 
+        base_dir=os.path.join(test_base_dir, "tlm_api")
+    )
     tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 
     aa = AuthorizationAuthority(
-        root_ca=root_ca, tlm=tlm, aa_id="AA_API", base_dir="data/aa"
+        root_ca=root_ca, 
+        tlm=tlm, 
+        aa_id="AA_API", 
+        base_dir=os.path.join(test_base_dir, "aa_api")
     )
 
     config = {

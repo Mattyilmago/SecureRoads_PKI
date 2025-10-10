@@ -45,6 +45,13 @@ from managers.trust_list_manager import TrustListManager
 from utils.cert_utils import get_certificate_ski
 
 
+# Global RootCA instance (singleton pattern)
+_root_ca_instance = None
+
+# Global TLM_MAIN instance (singleton pattern - shared across all AA)
+_tlm_main_instance = None
+
+
 DEFAULT_CONFIG = {
     "host": "0.0.0.0",
     "port": 5000,
@@ -266,6 +273,55 @@ def find_next_available_id(entity_type, base_dir="./data"):
     return f"{entity_type}_{next_num:03d}"
 
 
+def get_or_create_root_ca():
+    """
+    Singleton pattern per RootCA - evita re-inizializzazioni multiple.
+    
+    Problema risolto: Ogni entità (EA, AA, TLM) creava la propria istanza RootCA,
+    causando log duplicati "Nessun metadata Full CRL esistente" e spreco risorse.
+    
+    Returns:
+        Istanza condivisa di RootCA
+    """
+    global _root_ca_instance
+    
+    if '_root_ca_instance' not in globals() or _root_ca_instance is None:
+        print("📦 Creating shared RootCA instance...")
+        _root_ca_instance = RootCA(base_dir="data/root_ca")
+        print("✅ RootCA instance created and cached")
+    else:
+        print("♻️  Reusing cached RootCA instance")
+    
+    return _root_ca_instance
+
+
+def get_or_create_tlm_main():
+    """
+    Singleton pattern per TLM_MAIN - evita re-inizializzazioni multiple.
+    
+    Tutte le AA condividono la stessa istanza TLM_MAIN per validare EC.
+    Questo è conforme allo standard ETSI TS 102941 che raccomanda un
+    Trust List Manager centralizzato.
+    
+    Returns:
+        Istanza condivisa di TLM_MAIN
+    """
+    global _tlm_main_instance
+    
+    if '_tlm_main_instance' not in globals() or _tlm_main_instance is None:
+        print("📦 Creating shared TLM_MAIN instance...")
+        root_ca = get_or_create_root_ca()
+        tlm_path = "./data/tlm/TLM_MAIN/"
+        _tlm_main_instance = TrustListManager(root_ca, base_dir=tlm_path)
+        print("✅ TLM_MAIN instance created and cached")
+        print(f"   Trust anchors: {len(_tlm_main_instance.trust_anchors)}")
+    else:
+        print("♻️  Reusing cached TLM_MAIN instance")
+        print(f"   Trust anchors: {len(_tlm_main_instance.trust_anchors)}")
+    
+    return _tlm_main_instance
+
+
 def create_entity(entity_type, entity_id=None, ea_id=None):
     """
     Create PKI entity instance
@@ -284,7 +340,8 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
 
     if entity_type == "RootCA":
         entity_id = entity_id or "RootCA"
-        entity = RootCA(base_dir="data/root_ca")
+        # Usa singleton invece di creare nuova istanza
+        entity = get_or_create_root_ca()
 
     elif entity_type == "EA":
         # Se non specificato, trova automaticamente il prossimo ID disponibile
@@ -295,8 +352,36 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
             if existing:
                 print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
         
-        root_ca = RootCA(base_dir="data/root_ca")
+        # Usa RootCA condivisa
+        root_ca = get_or_create_root_ca()
         entity = EnrollmentAuthority(root_ca, ea_id=entity_id)
+        
+        # ===================================================================
+        # REGISTRAZIONE AUTOMATICA IN TLM_MAIN
+        # ===================================================================
+        # Ogni EA creata viene automaticamente registrata nel TLM_MAIN
+        # centralizzato in modo che tutte le AA possano validare i suoi EC
+        # ===================================================================
+        
+        print(f"\n🔗 Auto-registering EA in central TLM...")
+        tlm_main = get_or_create_tlm_main()
+        
+        # Verifica se EA è già registrata
+        ea_ski = get_certificate_ski(entity.certificate)
+        already_registered = any(anchor.get("ski") == ea_ski for anchor in tlm_main.trust_anchors)
+        
+        if already_registered:
+            print(f"   ℹ️  EA '{entity_id}' already registered in TLM_MAIN")
+        else:
+            # Registra EA come trust anchor
+            tlm_main.add_trust_anchor(entity.certificate, authority_type="EA")
+            print(f"   ✅ EA '{entity_id}' registered in TLM_MAIN")
+            
+            # Pubblica Full CTL
+            tlm_main.publish_full_ctl()
+            print(f"   ✅ Full CTL published")
+        
+        print(f"   📊 Total trust anchors in TLM: {len(tlm_main.trust_anchors)}")
 
     elif entity_type == "AA":
         # Se non specificato, trova automaticamente il prossimo ID disponibile
@@ -307,69 +392,33 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
             if existing:
                 print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
         
-        root_ca = RootCA(base_dir="data/root_ca")
+        # Usa RootCA condivisa
+        root_ca = get_or_create_root_ca()
 
-        # Initialize TLM with EA trust anchor
-        if ea_id:
-            # Usa EA esistente specificata
-            print(f"🔗 Using existing EA '{ea_id}' for {entity_id}...")
-            ea = EnrollmentAuthority(root_ca, ea_id=ea_id)
-            print(f"✅ EA '{ea_id}' loaded")
-        else:
-            # Trova automaticamente un'EA libera o creane una nuova
-            print(f"🔍 Looking for available EA for {entity_id}...")
-            
-            # Cerca EA standalone già esistenti (non usate da altre AA)
-            existing_eas = find_existing_entities("EA")
-            existing_aas = find_existing_entities("AA")
-            
-            # Filtra EA che non sono già associate ad altre AA
-            used_ea_ids = set()
-            for aa_id in existing_aas:
-                if aa_id != entity_id:  # Esclude l'AA corrente se sta reinizializzando
-                    # Pattern: EA_FOR_AA_XXX
-                    potential_ea = f"EA_FOR_{aa_id}"
-                    if potential_ea in existing_eas:
-                        used_ea_ids.add(potential_ea)
-            
-            # Cerca EA standalone disponibili (pattern EA_NNN)
-            available_standalone = [ea for ea in existing_eas 
-                                   if re.match(r'^EA_\d{3}$', ea) and ea not in used_ea_ids]
-            
-            if available_standalone:
-                # Usa la prima EA standalone disponibile
-                ea_id_to_use = sorted(available_standalone)[0]
-                print(f"♻️  Reusing standalone EA '{ea_id_to_use}'")
-                ea = EnrollmentAuthority(root_ca, ea_id=ea_id_to_use)
-            else:
-                # Crea una nuova EA dedicata
-                ea_id_for_aa = f"EA_FOR_{entity_id}"
-                print(f"🆕 Creating dedicated EA '{ea_id_for_aa}'...")
-                ea = EnrollmentAuthority(root_ca, ea_id=ea_id_for_aa)
-                print(f"✅ Dedicated EA '{ea_id_for_aa}' created")
-
-        # Usa TLM centrale (sempre TLM_MAIN)
-        print("Initializing central TLM for AA...")
-        tlm_id = "TLM_MAIN"
-        tlm_path = f"./data/tlm/{tlm_id}/"
+        # ===================================================================
+        # MODALITÀ TLM CENTRALIZZATA (ETSI-Compliant)
+        # ===================================================================
+        # Tutte le AA condividono lo stesso TLM_MAIN che contiene i trust
+        # anchors di TUTTE le EA attive nel sistema.
+        # Usa singleton per evitare re-inizializzazioni multiple.
+        # ===================================================================
         
-        # Verifica se TLM_MAIN esiste già
-        if os.path.exists(tlm_path):
-            print(f"♻️  Using existing central TLM '{tlm_id}'")
-            tlm = TrustListManager(root_ca, base_dir=tlm_path)
-        else:
-            print(f"🆕 Creating central TLM '{tlm_id}'")
-            tlm = TrustListManager(root_ca, base_dir=tlm_path)
+        print(f"\n🔗 Connecting to central TLM (ETSI-Compliant mode)...")
+        tlm = get_or_create_tlm_main()
         
-        # Aggiungi EA ai trust anchors se non già presente
-        ea_ski = get_certificate_ski(ea.certificate)
-        if not any(anchor.get("ski") == ea_ski for anchor in tlm.trust_anchors):
-            tlm.add_trust_anchor(ea.certificate, authority_type="EA")
-            print(f"✅ EA added to central TLM")
+        # Mostra trust anchors disponibili
+        if tlm.trust_anchors:
+            print(f"\n✅ Central TLM has {len(tlm.trust_anchors)} trust anchor(s):")
+            for anchor in tlm.trust_anchors:
+                auth_type = anchor.get('authority_type', 'UNKNOWN')
+                subject = anchor.get('subject_name', 'Unknown')
+                print(f"   - {auth_type}: {subject}")
         else:
-            print(f"ℹ️  EA already in central TLM")
-        
-        print(f"✅ Central TLM '{tlm_id}' has {len(tlm.trust_anchors)} trust anchor(s)")
+            print(f"\n⚠️  WARNING: TLM has no trust anchors!")
+            print(f"   AA will reject all EC validation requests until EA are added to TLM.")
+            print(f"   Add EA to TLM:")
+            print(f"   1. Start EA: python server.py --entity EA --id EA_001")
+            print(f"   2. Register: python scripts/register_ea_to_tlm.py EA_001")
 
         entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_id)
 
@@ -382,7 +431,8 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
             if existing:
                 print(f"ℹ️  Existing TLM instances: {', '.join(sorted(existing))}")
         
-        root_ca = RootCA(base_dir="data/root_ca")
+        # Usa RootCA condivisa
+        root_ca = get_or_create_root_ca()
         entity = TrustListManager(root_ca, base_dir=f"./data/tlm/{entity_id}/")
 
     else:

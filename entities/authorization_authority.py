@@ -35,15 +35,14 @@ from utils.cert_utils import (
 
 class AuthorizationAuthority:
     def __init__(
-        self, root_ca, tlm=None, ea_certificate_path=None, aa_id=None, base_dir="./data/aa/"
+        self, root_ca, tlm, aa_id=None, base_dir="./data/aa/"
     ):
         """
         Inizializza Authorization Authority.
 
         Args:
             root_ca: Riferimento alla Root CA
-            tlm: TrustListManager per validazione EC
-            ea_certificate_path: Path certificato EA singola (modalit legacy)
+            tlm: TrustListManager per validazione EC (OBBLIGATORIO)
             aa_id: ID dell'AA (generato automaticamente se None)
             base_dir: Directory base per dati AA
         """
@@ -53,6 +52,9 @@ class AuthorizationAuthority:
 
         # Sottocartelle uniche per ogni AA
         base_dir = os.path.join(base_dir, f"{aa_id}/")
+        
+        # Store base_dir as instance attribute for stats endpoint
+        self.base_dir = base_dir
         self.aa_id = aa_id
 
         # Logger initialization (must be before any logger calls)
@@ -63,6 +65,11 @@ class AuthorizationAuthority:
         self.logger.info("=" * 80)
         self.logger.info(f"*** INIZIO INIZIALIZZAZIONE AUTHORIZATION AUTHORITY {aa_id} ***")
         self.logger.info("=" * 80)
+        
+        # Verifica che TLM sia fornito (OBBLIGATORIO)
+        if not tlm:
+            raise ValueError(f"TrustListManager (tlm) è obbligatorio per AA. Fornire un'istanza TLM valida.")
+        
         self.aa_certificate_path = os.path.join(base_dir, "certificates/aa_certificate.pem")
         self.aa_key_path = os.path.join(base_dir, "private_keys/aa_key.pem")
         self.crl_path = os.path.join(base_dir, "crl/aa_crl.pem")
@@ -73,21 +80,11 @@ class AuthorizationAuthority:
         self.certificate = None
         self.root_ca = root_ca
 
+        # Usa SEMPRE TLM per validazione EC (modalità moderna)
         self.tlm = tlm
-        self.ea_certificate_path = ea_certificate_path
-        self.ea_certificate = None
-
-        # Determina modalit operativa
-        if self.tlm:
-            self.logger.info(f"Modalit TLM: validazione EC tramite Trust List Manager")
-            self.validation_mode = "TLM"
-        elif self.ea_certificate_path:
-            self.logger.info(f"[WARNING] Modalit LEGACY: validazione EC tramite EA singola")
-            self.validation_mode = "LEGACY"
-        else:
-            self.logger.info(f"[WARNING] WARNING: Nessun metodo di validazione EC configurato!")
-            self.logger.info(f"[WARNING] Fornire 'tlm' o 'ea_certificate_path'")
-            self.validation_mode = "NONE"
+        self.validation_mode = "TLM"
+        self.logger.info(f"✅ Modalità TLM attiva: validazione EC tramite Trust List Manager")
+        self.logger.info(f"   TLM Trust Anchors: {len(tlm.trust_anchors)}")
 
         # Crea tutte le directory necessarie
         dirs_to_create = [
@@ -99,18 +96,10 @@ class AuthorizationAuthority:
             self.backup_dir,
         ]
 
-        # Legacy: crea anche directory EA se specificata
-        if self.ea_certificate_path:
-            dirs_to_create.append(os.path.dirname(self.ea_certificate_path))
-
         PKIFileHandler.ensure_directories(*dirs_to_create)
         self.logger.info(f"Directory create o gi esistenti: {len(dirs_to_create)} cartelle")
 
         self.load_or_generate_aa()
-
-        # Legacy: carica EA certificate se modalit legacy
-        if self.validation_mode == "LEGACY":
-            self.load_ea_certificate()
 
         # Inizializza CRLManager dopo aver caricato certificato e chiave privata
         self.logger.info(f"Inizializzando CRLManager per AA {aa_id}...")
@@ -121,6 +110,12 @@ class AuthorizationAuthority:
             issuer_private_key=self.private_key,
         )
         self.logger.info(f"CRLManager inizializzato con successo!")
+        
+        # Pubblica CRL vuota iniziale se non esiste (per dashboard /api/crl/full)
+        if not os.path.exists(self.crl_manager.full_crl_path):
+            self.logger.info("Pubblicando Full CRL iniziale vuota...")
+            self.crl_manager.publish_full_crl()
+            self.logger.info("✅ Full CRL iniziale pubblicata")
 
         # Inizializza ETSI Message Encoder per gestire messaggi conformi allo standard
         self.logger.info(f"Inizializzando ETSI Message Encoder (ASN.1 OER)...")
@@ -182,11 +177,6 @@ class AuthorizationAuthority:
         self.certificate = PKIFileHandler.load_certificate(self.aa_certificate_path)
         self.logger.info("Certificato AA caricato.")
 
-    def load_ea_certificate(self):
-        self.logger.info("Caricamento certificato EA da file...")
-        self.ea_certificate = PKIFileHandler.load_certificate(self.ea_certificate_path)
-        self.logger.info("Certificato EA caricato.")
-
     # Processa richiesta per AT con un EC di un ITS-S
     def process_authorization_request(self, ec_pem, its_id, attributes=None):
         self.logger.info(f"Ricevuta richiesta di Authorization Ticket da ITS-S {its_id}")
@@ -194,30 +184,15 @@ class AuthorizationAuthority:
             ec_certificate = x509.load_pem_x509_certificate(ec_pem)
             self.logger.info(f"EC caricato per ITS-S {its_id}, verifico chain e validit...")
 
-            # === VALIDAZIONE EC ===
-            if self.validation_mode == "TLM":
-                self.logger.info(f"Validazione EC tramite TLM...")
-                is_trusted, trust_info = self.tlm.is_trusted(ec_certificate)
+            # === VALIDAZIONE EC tramite TLM ===
+            self.logger.info(f"Validazione EC tramite TLM...")
+            is_trusted, trust_info = self.tlm.is_trusted(ec_certificate)
 
-                if not is_trusted:
-                    self.logger.info(f"[ERROR] EC NON valido: {trust_info}")
-                    return None
+            if not is_trusted:
+                self.logger.info(f"[ERROR] EC NON valido: {trust_info}")
+                return None
 
-                self.logger.info(f"[OK] EC validato tramite TLM: {trust_info}")
-
-            elif self.validation_mode == "LEGACY":
-                self.logger.info(f"Validazione EC tramite EA singola (legacy mode)...")
-
-                # Verifica chain: EC deve essere stato emesso dalla EA trusted
-                if ec_certificate.issuer != self.ea_certificate.subject:
-                    self.logger.info("[ERROR] EC NON valido: issuer non corrisponde a EA.")
-                    return None
-
-                self.logger.info(f"[OK] EC issuer verificato")
-
-            else:
-                self.logger.info(f"[ERROR] ERRORE: Nessun metodo di validazione EC configurato!")
-                raise ValueError("Authorization Authority non configurata correttamente")
+            self.logger.info(f"[OK] EC validato tramite TLM: {trust_info}")
 
             # === VERIFICA SCADENZA ===
             ec_expiry = get_certificate_expiry_time(ec_certificate)

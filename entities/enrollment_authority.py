@@ -39,6 +39,9 @@ class EnrollmentAuthority:
 
         # Sottocartelle uniche per ogni EA
         base_dir = os.path.join(base_dir, f"{ea_id}/")
+        
+        # Store base_dir as instance attribute for stats endpoint
+        self.base_dir = base_dir
 
         # Store IDs early for logger initialization
         self.ea_id = ea_id
@@ -100,6 +103,12 @@ class EnrollmentAuthority:
             issuer_private_key=self.private_key,
         )
         self.logger.info("CRLManager inizializzato con successo!")
+        
+        # Pubblica CRL vuota iniziale se non esiste (per dashboard /api/crl/full)
+        if not os.path.exists(self.crl_manager.full_crl_path):
+            self.logger.info("Pubblicando Full CRL iniziale vuota...")
+            self.crl_manager.publish_full_crl()
+            self.logger.info("✅ Full CRL iniziale pubblicata")
 
         # Inizializza ETSI Message Encoder per gestire messaggi conformi allo standard
         self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 OER)...")

@@ -82,19 +82,19 @@ def start_pki_entities():
     # Trova root del progetto
     project_root = Path(__file__).parent.parent
     
-    # Configura entities da avviare
+    # Configura entities da avviare con auto-assignment porte
+    # EA: 5000-5019, AA: 5020-5039, TLM: 5050
     entities = [
-        ("EA_001", "5000", "EA"),
-        ("EA_002", "5001", "EA"),
-        ("EA_003", "5002", "EA"),
-        ("AA_001", "5003", "AA"),
-        ("AA_002", "5004", "AA"),
-        ("TLM_MAIN", "5005", "TLM")
+        ("EA_001", "EA"),
+        ("EA_002", "EA"),
+        ("AA_001", "AA"),
+        ("AA_002", "AA"),
+        ("TLM_MAIN", "TLM")
     ]
     
-    for entity_id, port, entity_type in entities:
+    for entity_id, entity_type in entities:
         try:
-            print(f"\n  Avvio {entity_id} sulla porta {port}...", end=" ")
+            print(f"\n  Avvio {entity_id} (auto-port)...", end=" ")
             
             # Path al config file con TLS se disponibile
             config_file = None
@@ -103,13 +103,12 @@ def start_pki_entities():
                 if config_path.exists():
                     config_file = str(config_path)
             
-            # Comando per avviare l'entity
+            # Comando per avviare l'entity (senza --port per auto-assignment)
             cmd = [
                 sys.executable,
                 str(project_root / "server.py"),
                 "--entity", entity_type,
-                "--id", entity_id,
-                "--port", port
+                "--id", entity_id
             ]
             
             # Aggiungi config se disponibile
@@ -122,15 +121,19 @@ def start_pki_entities():
                     cmd,
                     cwd=str(project_root),
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                    shell=False
+                    shell=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
                 )
             else:  # Linux/Mac
                 process = subprocess.Popen(
                     cmd,
-                    cwd=str(project_root)
+                    cwd=str(project_root),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
                 )
             
-            _started_processes.append((entity_id, port, process))
+            _started_processes.append((entity_id, None, process))  # None = porta sconosciuta ancora
             print("✅")
             
         except Exception as e:
@@ -141,28 +144,46 @@ def start_pki_entities():
     print(f"\n  Attesa avvio server ({wait_time} secondi)...")
     time.sleep(wait_time)
     
-    # Verifica che siano attivi
-    # Verifica che siano attivi
-    print("\n  Verifica connessioni:")
+    # Verifica che siano attivi e rileva le porte assegnate
+    print("\n  Verifica connessioni e rilevamento porte:")
     active_count = 0
     session = get_session()
     if not session:
         print("\n  ⚠️  Impossibile creare session TLS!")
         return _started_processes
     
-    for entity_id, port, process in _started_processes:
-        try:
-            url = get_base_url(port) + "/health"
-            timeout = 15 if TLS_ENABLED else 5  # Longer timeout for mTLS handshake
-            response = session.get(url, timeout=timeout)
-            if response.status_code == 200:
-                print(f"    {entity_id} (:{port}): ✅")
-                active_count += 1
-            else:
-                print(f"    {entity_id} (:{port}): ❌")
-        except Exception as e:
-            print(f"    {entity_id} (:{port}): ❌ ({str(e)[:20]})")
+    # Range di porte da controllare per ogni tipo
+    port_ranges = {
+        "EA": range(5000, 5020),  # EA: 5000-5019
+        "AA": range(5020, 5040),  # AA: 5020-5039
+        "TLM": [5050]             # TLM: 5050
+    }
     
+    updated_processes = []
+    for entity_id, _, process in _started_processes:
+        entity_type = entity_id.split("_")[0]  # Estrae EA, AA, o TLM
+        found = False
+        
+        # Cerca in quale porta è attivo
+        for port in port_ranges.get(entity_type, []):
+            try:
+                url = get_base_url(port) + "/health"
+                timeout = 15 if TLS_ENABLED else 5
+                response = session.get(url, timeout=timeout)
+                if response.status_code == 200:
+                    print(f"    {entity_id} (:{port}): ✅")
+                    updated_processes.append((entity_id, port, process))
+                    active_count += 1
+                    found = True
+                    break
+            except:
+                continue
+        
+        if not found:
+            print(f"    {entity_id} (porta sconosciuta): ❌")
+            updated_processes.append((entity_id, None, process))
+    
+    _started_processes = updated_processes
     print(f"\n  Entities attive: {active_count}/{len(entities)}")
     
     if active_count == 0:
@@ -182,7 +203,7 @@ def stop_pki_entities():
     print("  CHIUSURA ENTITIES")
     print("="*60)
     
-    for entity_id, port, process in _started_processes:
+    for entity_id, _, process in _started_processes:
         try:
             print(f"  Chiusura {entity_id}...", end=" ")
             
