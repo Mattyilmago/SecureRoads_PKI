@@ -35,7 +35,7 @@ def root_ca_link(root_ca):
 @pytest.fixture(scope="module")
 def ea(root_ca_link, test_base_dir):
     """Create EA instance"""
-    return EnrollmentAuthority(root_ca=root_ca_link, ea_id="EA_ETSI_TEST", base_dir=os.path.join(test_base_dir, "ea_etsi"))
+    return EnrollmentAuthority(root_ca=root_ca_link, ea_id="EA_ETSI_TEST", base_dir=os.path.join(test_base_dir, "ea"))
 
 
 @pytest.fixture
@@ -195,20 +195,23 @@ class TestTrustListManagerETSI:
         """Test TLM generates both JSON and ASN.1 formats"""
         import glob
         
-        tlm = TrustListManager(root_ca=root_ca, base_dir="data/tlm")
+        tlm = TrustListManager(root_ca=root_ca, tlm_id="TLM_MAIN", base_dir="data/tlm")
         tlm.add_trust_anchor(ea.certificate, authority_type="EA")
         
+        # Con PKIPathManager, i path sono: data/tlm/TLM_MAIN/trust_lists/link_certificates/
+        base_path = "data/tlm/TLM_MAIN/trust_lists/link_certificates"
+        
         # Verifica esistenza file JSON nella sottocartella json/
-        json_files = glob.glob("data/tlm/link_certificates/json/*.json")
-        assert len(json_files) > 0, f"Nessun file JSON trovato in json/"
+        json_files = glob.glob(f"{base_path}/json/*.json")
+        assert len(json_files) > 0, f"Nessun file JSON trovato in {base_path}/json/"
         
         # Verifica esistenza file ASN.1 nella sottocartella asn1/
-        asn1_files = glob.glob("data/tlm/link_certificates/asn1/*.asn1")
-        assert len(asn1_files) > 0, f"Nessun file ASN.1 trovato in asn1/"
+        asn1_files = glob.glob(f"{base_path}/asn1/*.asn1")
+        assert len(asn1_files) > 0, f"Nessun file ASN.1 trovato in {base_path}/asn1/"
 
     def test_tlm_verify_link_certificate(self, root_ca, ea):
         """Test TLM can verify link certificates"""
-        tlm = TrustListManager(root_ca=root_ca, base_dir="data/tlm")
+        tlm = TrustListManager(root_ca=root_ca, tlm_id="TLM_MAIN", base_dir="data/tlm")
         tlm.add_trust_anchor(ea.certificate, authority_type="EA")
         
         # Verifica link certificate generato

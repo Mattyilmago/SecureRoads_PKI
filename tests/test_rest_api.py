@@ -31,7 +31,7 @@ def ea_app(root_ca, test_base_dir):
     ea = EnrollmentAuthority(
         root_ca=root_ca, 
         ea_id="EA_API", 
-        base_dir=os.path.join(test_base_dir, "ea_api")
+        base_dir=os.path.join(test_base_dir, "ea")
     )
 
     config = {
@@ -51,12 +51,12 @@ def aa_app(root_ca, test_base_dir):
     ea = EnrollmentAuthority(
         root_ca=root_ca, 
         ea_id="EA_API_AA", 
-        base_dir=os.path.join(test_base_dir, "ea_api_aa")
+        base_dir=os.path.join(test_base_dir, "ea")
     )
 
     tlm = TrustListManager(
         root_ca=root_ca, 
-        base_dir=os.path.join(test_base_dir, "tlm_api")
+        base_dir=os.path.join(test_base_dir, "tlm")
     )
     tlm.add_trust_anchor(ea.certificate, authority_type="EA")
 
@@ -64,7 +64,7 @@ def aa_app(root_ca, test_base_dir):
         root_ca=root_ca, 
         tlm=tlm, 
         aa_id="AA_API", 
-        base_dir=os.path.join(test_base_dir, "aa_api")
+        base_dir=os.path.join(test_base_dir, "aa")
     )
 
     config = {

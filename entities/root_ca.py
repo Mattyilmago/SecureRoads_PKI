@@ -17,16 +17,27 @@ from utils.cert_utils import (
 )
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
+from utils.pki_paths import PKIPathManager
 
 
 class RootCA:
     def __init__(self, base_dir="./data/root_ca/"):
-        self.base_dir = base_dir
-        self.ca_certificate_path = os.path.join(base_dir, "certificates/root_ca_certificate.pem")
-        self.ca_key_path = os.path.join(base_dir, "private_keys/root_ca_key.pem")
-        self.crl_path = os.path.join(base_dir, "crl/root_ca_crl.pem")
-        self.log_dir = os.path.join(base_dir, "logs/")
-        self.backup_dir = os.path.join(base_dir, "backup/")
+        # Usa PKIPathManager per gestire i path in modo centralizzato
+        # Per RootCA, entity_id è sempre "ROOT_CA"
+        paths = PKIPathManager.get_entity_paths("RootCA", "ROOT_CA", base_dir)
+        
+        self.base_dir = str(paths.base_dir)
+        self.ca_certificate_path = str(paths.certificates_dir / "root_ca_certificate.pem")
+        self.ca_key_path = str(paths.private_keys_dir / "root_ca_key.pem")
+        self.crl_path = str(paths.crl_dir / "root_ca_crl.pem")
+        self.log_dir = str(paths.logs_dir)
+        self.backup_dir = str(paths.backup_dir)
+        
+        # Directory per certificati subordinati (EA, AA, ecc.)
+        self.subordinates_dir = str(paths.data_dir)  # subordinates/
+        
+        # Crea tutte le directory necessarie
+        paths.create_all()
         
         # Inizializza logger
         self.logger = PKILogger.get_logger(
@@ -39,19 +50,11 @@ class RootCA:
         self.logger.info(f"Percorso certificato: {self.ca_certificate_path}")
         self.logger.info(f"Percorso chiave privata: {self.ca_key_path}")
         self.logger.info(f"Percorso CRL: {self.crl_path}")
+        self.logger.info(f"Directory subordinati: {self.subordinates_dir}")
+        self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
 
         self.private_key = None
         self.certificate = None
-
-        # Assicura che le directory esistano
-        self.logger.info("Creando directory necessarie...")
-        PKIFileHandler.ensure_directories(
-            os.path.dirname(self.ca_certificate_path),
-            os.path.dirname(self.ca_key_path),
-            os.path.dirname(self.crl_path),
-            self.log_dir,
-            self.backup_dir,
-        )
 
         # Prova a caricare chiave/cert
         self.logger.info("Caricando o generando chiave e certificato...")
@@ -61,7 +64,7 @@ class RootCA:
         self.logger.info("Inizializzando CRLManager per RootCA...")
         self.crl_manager = CRLManager(
             authority_id="RootCA",
-            base_dir=base_dir,
+            base_dir=self.base_dir,  # Usa il path specifico dell'istanza (data/root_ca)
             issuer_certificate=self.certificate,
             issuer_private_key=self.private_key,
         )

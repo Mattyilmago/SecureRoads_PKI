@@ -29,6 +29,7 @@ from utils.cert_utils import (
     get_short_identifier,
 )
 from utils.logger import PKILogger
+from utils.pki_paths import PKIPathManager
 
 
 class EnrollmentAuthority:
@@ -37,20 +38,23 @@ class EnrollmentAuthority:
         if ea_id is None:
             ea_id = f"EA_{secrets.token_hex(4).upper()}"
 
-        # Sottocartelle uniche per ogni EA
-        base_dir = os.path.join(base_dir, f"{ea_id}/")
+        # Usa PKIPathManager per gestire i path in modo centralizzato
+        paths = PKIPathManager.get_entity_paths("EA", ea_id, base_dir)
         
         # Store base_dir as instance attribute for stats endpoint
-        self.base_dir = base_dir
+        self.base_dir = str(paths.base_dir)
+        
+        # Crea tutte le directory necessarie
+        paths.create_all()
 
         # Store IDs early for logger initialization
         self.ea_id = ea_id
-        self.ea_certificate_path = os.path.join(base_dir, "certificates/ea_certificate.pem")
-        self.ea_key_path = os.path.join(base_dir, "private_keys/ea_key.pem")
-        self.ec_dir = os.path.join(base_dir, "enrollment_certificates/")
-        self.crl_path = os.path.join(base_dir, "crl/ea_crl.pem")
-        self.log_dir = os.path.join(base_dir, "logs/")
-        self.backup_dir = os.path.join(base_dir, "backup/")
+        self.ea_certificate_path = str(paths.certificates_dir / "ea_certificate.pem")
+        self.ea_key_path = str(paths.private_keys_dir / "ea_key.pem")
+        self.ec_dir = str(paths.data_dir)  # enrollment_certificates
+        self.crl_path = str(paths.crl_dir / "ea_crl.pem")
+        self.log_dir = str(paths.logs_dir)
+        self.backup_dir = str(paths.backup_dir)
         
         # Inizializza logger (ea_id contiene gi il prefisso "EA_")
         self.logger = PKILogger.get_logger(
@@ -60,11 +64,12 @@ class EnrollmentAuthority:
         )
         
         self.logger.info(f"Inizializzando Enrollment Authority {ea_id}...")
-        self.logger.info(f"Directory base: {base_dir}")
+        self.logger.info(f"Directory base: {self.base_dir}")
         self.logger.info(f"Percorso certificato EA: {self.ea_certificate_path}")
         self.logger.info(f"Percorso chiave privata EA: {self.ea_key_path}")
         self.logger.info(f"Directory EC: {self.ec_dir}")
         self.logger.info(f"Percorso CRL EA: {self.crl_path}")
+        self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
 
         self.root_ca = root_ca
         self.private_key = None
@@ -72,19 +77,10 @@ class EnrollmentAuthority:
         
         # IMPORTANT: Load Root CA certificate from file (not memory reference)
         # This ensures we always use the latest Root CA cert, even after rotation
-        root_ca_cert_path = os.path.join("data/root_ca/certificates", "root_ca_certificate.pem")
+        # Use the actual Root CA certificate path from the root_ca instance
+        root_ca_cert_path = root_ca.ca_certificate_path
         from utils.cert_cache import load_certificate_cached
         self.root_ca_certificate = load_certificate_cached(root_ca_cert_path)
-
-        self.logger.info("Creando directory necessarie...")
-        PKIFileHandler.ensure_directories(
-            os.path.dirname(self.ea_certificate_path),
-            os.path.dirname(self.ea_key_path),
-            self.ec_dir,
-            os.path.dirname(self.crl_path),
-            self.log_dir,
-            self.backup_dir,
-        )
 
         self.logger.info("Caricando o generando chiave e certificato EA...")
         self.load_or_generate_ea()
@@ -98,7 +94,7 @@ class EnrollmentAuthority:
         self.logger.info(f"Inizializzando CRLManager per EA {ea_id}...")
         self.crl_manager = CRLManager(
             authority_id=ea_id,
-            base_dir=base_dir,
+            base_dir=self.base_dir,  # Usa il path specifico dell'istanza, non quello generico
             issuer_certificate=self.certificate,
             issuer_private_key=self.private_key,
         )

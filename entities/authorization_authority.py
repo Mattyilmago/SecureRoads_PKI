@@ -46,19 +46,25 @@ class AuthorizationAuthority:
             aa_id: ID dell'AA (generato automaticamente se None)
             base_dir: Directory base per dati AA
         """
+        # Import here to avoid circular dependency
+        from utils.pki_paths import PKIPathManager
+        
         # Genera un ID randomico se non specificato
         if aa_id is None:
             aa_id = f"AA_{secrets.token_hex(4).upper()}"
 
-        # Sottocartelle uniche per ogni AA
-        base_dir = os.path.join(base_dir, f"{aa_id}/")
+        # Usa PKIPathManager per gestire i path in modo centralizzato
+        paths = PKIPathManager.get_entity_paths("AA", aa_id, base_dir)
         
         # Store base_dir as instance attribute for stats endpoint
-        self.base_dir = base_dir
+        self.base_dir = str(paths.base_dir)
         self.aa_id = aa_id
+        
+        # Crea tutte le directory necessarie
+        paths.create_all()
 
         # Logger initialization (must be before any logger calls)
-        self.log_dir = os.path.join(base_dir, "logs")
+        self.log_dir = str(paths.logs_dir)
         # aa_id contiene gi il prefisso "AA_"
         self.logger = PKILogger.get_logger(name=aa_id, log_dir=self.log_dir, console_output=True)
 
@@ -70,12 +76,11 @@ class AuthorizationAuthority:
         if not tlm:
             raise ValueError(f"TrustListManager (tlm) è obbligatorio per AA. Fornire un'istanza TLM valida.")
         
-        self.aa_certificate_path = os.path.join(base_dir, "certificates/aa_certificate.pem")
-        self.aa_key_path = os.path.join(base_dir, "private_keys/aa_key.pem")
-        self.crl_path = os.path.join(base_dir, "crl/aa_crl.pem")
-        self.ticket_dir = os.path.join(base_dir, "authorization_tickets/")
-        self.log_dir = os.path.join(base_dir, "logs/")
-        self.backup_dir = os.path.join(base_dir, "backup/")
+        self.aa_certificate_path = str(paths.certificates_dir / "aa_certificate.pem")
+        self.aa_key_path = str(paths.private_keys_dir / "aa_key.pem")
+        self.crl_path = str(paths.crl_dir / "aa_crl.pem")
+        self.ticket_dir = str(paths.data_dir)  # authorization_tickets
+        self.backup_dir = str(paths.backup_dir)
         self.private_key = None
         self.certificate = None
         self.root_ca = root_ca
@@ -86,18 +91,8 @@ class AuthorizationAuthority:
         self.logger.info(f"✅ Modalità TLM attiva: validazione EC tramite Trust List Manager")
         self.logger.info(f"   TLM Trust Anchors: {len(tlm.trust_anchors)}")
 
-        # Crea tutte le directory necessarie
-        dirs_to_create = [
-            os.path.dirname(self.aa_certificate_path),
-            os.path.dirname(self.aa_key_path),
-            os.path.dirname(self.crl_path),
-            self.ticket_dir,
-            self.log_dir,
-            self.backup_dir,
-        ]
-
-        PKIFileHandler.ensure_directories(*dirs_to_create)
-        self.logger.info(f"Directory create o gi esistenti: {len(dirs_to_create)} cartelle")
+        # Directory già create da paths.create_all() sopra
+        self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
 
         self.load_or_generate_aa()
 
@@ -105,7 +100,7 @@ class AuthorizationAuthority:
         self.logger.info(f"Inizializzando CRLManager per AA {aa_id}...")
         self.crl_manager = CRLManager(
             authority_id=aa_id,
-            base_dir=base_dir,
+            base_dir=self.base_dir,  # Usa il path specifico dell'istanza, non quello generico
             issuer_certificate=self.certificate,
             issuer_private_key=self.private_key,
         )

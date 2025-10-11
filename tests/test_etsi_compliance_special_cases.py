@@ -51,13 +51,13 @@ def pki_setup(root_ca, test_base_dir):
     tlm = TrustListManager(base_dir=os.path.join(test_base_dir, "tlm"), root_ca=root_ca)
     ea = EnrollmentAuthority(
         ea_id="EA_SPECIAL_CASES_TEST",
-        base_dir=os.path.join(test_base_dir, "ea_special"),
+        base_dir=os.path.join(test_base_dir, "ea"),
         root_ca=root_ca,
     )
     tlm.add_trust_anchor(ea.certificate, authority_type="EA")
     aa = AuthorizationAuthority(
         aa_id="AA_SPECIAL_CASES_TEST",
-        base_dir=os.path.join(test_base_dir, "aa_special"),
+        base_dir=os.path.join(test_base_dir, "aa"),
         root_ca=root_ca,
         tlm=tlm,
     )

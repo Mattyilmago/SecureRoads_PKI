@@ -312,7 +312,7 @@ def get_or_create_tlm_main():
         print("📦 Creating shared TLM_MAIN instance...")
         root_ca = get_or_create_root_ca()
         tlm_path = "./data/tlm/TLM_MAIN/"
-        _tlm_main_instance = TrustListManager(root_ca, base_dir=tlm_path)
+        _tlm_main_instance = TrustListManager(root_ca, tlm_id="TLM_MAIN", base_dir=tlm_path)
         print("✅ TLM_MAIN instance created and cached")
         print(f"   Trust anchors: {len(_tlm_main_instance.trust_anchors)}")
     else:
@@ -433,7 +433,7 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
         
         # Usa RootCA condivisa
         root_ca = get_or_create_root_ca()
-        entity = TrustListManager(root_ca, base_dir=f"./data/tlm/{entity_id}/")
+        entity = TrustListManager(root_ca, tlm_id=entity_id, base_dir=f"./data/tlm/{entity_id}/")
 
     else:
         raise ValueError(f"Unknown entity type: {entity_type}")

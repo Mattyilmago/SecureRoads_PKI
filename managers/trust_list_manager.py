@@ -15,6 +15,7 @@ from utils.cert_utils import (
 )
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
+from utils.pki_paths import PKIPathManager
 
 
 class TrustListManager:
@@ -23,38 +24,55 @@ class TrustListManager:
     Handles Full CTL, Delta CTL, Link Certificates, and Trust Anchors.
     """
 
-    def __init__(self, root_ca, base_dir="./data/tlm/"):
-        """Initializes Trust List Manager."""
-        self.root_ca = root_ca
-        self.base_dir = base_dir
-
-        # Percorsi file
-        self.ctl_dir = os.path.join(base_dir, "ctl/")
-        self.full_ctl_path = os.path.join(self.ctl_dir, "full_ctl.pem")
-        self.delta_ctl_path = os.path.join(self.ctl_dir, "delta_ctl.pem")
-        self.link_certs_dir = os.path.join(base_dir, "link_certificates/")
-        self.link_certs_json_dir = os.path.join(self.link_certs_dir, "json/")
-        self.link_certs_asn1_dir = os.path.join(self.link_certs_dir, "asn1/")
-        self.metadata_path = os.path.join(self.ctl_dir, "ctl_metadata.json")
-        self.log_dir = os.path.join(base_dir, "logs/")
-        self.backup_dir = os.path.join(base_dir, "backup/")
+    def __init__(self, root_ca, tlm_id="TLM_MAIN", base_dir="./data/tlm/"):
+        """
+        Initializes Trust List Manager.
         
-        # Inizializza logger
-        self.logger = PKILogger.get_logger(
-            name="TrustListManager",
-            log_dir=self.log_dir,
-            console_output=True
-        )
+        Args:
+            root_ca: Riferimento alla Root CA
+            tlm_id: ID del TLM (default: "TLM_MAIN")
+            base_dir: Directory base per dati TLM
+        """
+        # Usa PKIPathManager per gestire i path in modo centralizzato
+        paths = PKIPathManager.get_entity_paths("TLM", tlm_id, base_dir)
+        
+        self.root_ca = root_ca
+        self.tlm_id = tlm_id
+        self.base_dir = str(paths.base_dir)
 
-        # Crea directory
+        # Percorsi file usando la struttura PKIPathManager
+        self.ctl_dir = str(paths.data_dir / "ctl")  # trust_lists/ctl/
+        self.full_ctl_path = str(paths.data_dir / "ctl" / "full_ctl.pem")
+        self.delta_ctl_path = str(paths.data_dir / "ctl" / "delta_ctl.pem")
+        self.link_certs_dir = str(paths.data_dir / "link_certificates")
+        self.link_certs_json_dir = str(paths.data_dir / "link_certificates" / "json")
+        self.link_certs_asn1_dir = str(paths.data_dir / "link_certificates" / "asn1")
+        self.metadata_path = str(paths.data_dir / "ctl" / "ctl_metadata.json")
+        self.log_dir = str(paths.logs_dir)
+        self.backup_dir = str(paths.backup_dir)
+        
+        # Crea tutte le directory necessarie
+        paths.create_all()
+        
+        # Crea anche le sottodirectory specifiche di TLM
         PKIFileHandler.ensure_directories(
             self.ctl_dir,
             self.link_certs_dir,
             self.link_certs_json_dir,
             self.link_certs_asn1_dir,
-            self.log_dir,
-            self.backup_dir,
         )
+        
+        # Inizializza logger
+        self.logger = PKILogger.get_logger(
+            name=tlm_id,
+            log_dir=self.log_dir,
+            console_output=True
+        )
+        
+        self.logger.info(f"Inizializzando Trust List Manager {tlm_id}...")
+        self.logger.info(f"Directory base: {self.base_dir}")
+        self.logger.info(f"Directory CTL: {self.ctl_dir}")
+        self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
 
         # Lista completa dei trust anchors (per Full CTL)
         # Ogni entry contiene: certificate, authority_type (EA/AA), added_date
