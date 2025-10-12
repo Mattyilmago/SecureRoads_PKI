@@ -62,32 +62,6 @@ cd SecureRoads_PKI
 # Installa dipendenze
 pip install -r requirements.txt
 
-# Genera configurazioni delle entità (consigliato: usa file JSON)
-## Esempio: crea un file `my_entities.json` con il seguente contenuto (UTF-8):
-```
-{
-    "num_ea": 2,
-    "num_aa": 2,
-    "ea_names": ["EA_HIGHWAY", "EA_CITY"],
-    "aa_names": ["AA_TRAFFIC", "AA_EMERGENCY"]
-}
-```
-
-Poi esegui (PowerShell one-liner che scrive un file temporaneo UTF-8 e chiama setup.py):
-```powershell
-$tmp = Join-Path $env:TEMP ("pki_req_{0}.json" -f ([guid]::NewGuid().ToString()));
-$json = '{
-    "num_ea": 2,
-    "num_aa": 1,
-    "ea_names": ["EA_DRW","EA_12DFF"],
-    "aa_names": ["AA_ò°èà"]
-}';
-[System.IO.File]::WriteAllText($tmp,$json,[System.Text.Encoding]::UTF8);
-python setup.py --config $tmp; Remove-Item $tmp
-```
-Questo approccio evita problemi di quoting/encoding e previene casi di injection.
-```
-
 **💡 Gestione Automatica delle Porte:**  
 Il sistema assegna automaticamente le porte senza conflitti:
 - **RootCA**: Porta fissa 5999
@@ -672,7 +646,8 @@ http://localhost:8080/pki_dashboard.html
 - Statistiche operative
 
 ✅ **Gestione Entità**
-- Creazione bulk di EA/AA con nomi personalizzati
+- Creazione bulk di EA/AA con `setup.py` (nomi personalizzati)
+- Eliminazione permanente di entità singole
 - Configurazione porte automatica
 - Avvio/Stop entities
 
@@ -693,23 +668,34 @@ http://localhost:8080/pki_dashboard.html
 
 ### Generatore Bulk Entità
 
-Crea multiple entità con nomi personalizzati (consigliato: usa file JSON per evitare problemi di quoting/encoding):
+Crea multiple entità EA e AA con nomi personalizzati direttamente dalla riga di comando:
 
 ```bash
-# Esempio: salva un JSON come `entities1.json` con:
-#{
- # "num_ea": 5,
- # "ea_names": ["EA_HIGHWAY","EA_CITY","EA_RURAL","EA_PARKING","EA_TOLL"]
- #}
+# Esempio: 3 EA e 2 AA con nomi personalizzati
+python setup.py --ea 3 --aa 2 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL" --aa-names "AA_TOLL,AA_PARKING"
 
-# Poi esegui:
-python setup.py --config entities1.json
+# Esempio: Solo EA senza nomi personalizzati (usa nomi automatici)
+python setup.py --ea 5
 
-# Altro esempio per 3 AA (entities2.json):
-python setup.py --config entities2.json
+# Esempio: Solo AA con nomi personalizzati
+python setup.py --aa 3 --aa-names "AA_001,AA_002,AA_003"
 
-# Genera setup completo usando un file JSON
-python setup.py --config my_entities.json
+# Esempio: Combinazione mista
+python setup.py --ea 2 --aa 4 --ea-names "EA_MAIN,EA_BACKUP"
+```
+
+**Parametri disponibili:**
+- `--ea N`: Numero di Enrollment Authorities da creare (max 20)
+- `--aa N`: Numero di Authorization Authorities da creare (max 20)
+- `--ea-names "NAME1,NAME2,..."`: Nomi personalizzati per EA (opzionale)
+- `--aa-names "NAME1,NAME2,..."`: Nomi personalizzati per AA (opzionale)
+
+**Funzionalità automatiche:**
+- ✅ **Assegnazione porte automatica** senza conflitti
+- ✅ **Nomi duplicati gestiti** automaticamente (EA_001 → EA_001_2 se già esistente)
+- ✅ **Registrazione automatica** nel TLM per EA
+- ✅ **Configurazione salvata** in `entity_configs.json`
+- ✅ **Avvio automatico** in background (opzionale)
 ```
 
 ### Controllo Porte
