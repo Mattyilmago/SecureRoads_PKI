@@ -76,6 +76,7 @@ def delete_entity(entity_id):
     Returns:
         JSON response with operation status
     """
+    print(f"[DELETE_ENTITY] Starting deletion of entity: {entity_id}")
     try:
         config_path = Path(__file__).parent.parent.parent / "entity_configs.json"
         data_path = Path(__file__).parent.parent.parent / "data"
@@ -103,6 +104,8 @@ def delete_entity(entity_id):
                 "message": f"Invalid entity type for: {entity_id}"
             }), 400
         
+        print(f"[DELETE_ENTITY] Entity type: {entity_type}, data directory: {data_dir}")
+        
         results = {
             "entity_id": entity_id,
             "process_killed": False,
@@ -112,9 +115,10 @@ def delete_entity(entity_id):
             "errors": []
         }
         
-        # Step 0: Kill process if running
+        # Step 1: Kill process if running (FIRST - to free up resources)
         try:
             import re
+            killed_any = False
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     cmdline = proc.info.get('cmdline', [])
@@ -126,14 +130,18 @@ def delete_entity(entity_id):
                             proc.kill()
                             results['process_killed'] = True
                             results['killed_pid'] = proc.info['pid']
+                            killed_any = True
+                            print(f"[DELETE_ENTITY] Killed process PID {proc.info['pid']} for {entity_id}")
                             break
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
+            if not killed_any:
+                print(f"[DELETE_ENTITY] No running process found for {entity_id}")
         except Exception as e:
             results['errors'].append(f"Failed to kill process: {str(e)}")
+            print(f"[DELETE_ENTITY] ERROR killing process for {entity_id}: {str(e)}")
         
-        # Step 0.5: Remove certificate from RootCA archive
-        # RootCA saves certificates with pattern: EA_{SKI}.pem or AA_{SKI}.pem
+        # Step 2: Remove certificate from RootCA archive
         try:
             rootca_subordinates_dir = data_path / 'root_ca' / 'subordinates'
             if rootca_subordinates_dir.exists():
@@ -158,12 +166,15 @@ def delete_entity(entity_id):
                         cn = cn_attrs[0].value if cn_attrs else ""
                         org = org_attrs[0].value if org_attrs else ""
                         
-                        # EXACT match: entity_id must be complete token
-                        # Use pattern that allows underscore as separator but prevents partial matches
-                        # e.g., EA_002 matches in "EnrollmentAuthority_EA_002" but not in "EA_0021"
+                        # Check if certificate belongs to this entity
+                        # Use more aggressive matching like delete_all_ea_aa
+                        should_remove = False
                         import re
                         pattern = r'(?:^|_)' + re.escape(entity_id) + r'(?:$|_)'
                         if re.search(pattern, cn) or re.search(pattern, org):
+                            should_remove = True
+                        
+                        if should_remove:
                             cert_file.unlink()
                             removed_certs.append(cert_file.name)
                     except Exception as e:
@@ -173,10 +184,12 @@ def delete_entity(entity_id):
                 if removed_certs:
                     results['rootca_cert_removed'] = True
                     results['rootca_certs'] = removed_certs
+                    print(f"[DELETE_ENTITY] Removed {len(removed_certs)} certificates from RootCA archive for {entity_id}: {removed_certs}")
         except Exception as e:
             results['errors'].append(f"Failed to remove RootCA archived certificate: {str(e)}")
+            print(f"[DELETE_ENTITY] ERROR removing RootCA certificates for {entity_id}: {str(e)}")
         
-        # Step 1: Remove from entity_configs.json
+        # Step 3: Remove from entity_configs.json
         if config_path.exists():
             try:
                 with open(config_path, 'r') as f:
@@ -197,23 +210,31 @@ def delete_entity(entity_id):
                     
                     results['config_removed'] = True
                     results['message'] = f"Removed {entity_id} from entity_configs.json"
+                    print(f"[DELETE_ENTITY] Removed {entity_id} from entity_configs.json")
                 else:
                     results['errors'].append(f"{entity_id} not found in entity_configs.json")
+                    print(f"[DELETE_ENTITY] {entity_id} not found in entity_configs.json")
                     
             except Exception as e:
                 results['errors'].append(f"Failed to update entity_configs.json: {str(e)}")
+                print(f"[DELETE_ENTITY] ERROR updating entity_configs.json: {str(e)}")
         else:
             results['errors'].append("entity_configs.json not found")
+            print(f"[DELETE_ENTITY] entity_configs.json not found")
         
-        # Step 2: Remove data directory
+        # Step 4: Remove data directory
         if data_dir and data_dir.exists():
             try:
+                print(f"[DELETE_ENTITY] Deleting data directory: {data_dir}")
                 shutil.rmtree(data_dir)
                 results['data_removed'] = True
                 results['data_path'] = str(data_dir)
+                print(f"[DELETE_ENTITY] Successfully deleted data directory: {data_dir}")
             except Exception as e:
+                print(f"[DELETE_ENTITY] ERROR deleting data directory {data_dir}: {str(e)}")
                 results['errors'].append(f"Failed to remove data directory: {str(e)}")
         else:
+            print(f"[DELETE_ENTITY] Data directory not found: {data_dir}")
             if not results['config_removed']:
                 # Only warn if entity wasn't in config either (might be active-only entity)
                 results['errors'].append(f"Data directory not found: {data_dir}")
@@ -238,6 +259,7 @@ def delete_entity(entity_id):
         else:
             results['message'] = f"Entity {entity_id} not found (not running, not in config, no data)"
         
+        print(f"[DELETE_ENTITY] Completed deletion of {entity_id}: {results['message']}")
         return jsonify({
             "success": success,
             **results
@@ -260,64 +282,65 @@ def delete_all_ea_aa():
         config_path = Path(__file__).parent.parent.parent / "entity_configs.json"
         data_path = Path(__file__).parent.parent.parent / "data"
         
-        if not config_path.exists():
-            return jsonify({
-                "success": False,
-                "message": "entity_configs.json not found"
-            }), 404
+        # Find all EA and AA entities from config first
+        ea_aa_entities = []
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            ea_aa_entities = [
+                cmd.get('entity') for cmd in config.get('start_commands', [])
+                if cmd.get('entity', '').startswith(('EA_', 'AA_'))
+            ]
         
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
-        # Find all EA and AA entities
-        ea_aa_entities = [
-            cmd.get('entity') for cmd in config.get('start_commands', [])
-            if cmd.get('entity', '').startswith(('EA_', 'AA_'))
-        ]
-        
+        # If no entities found in config, search for running EA/AA processes dynamically
         if not ea_aa_entities:
-            return jsonify({
-                "success": False,
-                "message": "No EA or AA entities found to delete"
-            }), 404
+            try:
+                import re
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        cmdline = proc.info.get('cmdline', [])
+                        if cmdline and 'python' in proc.info['name'].lower():
+                            cmdline_str = ' '.join(cmdline)
+                            # Look for --entity EA --id EA_XXX or --entity AA --id AA_XXX patterns
+                            entity_match = re.search(r'--entity\s+(EA|AA)\s+--id\s+((EA|AA)_[^\s]+)', cmdline_str, re.IGNORECASE)
+                            if entity_match:
+                                entity_id = entity_match.group(2)  # The full entity ID like EA_001
+                                if entity_id not in ea_aa_entities:
+                                    ea_aa_entities.append(entity_id)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except Exception as e:
+                # If psutil fails, continue with empty list
+                pass
         
+        # Continue even if no active entities found - we still want to clean up orphaned directories
         deleted = []
         failed = []
         processes_killed = []
         rootca_certs_removed = []
         
-        # Step 1: Kill all EA/AA Python processes
+        # Step 1: Kill ALL EA/AA Python processes FIRST (before deleting directories)
         try:
             import re
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and 'python' in proc.info['name'].lower():
-                        # Check if this is an EA or AA process (EXACT match)
                         cmdline_str = ' '.join(cmdline)
-                        for entity_id in ea_aa_entities:
-                            pattern = r'\b' + re.escape(entity_id) + r'\b'
-                            if re.search(pattern, cmdline_str, re.IGNORECASE):
-                                proc.kill()
-                                processes_killed.append({
-                                    "pid": proc.info['pid'],
-                                    "cmdline": ' '.join(cmdline[:3])  # First 3 args
-                                })
-                                break  # Don't check other entities for this process
+                        # Check if this is an EA or AA process
+                        if re.search(r'\bEA_\w+\b', cmdline_str, re.IGNORECASE) or re.search(r'\bAA_\w+\b', cmdline_str, re.IGNORECASE):
+                            proc.kill()
+                            processes_killed.append({
+                                "pid": proc.info['pid'],
+                                "cmdline": ' '.join(cmdline[:3])  # First 3 args
+                            })
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
         except Exception as e:
             # Continue even if process killing fails
             pass
-            pass
         
-        # Step 2: Remove all EA and AA from config
-        config['start_commands'] = [
-            cmd for cmd in config.get('start_commands', [])
-            if not cmd.get('entity', '').startswith(('EA_', 'AA_'))
-        ]
-        
-        # Step 3: Remove all EA/AA certificates from RootCA archive
+        # Step 2: Remove all EA/AA certificates from RootCA archive
         try:
             rootca_subordinates_dir = data_path / 'root_ca' / 'subordinates'
             if rootca_subordinates_dir.exists():
@@ -336,22 +359,39 @@ def delete_all_ea_aa():
                         cn = cn_attrs[0].value if cn_attrs else ""
                         org = org_attrs[0].value if org_attrs else ""
                         
-                        # Check if certificate belongs to any EA/AA entity (EXACT match)
-                        # Use pattern that allows underscore as separator but prevents partial matches
-                        import re
-                        for entity_id in ea_aa_entities:
-                            pattern = r'(?:^|_)' + re.escape(entity_id) + r'(?:$|_)'
-                            if re.search(pattern, cn) or re.search(pattern, org):
-                                cert_file.unlink()
-                                rootca_certs_removed.append(cert_file.name)
-                                break
+                        # Check if certificate belongs to any EA/AA entity (check for EA_ or AA_ in CN or Org)
+                        # If we have specific entities, use exact match; otherwise remove all EA/AA certs
+                        should_remove = False
+                        if ea_aa_entities:
+                            # Exact match for known entities
+                            import re
+                            for entity_id in ea_aa_entities:
+                                pattern = r'(?:^|_)' + re.escape(entity_id) + r'(?:$|_)'
+                                if re.search(pattern, cn) or re.search(pattern, org):
+                                    should_remove = True
+                                    break
+                        else:
+                            # Remove all EA/AA certificates if no specific entities found
+                            if 'EA_' in cn or 'AA_' in cn or 'EA_' in org or 'AA_' in org:
+                                should_remove = True
+                        
+                        if should_remove:
+                            cert_file.unlink()
+                            rootca_certs_removed.append(cert_file.name)
                     except Exception:
                         continue
         except Exception as e:
             # Continue even if RootCA cert removal fails
             pass
         
-        # Step 4: Delete data directories
+        # Step 3: Remove all EA and AA from config
+        config['start_commands'] = [
+            cmd for cmd in config.get('start_commands', [])
+            if not cmd.get('entity', '').startswith(('EA_', 'AA_'))
+        ]
+        
+        # Step 4: Delete data directories for found entities
+        data_dirs_deleted = []
         for entity_id in ea_aa_entities:
             try:
                 if entity_id.startswith('EA_'):
@@ -362,16 +402,67 @@ def delete_all_ea_aa():
                     continue
                 
                 if data_dir.exists():
+                    print(f"[DELETE_ALL_EA_AA] Deleting directory: {data_dir}")
                     shutil.rmtree(data_dir)
+                    data_dirs_deleted.append(str(data_dir))
+                    print(f"[DELETE_ALL_EA_AA] Successfully deleted: {data_dir}")
+                else:
+                    print(f"[DELETE_ALL_EA_AA] Directory does not exist: {data_dir}")
                 
                 deleted.append(entity_id)
             except Exception as e:
+                print(f"[DELETE_ALL_EA_AA] ERROR deleting {entity_id}: {str(e)}")
                 failed.append({
                     "entity_id": entity_id,
-                    "reason": str(e)
+                    "reason": str(e),
+                    "data_dir": str(data_dir) if 'data_dir' in locals() else "unknown"
                 })
         
-        # Step 5: Save config
+        # Step 5: Delete ALL remaining EA/AA data directories (cleanup orphaned directories)
+        try:
+            # Delete all EA_* directories
+            ea_dir = data_path / 'ea'
+            if ea_dir.exists():
+                for subdir in ea_dir.iterdir():
+                    if subdir.is_dir() and subdir.name.startswith('EA_'):
+                        try:
+                            print(f"[DELETE_ALL_EA_AA] Cleaning up orphaned EA directory: {subdir}")
+                            shutil.rmtree(subdir)
+                            data_dirs_deleted.append(str(subdir))
+                            deleted.append(subdir.name)
+                            print(f"[DELETE_ALL_EA_AA] Successfully cleaned up: {subdir}")
+                        except Exception as e:
+                            print(f"[DELETE_ALL_EA_AA] ERROR cleaning up {subdir.name}: {str(e)}")
+                            failed.append({
+                                "entity_id": subdir.name,
+                                "reason": str(e),
+                                "data_dir": str(subdir)
+                            })
+            
+            # Delete all AA_* directories  
+            aa_dir = data_path / 'aa'
+            if aa_dir.exists():
+                for subdir in aa_dir.iterdir():
+                    if subdir.is_dir() and subdir.name.startswith('AA_'):
+                        try:
+                            print(f"[DELETE_ALL_EA_AA] Cleaning up orphaned AA directory: {subdir}")
+                            shutil.rmtree(subdir)
+                            data_dirs_deleted.append(str(subdir))
+                            deleted.append(subdir.name)
+                            print(f"[DELETE_ALL_EA_AA] Successfully cleaned up: {subdir}")
+                        except Exception as e:
+                            print(f"[DELETE_ALL_EA_AA] ERROR cleaning up {subdir.name}: {str(e)}")
+                            failed.append({
+                                "entity_id": subdir.name,
+                                "reason": str(e),
+                                "data_dir": str(subdir)
+                            })
+        except Exception as e:
+            print(f"[DELETE_ALL_EA_AA] ERROR in cleanup phase: {str(e)}")
+            # Continue even if cleanup fails
+            pass
+        
+        # Step 6: Save config
         try:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
@@ -388,7 +479,8 @@ def delete_all_ea_aa():
             "failed": failed,
             "processes_killed": processes_killed,
             "rootca_certs_removed": rootca_certs_removed,
-            "total": len(ea_aa_entities)
+            "data_dirs_deleted": data_dirs_deleted,
+            "total": len(deleted)
         }), 200
         
     except Exception as e:
@@ -446,29 +538,56 @@ def run_setup():
                 "message": "num_aa must be between 0 and 20"
             }), 400
         
-        # Build command
+        # Build safer invocation: create a temporary JSON config file and pass it
+        # to setup.py via --config to avoid any shell/argument parsing issues
         project_root = Path(__file__).parent.parent.parent
-        cmd = ['python', 'setup.py', '--ea', str(num_ea), '--aa', str(num_aa)]
-        
-        # Add custom names if provided
-        if ea_names and len(ea_names) > 0:
-            cmd.extend(['--ea-names', ','.join(ea_names)])
-        
-        if aa_names and len(aa_names) > 0:
-            cmd.extend(['--aa-names', ','.join(aa_names)])
-        
+
+        # Prepare request config to pass via file
+        request_config = {
+            "num_ea": int(num_ea),
+            "num_aa": int(num_aa),
+            # include tlm as 1 (default) unless explicitly disabled in caller
+            "num_tlm": 1
+        }
+
+        if ea_names:
+            request_config["ea_names"] = ea_names
+        if aa_names:
+            request_config["aa_names"] = aa_names
+
+        # Write temp config file in project root (UTF-8)
+        import tempfile
+        tmpf = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', dir=str(project_root), encoding='utf-8')
+        try:
+            import json
+            json.dump(request_config, tmpf, ensure_ascii=False)
+            tmpf.flush()
+            tmpf_path = tmpf.name
+        finally:
+            tmpf.close()
+
+        # Build command to call setup.py with --config <tmpf_path>
+        cmd = ['python', 'setup.py', '--config', tmpf_path]
+
         # Add --no-auto-start if requested
         if not auto_start:
             cmd.append('--no-auto-start')
-        
-        # Execute setup.py
-        result = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
+
+        # Execute setup.py (passing args as list; no shell)
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+        finally:
+            # Clean up temp file
+            try:
+                Path(tmpf_path).unlink()
+            except Exception:
+                pass
         
         # Parse output
         success = result.returncode == 0

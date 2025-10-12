@@ -211,7 +211,7 @@ class EnrollmentAuthority:
             .public_key(public_key)
             .serial_number(serial_number)
             .not_valid_before(now_utc)
-            .not_valid_after(now_utc + timedelta(days=365))
+            .not_valid_after(now_utc + timedelta(days=90))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         )
 
@@ -219,8 +219,9 @@ class EnrollmentAuthority:
         cert = cert_builder.sign(self.private_key, hashes.SHA256())
 
         # Salvataggio su disco (operazione I/O lenta)
-        cert_id = get_short_identifier(cert)
-        ec_path = os.path.join(self.ec_dir, f"EC_{cert_id}.pem")
+        # Usa its_id per nome file invece di SKI per evitare sovrascritture con stessa chiave
+        safe_its_id = its_id.replace('/', '_').replace('\\', '_').replace(':', '_')
+        ec_path = os.path.join(self.ec_dir, f"EC_{safe_its_id}.pem")
         
         # Scrittura ottimizzata senza makedirs ad ogni chiamata
         with open(ec_path, "wb") as f:
@@ -228,7 +229,7 @@ class EnrollmentAuthority:
         
         # Log minimo solo in debug mode
         if self.logger.level <= 10:  # DEBUG level
-            self.logger.debug(f"EC emesso: {cert_id}, serial: {serial_number}")
+            self.logger.debug(f"EC emesso: {safe_its_id}, serial: {serial_number}")
         
         return cert
 

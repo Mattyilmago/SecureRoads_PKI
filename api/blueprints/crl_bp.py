@@ -80,16 +80,62 @@ def create_crl_blueprint(ca_instance):
         if not hasattr(bp.ca, "crl_manager"):
             return jsonify({"error": "CRL manager not available", "responseCode": 8}), 404
 
-        # Delta CRL typically doesn't exist unless specifically implemented
-        return (
-            jsonify(
+        # Try to get Delta CRL
+        try:
+            # Check if Delta CRL file exists
+            crl_manager = bp.ca.crl_manager
+
+            # Check if delta_crl_path attribute exists
+            if not hasattr(crl_manager, "delta_crl_path"):
+                return (
+                    jsonify(
+                        {
+                            "info": "Delta CRL not supported",
+                            "message": "CRL manager does not support delta CRL",
+                            "responseCode": 8,
+                        }
+                    ),
+                    404,
+                )
+
+            delta_crl_path = crl_manager.delta_crl_path
+
+            import os
+
+            if not os.path.exists(delta_crl_path):
+                return (
+                    jsonify(
+                        {
+                            "info": "No Delta CRL available",
+                            "message": "Delta CRL not published yet or no new revocations",
+                            "responseCode": 8,
+                        }
+                    ),
+                    404,
+                )
+
+            # Read Delta CRL file
+            with open(delta_crl_path, "rb") as f:
+                delta_crl_der = f.read()
+
+            current_app.logger.info(f"Returning Delta CRL: {len(delta_crl_der)} bytes")
+
+            return (
+                delta_crl_der,
+                200,
                 {
-                    "info": "Delta CRL not available",
-                    "message": "Delta CRL functionality not yet implemented",
-                    "responseCode": 8,
-                }
-            ),
-            404,
-        )
+                    "Content-Type": "application/pkix-crl",
+                    "Content-Disposition": 'attachment; filename="delta.crl"',
+                },
+            )
+
+        except Exception as e:
+            current_app.logger.error(f"Error getting Delta CRL: {e}")
+            import traceback
+            current_app.logger.error(traceback.format_exc())
+            return (
+                jsonify({"error": "Failed to retrieve Delta CRL", "message": str(e), "responseCode": 13}),
+                500,
+            )
 
     return bp

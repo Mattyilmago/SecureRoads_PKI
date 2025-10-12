@@ -53,9 +53,14 @@
    .\start_dashboard.ps1
    ```
 
-2. **Crea 2 EA + 2 AA:**
+2. **Crea 2 EA + 2 AA (consigliato: usa file JSON):**
    ```powershell
-   python setup.py --ea 2 --aa 2
+   # Crea un file my_entities.json con:
+   # {
+   #   "num_ea": 2,
+   #   "num_aa": 2
+   # }
+   python setup.py --config my_entities.json
    ```
 
 3. **Verifica nel dashboard:**
@@ -88,7 +93,7 @@
 3. **Compila form:**
    - Numero EA: 2
    - Numero AA: 1
-   - Nomi custom: "EA_TEST_A", "EA_TEST_B", "AA_TEST_X"
+   - Nomi custom: "EA_TEST_A", "EA_TEST_B", "AA_TEST_X" (la dashboard invierà questi come JSON al management API)
 
 4. **Clicca "➕ Generate Entities with Names"**
 

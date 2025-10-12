@@ -225,7 +225,7 @@ class AuthorizationAuthority:
             .public_key(public_key)
             .serial_number(x509.random_serial_number())
             .not_valid_before(now_utc)
-            .not_valid_after(now_utc + timedelta(weeks=1))
+            .not_valid_after(now_utc + timedelta(days=1))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         )
 
@@ -233,8 +233,8 @@ class AuthorizationAuthority:
         certificate = cert_builder.sign(self.private_key, hashes.SHA256())
 
         # Salvataggio ottimizzato
-        cert_ski = get_certificate_ski(certificate)[:8]
-        at_filename = f"AT_{cert_ski}.pem"
+        # Usa serial per nome file invece di its_id per evitare sovrascritture in batch
+        at_filename = f"AT_{certificate.serial_number}.pem"
         at_path = os.path.join(self.ticket_dir, at_filename)
 
         with open(at_path, "wb") as f:
@@ -242,7 +242,7 @@ class AuthorizationAuthority:
 
         # Log minimo solo in debug mode
         if self.logger.level <= 10:
-            self.logger.debug(f"AT emesso: {cert_ski}, serial: {certificate.serial_number}")
+            self.logger.debug(f"AT emesso: {certificate.serial_number}, serial: {certificate.serial_number}")
         
         return certificate
 
@@ -338,6 +338,26 @@ class AuthorizationAuthority:
         self.logger.info(f"Pubblicando Delta CRL AA...")
         self.crl_manager.publish_delta_crl()
         self.logger.info(f"Revoca completata!")
+
+    def revoke_by_serial(self, serial_hex, reason=ReasonFlags.unspecified):
+        """
+        Revoca un Authorization Ticket usando il serial number.
+
+        Args:
+            serial_hex: Serial number in formato esadecimale
+            reason: Il motivo della revoca (ReasonFlags)
+        """
+        self.logger.info(f"Revocando Authorization Ticket con serial (hex): {serial_hex}")
+        self.logger.info(f"Motivo revoca: {reason}")
+
+        # Usa CRLManager per revocare per serial
+        self.crl_manager.revoke_by_serial(serial_hex, reason)
+        self.logger.info("Authorization Ticket revocato tramite CRLManager")
+
+        # Pubblica Delta CRL incrementale
+        self.logger.info("Pubblicando Delta CRL AA...")
+        self.crl_manager.publish_delta_crl()
+        self.logger.info("Revoca completata!")
 
     # Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM
     def publish_crl(self, validity_days=7):

@@ -1,0 +1,1 @@
+python setup.py --ea 7 --aa 7 --ea-names "EA_001,EA_01,EA_SEDIE" --aa-names "AA_345,AA_002,AA_03"

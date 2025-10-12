@@ -3,7 +3,6 @@
 **Public Key Infrastructure (PKI) per sistemi ITS (Intelligent Transportation Systems) conforme agli standard ETSI**
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](https://github.com/Mattyilmago/SecureRoads_PKI)
 [![Tests](https://img.shields.io/badge/Tests-130%20passed-brightgreen)](tests/)
 
@@ -18,7 +17,6 @@
 - [REST API](#rest-api)
 - [Testing](#testing)
 - [Documentazione](#documentazione)
-- [Licenza](#licenza)
 
 ---
 
@@ -64,8 +62,30 @@ cd SecureRoads_PKI
 # Installa dipendenze
 pip install -r requirements.txt
 
-# Genera configurazioni delle entità
-python setup.py --ea 2 --ea-names "EA_HIGHWAY,EA_CITY" --aa 2 --aa-names "AA_TRAFFIC,AA_EMERGENCY" --tlm
+# Genera configurazioni delle entità (consigliato: usa file JSON)
+## Esempio: crea un file `my_entities.json` con il seguente contenuto (UTF-8):
+```
+{
+    "num_ea": 2,
+    "num_aa": 2,
+    "ea_names": ["EA_HIGHWAY", "EA_CITY"],
+    "aa_names": ["AA_TRAFFIC", "AA_EMERGENCY"]
+}
+```
+
+Poi esegui (PowerShell one-liner che scrive un file temporaneo UTF-8 e chiama setup.py):
+```powershell
+$tmp = Join-Path $env:TEMP ("pki_req_{0}.json" -f ([guid]::NewGuid().ToString()));
+$json = '{
+    "num_ea": 2,
+    "num_aa": 1,
+    "ea_names": ["EA_DRW","EA_12DFF"],
+    "aa_names": ["AA_ò°èà"]
+}';
+[System.IO.File]::WriteAllText($tmp,$json,[System.Text.Encoding]::UTF8);
+python setup.py --config $tmp; Remove-Item $tmp
+```
+Questo approccio evita problemi di quoting/encoding e previene casi di injection.
 ```
 
 **💡 Gestione Automatica delle Porte:**  
@@ -673,17 +693,23 @@ http://localhost:8080/pki_dashboard.html
 
 ### Generatore Bulk Entità
 
-Crea multiple entità con nomi personalizzati:
+Crea multiple entità con nomi personalizzati (consigliato: usa file JSON per evitare problemi di quoting/encoding):
 
 ```bash
-# Genera 5 EA con nomi custom
-python setup.py --ea 5 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL,EA_PARKING,EA_TOLL"
+# Esempio: salva un JSON come `entities1.json` con:
+#{
+ # "num_ea": 5,
+ # "ea_names": ["EA_HIGHWAY","EA_CITY","EA_RURAL","EA_PARKING","EA_TOLL"]
+ #}
 
-# Genera 3 AA con nomi custom + TLM
-python setup.py --aa 3 --aa-names "AA_TRAFFIC,AA_EMERGENCY,AA_COMMERCIAL" --tlm
+# Poi esegui:
+python setup.py --config entities1.json
 
-# Genera setup completo
-python setup.py --ea 2 --ea-names "EA_001,EA_002" --aa 2 --aa-names "AA_001,AA_002" --tlm
+# Altro esempio per 3 AA (entities2.json):
+python setup.py --config entities2.json
+
+# Genera setup completo usando un file JSON
+python setup.py --config my_entities.json
 ```
 
 ### Controllo Porte
@@ -776,30 +802,6 @@ http://localhost:5000/api/docs
 - [x] Auto-start system con background processes
 - [x] Bulk entity generator
 - [x] Documentazione completa
-
-## 📝 Licenza
-
-MIT License
-
-Copyright (c) 2025 SecureRoad-PKI Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 
 ## 📧 Contatti e Supporto

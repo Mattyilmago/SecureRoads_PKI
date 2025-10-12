@@ -44,7 +44,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-# Variabile globale per tenere traccia dei processi avviati
+# Variabile globale per processi avviati
 _started_processes = []
 
 
@@ -790,7 +790,7 @@ class PKITester:
             return False
     
     def test_8_certificate_revocation(self):
-        """Test 8: Revoca certificato usando API REST"""
+        """Test 8: Revoca certificati (EC e AT) usando API REST"""
         self.print_header("TEST 8: Revoca Certificato (ETSI Standard)")
         
         if not self.enrolled_vehicles:
@@ -887,6 +887,55 @@ class PKITester:
                         self.print_info(f"  ⚠️  Verifica CRL non disponibile: {str(verify_error)[:80]}")
                 else:
                     self.print_info(f"  ℹ️  CRL non disponibile per verifica (status: {crl_response.status_code})")
+                
+                # Ora revoca anche un AT per test completo
+                self.print_info(f"")
+                self.print_info(f"Revocando anche un Authorization Ticket...")
+                
+                # Trova un veicolo con AT
+                at_vehicle = None
+                at_cert_pem = None
+                for v_id, v_data in self.enrolled_vehicles.items():
+                    if "authorization_ticket" in v_data:
+                        at_vehicle = v_id
+                        at_cert_pem = v_data["authorization_ticket"]
+                        break
+                
+                if at_cert_pem:
+                    # Parse AT per serial
+                    at_cert_bytes = at_cert_pem.encode('utf-8')
+                    at_certificate = x509.load_pem_x509_certificate(at_cert_bytes, default_backend())
+                    at_serial_number = at_certificate.serial_number
+                    at_serial_hex = format(at_serial_number, 'X')
+                    
+                    self.print_info(f"Veicolo con AT: {at_vehicle}")
+                    self.print_info(f"AT Serial: {at_serial_number} (hex: {at_serial_hex})")
+                    
+                    # Richiesta revoca AT
+                    at_revoke_request = {
+                        "serial_number": at_serial_hex,
+                        "reason": "unspecified",
+                        "its_id": at_vehicle
+                    }
+                    
+                    self.print_info(f"Invio richiesta revoca AT a {self.aa_url}/api/authorization/revoke...")
+                    
+                    at_response = requests.post(
+                        f"{self.aa_url}/api/authorization/revoke",
+                        json=at_revoke_request,
+                        timeout=10
+                    )
+                    
+                    if at_response.status_code == 200:
+                        at_result = at_response.json()
+                        self.print_success(f"AT revocato con successo!")
+                        self.print_info(f"  Serial: {at_serial_hex}")
+                        self.print_info(f"  Response: {at_result.get('message', 'Success')}")
+                    else:
+                        self.print_error(f"Revoca AT fallita! Status: {at_response.status_code}")
+                        self.print_error(f"Error: {at_response.text[:200]}")
+                else:
+                    self.print_info(f"Nessun AT disponibile per revoca")
                 
                 # Rimuovi veicolo dalla lista locale
                 del self.enrolled_vehicles[vehicle_id]
@@ -1104,6 +1153,21 @@ class PKITester:
             self.print_success("Tutti i test superati!")
         else:
             self.print_error(f"{failed} test falliti")
+        
+        # Conteggio totale certificati emessi
+        total_ec = len(self.enrolled_vehicles)  # EC da test 1,3
+        total_at = 0
+        for vehicle_data in self.enrolled_vehicles.values():
+            if "authorization_ticket" in vehicle_data:
+                total_at += 1
+            if "butterfly_tickets" in vehicle_data:
+                total_at += len(vehicle_data["butterfly_tickets"])
+        
+        print(f"\n  📊 RIEPILOGO CERTIFICATI:")
+        print(f"     Enrollment Certificates (EC): {total_ec}")
+        print(f"     Authorization Tickets (AT): {total_at}")
+        print(f"     Totale certificati emessi: {total_ec + total_at}")
+        print(f"     ⚠️  Nota: Test 8 revoca 1 EC e 1 AT")
     
     def show_results(self):
         """Mostra risultati dei test"""

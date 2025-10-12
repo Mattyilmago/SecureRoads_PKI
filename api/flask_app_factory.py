@@ -262,9 +262,13 @@ def create_app(
         try:
             from .blueprints.crl_bp import create_crl_blueprint
             from .blueprints.stats_bp import create_stats_blueprint
+            from .blueprints.rootca_bp import create_rootca_blueprint
 
             crl_bp = create_crl_blueprint(entity_instance)
             app.register_blueprint(crl_bp, url_prefix="/api/crl")
+            # rootca specific endpoints
+            rootca_bp = create_rootca_blueprint(entity_instance)
+            app.register_blueprint(rootca_bp, url_prefix="/api/rootca")
             
             stats_bp = create_stats_blueprint(entity_instance, "RootCA")
             app.register_blueprint(stats_bp, url_prefix="/api/stats")
@@ -273,8 +277,10 @@ def create_app(
             app.logger.info("  GET /api/crl/full")
             app.logger.info("  GET /api/crl/delta")
             app.logger.info("  GET /api/stats")
-        except ImportError as e:
-            app.logger.warning(f"Could not import blueprints: {e}")
+        except Exception as e:
+            app.logger.error(f"Failed to register RootCA blueprints: {e}")
+            import traceback
+            app.logger.error(traceback.format_exc())
     
     # Register monitoring blueprint (available for all entity types)
     try:
@@ -297,18 +303,19 @@ def create_app(
     except ImportError as e:
         app.logger.warning(f"Could not import monitoring blueprint: {e}")
     
-    # Register management blueprint (available for all entity types)
-    try:
-        from .blueprints.management_bp import management_bp
-        
-        app.register_blueprint(management_bp, url_prefix="/api/management")
-        
-        app.logger.info("Registered management endpoints:")
-        app.logger.info("  GET    /api/management/entities")
-        app.logger.info("  DELETE /api/management/entities/<entity_id>")
-        app.logger.info("  POST   /api/management/entities/bulk-delete")
-    except ImportError as e:
-        app.logger.warning(f"Could not import management blueprint: {e}")
+    # Register management blueprint (available only for RootCA and TLM)
+    if entity_type in ['RootCA', 'TLM']:
+        try:
+            from .blueprints.management_bp import management_bp
+            
+            app.register_blueprint(management_bp, url_prefix="/api/management")
+            
+            app.logger.info("Registered management endpoints:")
+            app.logger.info("  GET    /api/management/entities")
+            app.logger.info("  DELETE /api/management/entities/<entity_id>")
+            app.logger.info("  POST   /api/management/entities/bulk-delete")
+        except ImportError as e:
+            app.logger.warning(f"Could not import management blueprint: {e}")
 
     # Global error handlers
     @app.errorhandler(400)

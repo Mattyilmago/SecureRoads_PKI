@@ -45,6 +45,52 @@ from managers.trust_list_manager import TrustListManager
 from utils.cert_utils import get_certificate_ski
 
 
+def generate_entity_name_with_suffix(desired_name, existing_entities):
+    """
+    Genera un nome entità con suffisso numerico se il nome base già esiste.
+    Supporta sia il nuovo formato con underscore che il vecchio con parentesi.
+    
+    Esempi:
+    - Se "EA_001" non esiste, restituisce "EA_001"
+    - Se "EA_001" esiste, cerca "EA_001_2", "EA_001_3", etc.
+    - Se esistono "EA_001" e "EA_001_2", restituisce "EA_001_3"
+    - Riconosce anche vecchi formati come "EA_001 (2)" per backward compatibility
+    
+    Args:
+        desired_name: Nome desiderato per l'entità
+        existing_entities: Lista delle entità esistenti
+        
+    Returns:
+        String: Nome con suffisso se necessario (sempre nuovo formato)
+    """
+    if desired_name not in existing_entities:
+        return desired_name
+    
+    # Trova tutti i nomi che iniziano con desired_name (supporta sia vecchio che nuovo formato)
+    base_pattern = re.escape(desired_name)
+    # Pattern per nuovo formato: EA_001_2, EA_001_3, etc.
+    new_suffix_pattern = re.compile(rf'^{base_pattern}_(\d+)$')
+    # Pattern per vecchio formato: EA_001 (2), EA_001 (3), etc.
+    old_suffix_pattern = re.compile(rf'^{base_pattern}\s*\((\d+)\)$')
+    
+    max_suffix = 1
+    for entity in existing_entities:
+        # Controlla nuovo formato
+        match = new_suffix_pattern.match(entity)
+        if match:
+            suffix_num = int(match.group(1))
+            max_suffix = max(max_suffix, suffix_num)
+        else:
+            # Controlla vecchio formato per backward compatibility
+            match = old_suffix_pattern.match(entity)
+            if match:
+                suffix_num = int(match.group(1))
+                max_suffix = max(max_suffix, suffix_num)
+    
+    # Il prossimo suffisso è max_suffix + 1
+    return f"{desired_name}_{max_suffix + 1}"
+
+
 # Global RootCA instance (singleton pattern)
 _root_ca_instance = None
 
@@ -351,6 +397,15 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
             existing = find_existing_entities("EA")
             if existing:
                 print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
+        else:
+            # Controlla se l'ID specificato esiste già e aggiungi suffisso se necessario
+            existing = find_existing_entities("EA")
+            original_id = entity_id
+            entity_id = generate_entity_name_with_suffix(entity_id, existing)
+            if entity_id != original_id:
+                print(f"📝 ID '{original_id}' già esistente, assegnato: {entity_id}")
+            if existing:
+                print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
         
         # Usa RootCA condivisa
         root_ca = get_or_create_root_ca()
@@ -389,6 +444,15 @@ def create_entity(entity_type, entity_id=None, ea_id=None):
             entity_id = find_next_available_id("AA")
             print(f"📝 Auto-assigned ID: {entity_id}")
             existing = find_existing_entities("AA")
+            if existing:
+                print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
+        else:
+            # Controlla se l'ID specificato esiste già e aggiungi suffisso se necessario
+            existing = find_existing_entities("AA")
+            original_id = entity_id
+            entity_id = generate_entity_name_with_suffix(entity_id, existing)
+            if entity_id != original_id:
+                print(f"📝 ID '{original_id}' già esistente, assegnato: {entity_id}")
             if existing:
                 print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
         

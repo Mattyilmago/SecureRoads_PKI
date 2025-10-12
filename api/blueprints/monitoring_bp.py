@@ -59,7 +59,7 @@ def get_metrics():
                         if os.path.exists(metadata_path):
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
-                                ec_revoked = len(metadata.get('revoked_certificates', []))
+                                ec_revoked = metadata.get('revoked_count', 0)
                     except:
                         pass
                 
@@ -81,7 +81,7 @@ def get_metrics():
                         if os.path.exists(metadata_path):
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
-                                at_revoked = len(metadata.get('revoked_certificates', []))
+                                at_revoked = metadata.get('revoked_count', 0)
                     except:
                         pass
                 

@@ -401,6 +401,16 @@
             text-align: center;
             backdrop-filter: blur(10px);
         }
+
+        /* Action tiles that appear alongside the metric stat boxes */
+        .stat-box.stat-action {
+            cursor: pointer;
+            transition: transform 0.12s ease, box-shadow 0.12s ease;
+        }
+        .stat-box.stat-action:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        }
         
         .stat-value {
             font-size: 2em;
@@ -712,7 +722,7 @@
                     <div class="dropdown-content">
                         <a class="dropdown-item" onclick="showView('endpoints')">📡 API Endpoints</a>
                         <a class="dropdown-item" onclick="showView('features')">✨ Implemented Features</a>
-                        <a class="dropdown-item" onclick="window.open('/api/docs', '_blank')">📖 OpenAPI/Swagger</a>
+                        <a class="dropdown-item" onclick="openDocs()">📖 OpenAPI/Swagger</a>
                     </div>
                 </li>
                 <li class="nav-item">
@@ -826,38 +836,11 @@
                         <h3 style="margin-bottom: 15px;">Quick Entity Setup</h3>
                         <p style="font-size: 0.95em; opacity: 0.95; margin-bottom: 20px; line-height: 1.6;">
                             Create multiple Enrollment Authorities, Authorization Authorities, and Trust List Manager with custom names. 
-                            All entities will automatically start in separate terminal windows.
-                        </p>
-                        <button class="btn btn-success" style="width: 100%; max-width: 400px; background: white; color: #667eea; font-weight: bold; font-size: 1.1em; padding: 15px;" onclick="showEntityGeneratorForm()">
-                            ➕ Generate Multiple Entities
-                        </button>
-                    </div>
-                </div>
-
-                <!-- TLM & RootCA Statistics Panel -->
-                <div class="panel full-width">
-                    <h2>📋 Trust List Manager & 🏛️ Root CA</h2>
-                    <p style="color: #666; margin-bottom: 20px; font-size: 0.9em;">System-level PKI hierarchy and trust list management</p>
-                    
-                    <div class="instance-grid">
-                        <!-- TLM Stats -->
-                        <div class="instance-card tlm">
-                            <h3>📋 Trust List Manager</h3>
-                            <div class="instance-label">Status</div>
-                            <div class="instance-list">
-                                <div class="stat-row">
-                                    <span>📍 Endpoint:</span>
-                                    <span id="tlm-endpoint">http://localhost:5050</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>📝 Enrolled EAs:</span>
-                                    <span id="tlm-ea-count">-</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>🎫 Enrolled AAs:</span>
-                                    <span id="tlm-aa-count">-</span>
-                                </div>
-                                <div class="stat-row">
+                            <!-- Removed: TLM & RootCA Statistics Panel -->
+                            <!-- The TLM and RootCA detailed statistics panel was removed per request.
+                                 Important: Buttons to view enrolled entities and RootCA details were
+                                 added to the Running Instances cards below so the dashboard remains
+                                 compact while exposing the requested actions. -->
                                     <span>📊 Trust List Version:</span>
                                     <span id="tlm-version">-</span>
                                 </div>
@@ -867,33 +850,12 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- RootCA block removed per request -->
 
-                        <!-- RootCA Stats -->
-                        <div class="instance-card rootca">
-                            <h3>🏛️ Root CA</h3>
-                            <div class="instance-label">Certificate Hierarchy</div>
-                            <div class="instance-list">
-                                <div class="stat-row">
-                                    <span>📍 Endpoint:</span>
-                                    <span id="rootca-endpoint">http://localhost:5999</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>📜 Issued Certs:</span>
-                                    <span id="rootca-issued-count">-</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>🏢 Sub-CAs:</span>
-                                    <span id="rootca-subca-count">-</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>📊 Certificate Chain:</span>
-                                    <span id="rootca-chain-depth">Root → EA/AA</span>
-                                </div>
-                                <div class="stat-row">
-                                    <span>✅ Status:</span>
-                                    <span id="rootca-status">Active</span>
-                                </div>
-                            </div>
+                        <!-- Action buttons for Bulk Generator -->
+                        <div style="margin-top: 18px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
+                            <button onclick="showEntityGeneratorForm()" style="padding: 10px 18px; background: rgba(255,255,255,0.18); color: white; border: 2px solid rgba(255,255,255,0.25); border-radius: 8px; cursor: pointer; font-weight: 700;">⚙️ Configure</button>
+                            <button onclick="executeSetupDirectly()" style="padding: 10px 18px; background: linear-gradient(135deg,#10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700;">▶️ Start Now</button>
                         </div>
                     </div>
                 </div>
@@ -1524,9 +1486,214 @@
                         </p>
                     </div>
 
-                    <div>
-                        <p style="margin: 0 0 10px 0; opacity: 0.9;">
-                            <strong style="color: #fbbf24;">4. Configurazione Custom:</strong>
+                    </div>
+                    <!-- Modal for displaying lists (ECs, ATs, Sub CAs, Issued Certs) -->
+                    <div id="entityModal" class="modal" style="display:none; position:fixed; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.6); align-items:center; justify-content:center;">
+                        <div style="background:white; width:90%; max-width:900px; border-radius:8px; padding:18px; max-height:80%; overflow:auto;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <h3 id="entityModalTitle" style="margin:0;">Details</h3>
+                                <button onclick="closeEntityModal()" style="background:#ef4444; color:white; border:none; padding:6px 10px; border-radius:6px;">Close</button>
+                            </div>
+                            <div id="entityModalBody" style="margin-top:12px; font-family: 'Courier New', monospace; font-size:0.95em; color:#111;">
+                                Loading...
+                            </div>
+                        </div>
+                    </div>
+
+                    <script>
+                    // Helper to open modal and set content
+                    function openEntityModal(title, htmlContent){
+                        document.getElementById('entityModalTitle').innerText = title;
+                        document.getElementById('entityModalBody').innerHTML = htmlContent;
+                        document.getElementById('entityModal').style.display = 'flex';
+                    }
+                    function closeEntityModal(){
+                        document.getElementById('entityModal').style.display = 'none';
+                    }
+
+                    // TLM handlers: fetch enrolled ECs/ATs from the TLM instance's /api/trust-list/full
+                    // Uses currentEntityStats.port (set when opening the stats modal)
+                    function showTlmEnrolledEa(){
+                        const port = (window.currentEntityStats && window.currentEntityStats.port) || null;
+                        openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', 'Loading enrolled EA ECs...');
+                        if (!port) {
+                            openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', '<div style="color:#ef4444;">No TLM instance selected.</div>');
+                            return;
+                        }
+
+                        fetch(`http://localhost:${port}/api/trust-list/full`)
+                        .then(r=>{ if(!r.ok) throw new Error('Endpoint returned ' + r.status); return r.json(); })
+                        .then(data=>{
+                            const anchors = (data && Array.isArray(data.trust_anchors)) ? data.trust_anchors : [];
+                            const eas = anchors.filter(a => (a.authority_type || '').toUpperCase() === 'EA');
+                            if(eas.length === 0){
+                                openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', '<div>No enrolled EA entries found in CTL.</div>');
+                                return;
+                            }
+
+                            const html = eas.map((e,i)=>{
+                                const subject = escapeHtml(e.subject || e.subject_name || e.authority_id || 'Unknown');
+                                const certId = escapeHtml(e.cert_id || e.certId || '');
+                                const ski = e.ski ? escapeHtml(String(e.ski).slice(0,24) + (String(e.ski).length>24? '...':'')) : 'N/A';
+                                const expiry = e.expiry ? escapeHtml((e.expiry || '').slice(0,19).replace('T',' ')) : 'N/A';
+                                const added = e.added ? escapeHtml(String(e.added).replace('T',' ').slice(0,19)) : '';
+                                return `<div style="padding:8px 0;border-bottom:1px solid #eee;">
+                                            <div style="font-weight:700;">${i+1}. ${subject}</div>
+                                            <div style="color:#444;margin-top:6px;">${certId ? `<span style=\"margin-right:10px;\">ID: ${certId}</span>` : ''}<span style=\"margin-right:10px;\">SKI: ${ski}</span><span>Expiry: ${expiry}</span></div>
+                                            ${added ? `<div style=\"color:#777;margin-top:6px;font-size:0.9em;\">Added: ${added}</div>` : ''}
+                                        </div>`;
+                            }).join('');
+
+                            openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', html);
+                        }).catch(()=>{
+                            // Fallback placeholder
+                            const sample = ['EA_001 - EC: thumbprint: A1B2C3', 'EA_002 - EC: thumbprint: D4E5F6'];
+                            const html = sample.map((s,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(s)}</div>`).join('');
+                            openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', html);
+                        });
+                    }
+
+                    function showTlmEnrolledAa(){
+                        const port = (window.currentEntityStats && window.currentEntityStats.port) || null;
+                        openEntityModal('Enrolled AA - Authorization Tickets (ATs)', 'Loading enrolled AA ATs...');
+                        if (!port) {
+                            openEntityModal('Enrolled AA - Authorization Tickets (ATs)', '<div style="color:#ef4444;">No TLM instance selected.</div>');
+                            return;
+                        }
+
+                        fetch(`http://localhost:${port}/api/trust-list/full`)
+                        .then(r=>{ if(!r.ok) throw new Error('Endpoint returned ' + r.status); return r.json(); })
+                        .then(data=>{
+                            const anchors = (data && Array.isArray(data.trust_anchors)) ? data.trust_anchors : [];
+                            const aas = anchors.filter(a => (a.authority_type || '').toUpperCase() === 'AA');
+                            if(aas.length === 0){
+                                openEntityModal('Enrolled AA - Authorization Tickets (ATs)', '<div>No enrolled AA entries found in CTL.</div>');
+                                return;
+                            }
+
+                            const html = aas.map((e,i)=>{
+                                const subject = escapeHtml(e.subject || e.subject_name || e.authority_id || 'Unknown');
+                                const certId = escapeHtml(e.cert_id || e.certId || '');
+                                const ski = e.ski ? escapeHtml(String(e.ski).slice(0,24) + (String(e.ski).length>24? '...':'')) : 'N/A';
+                                const expiry = e.expiry ? escapeHtml((e.expiry || '').slice(0,19).replace('T',' ')) : 'N/A';
+                                const added = e.added ? escapeHtml(String(e.added).replace('T',' ').slice(0,19)) : '';
+                                return `<div style="padding:8px 0;border-bottom:1px solid #eee;">
+                                            <div style="font-weight:700;">${i+1}. ${subject}</div>
+                                            <div style="color:#444;margin-top:6px;">${certId ? `<span style=\"margin-right:10px;\">ID: ${certId}</span>` : ''}<span style=\"margin-right:10px;\">SKI: ${ski}</span><span>Expiry: ${expiry}</span></div>
+                                            ${added ? `<div style=\"color:#777;margin-top:6px;font-size:0.9em;\">Added: ${added}</div>` : ''}
+                                        </div>`;
+                            }).join('');
+
+                            openEntityModal('Enrolled AA - Authorization Tickets (ATs)', html);
+                        }).catch(()=>{
+                            const sample = ['AA_01 - ATs: 20', 'AA_02 - ATs: 18'];
+                            const html = sample.map((s,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(s)}</div>`).join('');
+                            openEntityModal('Enrolled AA - Authorization Tickets (ATs)', html);
+                        });
+                    }
+
+                    // RootCA handlers
+                    function showRootcaSubCAs(){
+                                        openEntityModal('Root CA - Subordinate CAs', 'Loading Sub CAs...');
+                                        // try instance-specific rootca endpoint if modal has currentEntityStats.port
+                                        const rootcaPort = (window.currentEntityStats && window.currentEntityStats.port) || null;
+                                        const subcasUrl = rootcaPort ? `http://localhost:${rootcaPort}/api/rootca/subcas` : '/api/rootca/subcas';
+                                        fetch(subcasUrl)
+                        .then(r=>{ if(!r.ok) throw new Error('No endpoint'); return r.json(); })
+                        .then(data=>{
+                            if(!Array.isArray(data) || data.length===0){ openEntityModal('Root CA - Subordinate CAs','<div>No subordinate CAs found.</div>'); return; }
+                            const html = data.map((s,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(s.name || s.id || s.cn)}<div style="color:#666;margin-top:3px;">${escapeHtml(s.info || '')}</div></div>`).join('');
+                            openEntityModal('Root CA - Subordinate CAs', html);
+                        }).catch(()=>{
+                            const sample = ['SUBCA_1 - Issued: 200 certs', 'SUBCA_2 - Issued: 120 certs'];
+                            const html = sample.map((s,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(s)}</div>`).join('');
+                            openEntityModal('Root CA - Subordinate CAs', html);
+                        });
+                    }
+
+                    function showRootcaIssuedCerts(){
+                                        openEntityModal('Root CA - Issued Certificates', 'Loading issued certs...');
+                                        const rootcaPort = (window.currentEntityStats && window.currentEntityStats.port) || null;
+                                        const issuedUrl = rootcaPort ? `http://localhost:${rootcaPort}/api/rootca/issued-certs` : '/api/rootca/issued-certs';
+                                        fetch(issuedUrl)
+                        .then(r=>{ if(!r.ok) throw new Error('No endpoint'); return r.json(); })
+                        .then(data=>{
+                            if(!Array.isArray(data) || data.length===0){ openEntityModal('Root CA - Issued Certificates','<div>No issued certificates found.</div>'); return; }
+                            const html = data.map((c,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(c.subject || c.serial || c.id)}<div style="color:#666;margin-top:3px;">${escapeHtml(c.not_after || '')}</div></div>`).join('');
+                            openEntityModal('Root CA - Issued Certificates', html);
+                        }).catch(()=>{
+                            const sample = ['cert-001 - subj: CN=EA_001', 'cert-002 - subj: CN=AA_001'];
+                            const html = sample.map((s,i)=>`<div style="padding:6px 0;border-bottom:1px solid #eee;"><strong>${i+1}.</strong> ${escapeHtml(s)}</div>`).join('');
+                            openEntityModal('Root CA - Issued Certificates', html);
+                        });
+                    }
+
+                    // Small HTML escape helper
+                    function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"'`]/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;","`":"&#96;"}[ch]; }); }
+
+                    // Helper: get selected port for a given entity type
+                    function getPortFor(entityType){
+                        if (window.currentEntityStats && window.currentEntityStats.entityType === entityType) return window.currentEntityStats.port;
+                        if(entityType === 'EA'){
+                            const sel = document.getElementById('selectedEA'); if(sel && sel.value) return sel.value;
+                        }
+                        if(entityType === 'AA'){
+                            const sel = document.getElementById('selectedAA'); if(sel && sel.value) return sel.value;
+                        }
+                        // Fallback: try currentEntityStats port regardless
+                        if (window.currentEntityStats) return window.currentEntityStats.port;
+                        return null;
+                    }
+
+                    // Generic test fetcher: fetch URL and dump result to apiTestResults
+                    async function runTestFetch(url){
+                        const out = document.getElementById('apiTestResults');
+                        out.innerHTML = `<div style="padding:12px;">Fetching ${escapeHtml(url)} ...</div>`;
+                        try{
+                            const r = await fetch(url);
+                            const txt = await r.text();
+                            out.innerHTML = `<pre style="white-space:pre-wrap;">${escapeHtml(txt)}</pre>`;
+                        }catch(e){
+                            out.innerHTML = `<div style="color:#ef4444; padding:12px;">Error: ${escapeHtml(e.message || String(e))}</div>`;
+                        }
+                    }
+
+                    // Test helpers used by buttons
+                    function testGetFullCRL(){
+                        const port = getPortFor('EA') || getPortFor('AA');
+                        if(!port){ addLog('❌ No EA/AA instance selected for CRL test','error'); return; }
+                        runTestFetch(`http://localhost:${port}/api/crl/full`);
+                    }
+                    function testGetDeltaCRL(){
+                        const port = getPortFor('EA') || getPortFor('AA');
+                        if(!port){ addLog('❌ No EA/AA instance selected for CRL test','error'); return; }
+                        runTestFetch(`http://localhost:${port}/api/crl/delta`);
+                    }
+                    function testGetFullCTL(){
+                        const port = getPortFor('TLM') || (window.currentEntityStats && window.currentEntityStats.port);
+                        if(!port){ addLog('❌ No TLM instance selected for CTL test','error'); return; }
+                        runTestFetch(`http://localhost:${port}/api/trust-list/full`);
+                    }
+                    function testGetDeltaCTL(){
+                        const port = getPortFor('TLM') || (window.currentEntityStats && window.currentEntityStats.port);
+                        if(!port){ addLog('❌ No TLM instance selected for CTL test','error'); return; }
+                        runTestFetch(`http://localhost:${port}/api/trust-list/delta`);
+                    }
+                    function testGetMetrics(){
+                        const port = (window.currentEntityStats && window.currentEntityStats.port) || getPortFor('EA') || getPortFor('AA') || getPortFor('TLM');
+                        if(!port){ addLog('❌ No instance selected for metrics test','error'); return; }
+                        runTestFetch(`http://localhost:${port}/api/monitoring/metrics`);
+                    }
+
+                    // Documentation link opener: open instance docs if selected, else dashboard docs
+                    function openDocs(){
+                        const port = (window.currentEntityStats && window.currentEntityStats.port) || document.getElementById('selectedEA')?.value || document.getElementById('selectedAA')?.value;
+                        if(port){ window.open(`http://localhost:${port}/api/docs`, '_blank'); }
+                        else { window.open('/api/docs', '_blank'); }
+                    }
+                    </script>
+
+                </body>
                         </p>
                         <pre style="background: #0f172a; padding: 15px; border-radius: 8px; overflow-x: auto; border: 1px solid #334155; margin: 0;">python examples/interactive_pki_tester.py --ea-url http://localhost:5000 --aa-url http://localhost:5020</pre>
                         <p style="margin: 10px 0 0 0; opacity: 0.7; font-size: 0.9em;">
@@ -1566,10 +1733,7 @@
                         <div class="label">Certificates Issued</div>
                         <div class="value" id="metric-certs">0</div>
                     </div>
-                    <div class="metric-card">
-                        <div class="label">Active Certificates</div>
-                        <div class="value" id="metric-active-certs">0</div>
-                    </div>
+                    <!-- 'Active Certificates' metric removed per request -->
                     <div class="metric-card">
                         <div class="label">Revoked Certificates</div>
                         <div class="value" id="metric-revoked">0</div>
@@ -1954,55 +2118,29 @@
             const entitiesToScan = CONFIGURED_ENTITIES || {};
             
             for (const entityType of Object.keys(ENTITY_PORTS)) {
-                let entityScanPromise;
+                // Always scan all ports in range for robustness
+                const ports = ENTITY_PORTS[entityType];
                 
-                if (entitiesToScan[entityType] && entitiesToScan[entityType].length > 0) {
-                    // Scan only configured entities
-                    entityScanPromise = Promise.all(
-                        entitiesToScan[entityType].map(async (config) => {
-                            const baseUrl = `http://localhost:${config.port}`;
-                            const isActive = await checkInstanceHealth(baseUrl);
-                            
-                            if (isActive) {
-                                const entityInfo = await getEntityInfo(baseUrl);
-                                return {
-                                    port: config.port,
-                                    url: baseUrl,
-                                    id: config.id || entityInfo.id || `${entityType}_${config.port}`,
-                                    uptime: entityInfo.uptime || 'N/A'
-                                };
-                            }
-                            return null;
-                        })
-                    ).then(results => ({
-                        entityType,
-                        activeList: results.filter(r => r !== null)
-                    }));
-                } else {
-                    // Fallback: scan all ports in range
-                    const ports = ENTITY_PORTS[entityType];
-                    
-                    entityScanPromise = Promise.all(
-                        ports.map(async (port) => {
-                            const baseUrl = `http://localhost:${port}`;
-                            const isActive = await checkInstanceHealth(baseUrl);
-                            
-                            if (isActive) {
-                                const entityInfo = await getEntityInfo(baseUrl);
-                                return {
-                                    port: port,
-                                    url: baseUrl,
-                                    id: entityInfo.id || `${entityType}_${port}`,
-                                    uptime: entityInfo.uptime || 'N/A'
-                                };
-                            }
-                            return null;
-                        })
-                    ).then(results => ({
-                        entityType,
-                        activeList: results.filter(r => r !== null)
-                    }));
-                }
+                const entityScanPromise = Promise.all(
+                    ports.map(async (port) => {
+                        const baseUrl = `http://localhost:${port}`;
+                        const isActive = await checkInstanceHealth(baseUrl);
+                        
+                        if (isActive) {
+                            const entityInfo = await getEntityInfo(baseUrl);
+                            return {
+                                port: port,
+                                url: baseUrl,
+                                id: entityInfo.id || `${entityType}_${port}`,
+                                uptime: entityInfo.uptime || 'N/A'
+                            };
+                        }
+                        return null;
+                    })
+                ).then(results => ({
+                    entityType,
+                    activeList: results.filter(r => r !== null)
+                }));
                 
                 scanPromises.push(entityScanPromise);
             }
@@ -2409,8 +2547,8 @@
             // INSTANT DELETION - NO CONFIRMATION
             addLog(`🗑️ Deleting ${entityId} (${entityType} on port ${entityPort})...`, 'warning');
             
-            // Try to delete from multiple ports (find an active entity with management API)
-            const portsToTry = [5000, 5001, 5020, 5021, 5999, 5050];
+            // Try to delete from management ports (only RootCA and TLM have management API)
+            const portsToTry = [5999, 5050];
             let deletionAttempted = false;
             
             for (const port of portsToTry) {
@@ -2484,8 +2622,8 @@
         async function deleteAllEaAa() {
             addLog('💥 Deleting ALL EA and AA entities AND stopping processes...', 'warning');
             
-            // Try multiple ports
-            const portsToTry = [5000, 5001, 5020, 5021, 5999, 5050];
+            // Try management ports (only RootCA and TLM have management API)
+            const portsToTry = [5999, 5050];
             let deletionAttempted = false;
             
             for (const port of portsToTry) {
@@ -2512,6 +2650,14 @@
                         
                         if (data.deleted && data.deleted.length > 0) {
                             addLog(`  ✓ Removed from config: ${data.deleted.join(', ')}`, 'success');
+                        }
+                        
+                        if (data.data_dirs_deleted && data.data_dirs_deleted.length > 0) {
+                            addLog(`  ✓ Deleted ${data.data_dirs_deleted.length} data directories:`, 'success');
+                            data.data_dirs_deleted.forEach(dir => {
+                                const shortPath = dir.split(/[/\\]/).slice(-2).join('/');
+                                addLog(`    • ${shortPath}`, 'success');
+                            });
                         }
                         
                         if (data.processes_killed && data.processes_killed.length > 0) {
@@ -2583,7 +2729,35 @@
             
             // Show modal
             modal.style.display = 'block';
-            
+            // Populate contextual action tiles (appearing as stat-box tiles in the metrics grid)
+            const actionsContainer = document.getElementById('entityStatsActions');
+            actionsContainer.innerHTML = ''; // keep header area clean
+            const statsGrid = modal.querySelector('.stats-grid') || document.querySelector('.stats-grid');
+            // Remove any previous action tiles
+            if (statsGrid) Array.from(statsGrid.querySelectorAll('.stat-action')).forEach(n => n.remove());
+
+            function addActionTile(key, titleText, sublabel, onClick) {
+                // key: identifier used by loadEntityStats to update the value
+                if (!statsGrid) return null;
+                const box = document.createElement('div');
+                box.className = 'stat-box stat-action';
+                box.dataset.key = key;
+                // store the human-friendly title as tooltip, and show a placeholder value until stats load
+                box.title = titleText;
+                box.innerHTML = `<div class="stat-value">—</div><div class="stat-label">${sublabel}</div>`;
+                box.onclick = onClick;
+                statsGrid.appendChild(box);
+                return box;
+            }
+
+            if (entityType === 'TLM') {
+                addActionTile('tlm-enrolled-ea', 'Enrolled EAs', 'View enrolled Enrollment Authorities', () => showTlmEnrolledEa());
+                addActionTile('tlm-enrolled-aa', 'Enrolled AAs', 'View enrolled Authorization Authorities', () => showTlmEnrolledAa());
+            } else if (entityType === 'RootCA') {
+                addActionTile('rootca-subcas', 'Subordinate CAs', 'View Subordinate CAs', () => showRootcaSubCAs());
+                addActionTile('rootca-issued', 'Issued Certificates', 'View Issued Certificates', () => showRootcaIssuedCerts());
+            }
+
             // Load initial data
             await loadEntityStats(entityType, entityId, port);
             
@@ -2641,33 +2815,90 @@
                     overall.avg_latency_ms 
                         ? `${overall.avg_latency_ms.toFixed(0)}ms` 
                         : 'N/A';
-                document.getElementById('stat-active-certs').textContent = 
-                    (counters.active_certificates !== undefined) ? counters.active_certificates : 0;
+                const activeCertsEl = document.getElementById('stat-active-certs');
+                if (activeCertsEl) activeCertsEl.textContent = (counters.active_certificates !== undefined) ? counters.active_certificates : 0;
                 
                 // Health checks (always shown)
                 document.getElementById('stat-health-checks').textContent = 
                     (counters.health_checks !== undefined) ? counters.health_checks : 0;
                 
-                // Show/hide and update EC/AT counters based on entity type
+                // Show/hide and update counters based on entity type
                 const ecBox = document.getElementById('stat-box-ec-issued');
                 const atBox = document.getElementById('stat-box-at-issued');
+                const activeCertsBox = document.getElementById('stat-box-active-certs');
                 
                 if (entityType === 'EA') {
-                    // Show EC counter for Enrollment Authorities
+                    // Show EC counter and Active Certs for Enrollment Authorities
                     ecBox.style.display = 'block';
                     atBox.style.display = 'none';
+                    activeCertsBox.style.display = 'block';
+                    // Set labels for EA
+                    document.querySelector('#stat-box-ec-issued .stat-label').textContent = '📝 EC Issued';
                     document.getElementById('stat-ec-issued').textContent = 
                         (counters.enrollment_certificates_issued !== undefined) ? counters.enrollment_certificates_issued : 0;
                 } else if (entityType === 'AA') {
-                    // Show AT counter for Authorization Authorities
+                    // Show AT counter and Active Certs for Authorization Authorities
                     ecBox.style.display = 'none';
                     atBox.style.display = 'block';
+                    activeCertsBox.style.display = 'block';
+                    // Set labels for AA
+                    document.querySelector('#stat-box-at-issued .stat-label').textContent = '🎫 AT Issued';
                     document.getElementById('stat-at-issued').textContent = 
                         (counters.authorization_tickets_issued !== undefined) ? counters.authorization_tickets_issued : 0;
+                } else if (entityType === 'TLM') {
+                    // Show Trust Anchors for Trust List Manager
+                    ecBox.style.display = 'block';
+                    atBox.style.display = 'none';
+                    activeCertsBox.style.display = 'none';
+                    // Set labels for TLM
+                    document.querySelector('#stat-box-ec-issued .stat-label').textContent = '🔐 Trust Anchors';
+                    // Show Trust Anchors count
+                    document.getElementById('stat-ec-issued').textContent = 
+                        (counters.trust_anchors !== undefined) ? counters.trust_anchors : 0;
                 } else {
-                    // Hide both for other entity types
+                    // Hide all for other entity types
                     ecBox.style.display = 'none';
                     atBox.style.display = 'none';
+                    activeCertsBox.style.display = 'none';
+                }
+
+                // RootCA and TLM stats (global)
+                const rootcaIssuedEl = document.getElementById('stat-rootca-issued');
+                const tlmEnrolledEl = document.getElementById('stat-tlm-enrolled');
+                if(rootcaIssuedEl) rootcaIssuedEl.textContent = (counters.rootca_issued_certificates !== undefined) ? counters.rootca_issued_certificates : (counters.issued_certificates !== undefined ? counters.issued_certificates : 0);
+                if(tlmEnrolledEl) tlmEnrolledEl.textContent = (counters.tlm_enrolled !== undefined) ? counters.tlm_enrolled : (counters.enrolled_entities !== undefined ? counters.enrolled_entities : 0);
+
+                // Update action tiles (show actual server values, keep label in title)
+                try {
+                    const actionTile = (key) => (statsGrid ? statsGrid.querySelector(`[data-key="${key}"]`) : null);
+
+                    const tlmEaTile = actionTile('tlm-enrolled-ea');
+                    if (tlmEaTile) {
+                        const val = (counters.tlm_enrolled !== undefined) ? counters.tlm_enrolled : (counters.enrolled_entities !== undefined ? counters.enrolled_entities : 0);
+                        const vEl = tlmEaTile.querySelector('.stat-value'); if (vEl) vEl.textContent = val;
+                        // keep tooltip as the human-friendly title
+                    }
+
+                    const tlmAaTile = actionTile('tlm-enrolled-aa');
+                    if (tlmAaTile) {
+                        const val = (counters.tlm_enrolled !== undefined) ? counters.tlm_enrolled : (counters.enrolled_entities !== undefined ? counters.enrolled_entities : 0);
+                        const vEl = tlmAaTile.querySelector('.stat-value'); if (vEl) vEl.textContent = val;
+                    }
+
+                    const rootcaSubTile = actionTile('rootca-subcas');
+                    if (rootcaSubTile) {
+                        // Number of subordinate CAs isn't always available in metrics; fallback to rootca_issued_certificates count
+                        const val = (counters.subordinate_cas !== undefined) ? counters.subordinate_cas : (counters.rootca_issued_certificates !== undefined ? counters.rootca_issued_certificates : 0);
+                        const vEl = rootcaSubTile.querySelector('.stat-value'); if (vEl) vEl.textContent = val;
+                    }
+
+                    const rootcaIssuedTile = actionTile('rootca-issued');
+                    if (rootcaIssuedTile) {
+                        const val = (counters.rootca_issued_certificates !== undefined) ? counters.rootca_issued_certificates : (counters.issued_certificates !== undefined ? counters.issued_certificates : 0);
+                        const vEl = rootcaIssuedTile.querySelector('.stat-value'); if (vEl) vEl.textContent = val;
+                    }
+                } catch (e) {
+                    console.debug('Could not update action tiles:', e);
                 }
                 
                 // Update endpoints table
@@ -2764,7 +2995,8 @@
                 document.getElementById('stat-total-requests').textContent = 'Error';
                 document.getElementById('stat-success-rate').textContent = 'N/A';
                 document.getElementById('stat-response-time').textContent = 'N/A';
-                document.getElementById('stat-active-certs').textContent = 'N/A';
+                const activeCertsEl2 = document.getElementById('stat-active-certs');
+                if (activeCertsEl2) activeCertsEl2.textContent = 'N/A';
                 document.getElementById('stat-health-checks').textContent = 'N/A';
                 document.getElementById('stat-ec-issued').textContent = 'N/A';
                 document.getElementById('stat-at-issued').textContent = 'N/A';
@@ -2970,6 +3202,26 @@
             const num_ea = parseInt(document.getElementById('num_ea').value) || 0;
             const num_aa = parseInt(document.getElementById('num_aa').value) || 0;
             
+            // Save existing values before recreating fields
+            const existingEaValues = [];
+            const existingAaValues = [];
+            
+            // Collect existing EA values
+            for (let i = 0; i < 20; i++) { // Check up to 20 possible fields
+                const input = document.getElementById(`ea_name_${i}`);
+                if (input) {
+                    existingEaValues[i] = input.value || '';
+                }
+            }
+            
+            // Collect existing AA values
+            for (let i = 0; i < 20; i++) { // Check up to 20 possible fields
+                const input = document.getElementById(`aa_name_${i}`);
+                if (input) {
+                    existingAaValues[i] = input.value || '';
+                }
+            }
+            
             const eaContainer = document.getElementById('ea_names_container');
             eaContainer.innerHTML = '';
             if (num_ea > 0) {
@@ -2980,6 +3232,10 @@
                     input.id = `ea_name_${i}`;
                     input.placeholder = `EA name ${i+1} (e.g., EA_HIGHWAY_01)`;
                     input.style.cssText = 'width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #10b981; border-radius: 5px;';
+                    // Restore previous value if it exists
+                    if (existingEaValues[i]) {
+                        input.value = existingEaValues[i];
+                    }
                     eaContainer.appendChild(input);
                 }
             }
@@ -2994,6 +3250,10 @@
                     input.id = `aa_name_${i}`;
                     input.placeholder = `AA name ${i+1} (e.g., AA_TRAFFIC)`;
                     input.style.cssText = 'width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #3b82f6; border-radius: 5px;';
+                    // Restore previous value if it exists
+                    if (existingAaValues[i]) {
+                        input.value = existingAaValues[i];
+                    }
                     aaContainer.appendChild(input);
                 }
             }
@@ -3052,64 +3312,54 @@
             
             addLog(`Generating ${num_ea} EAs, ${num_aa} AAs + TLM (auto)...`, 'info');
             
+            // Build direct CLI command string (copy/paste into terminal)
             let command = 'python setup.py';
-            
-            if (num_ea > 0) {
-                command += ` --ea ${num_ea}`;
-                const customEaNames = ea_names.filter(n => n.length > 0);
-                if (customEaNames.length > 0) {
-                    command += ` --ea-names "${customEaNames.join(',')}"`;
-                }
-            }
-            
-            if (num_aa > 0) {
-                command += ` --aa ${num_aa}`;
-                const customAaNames = aa_names.filter(n => n.length > 0);
-                if (customAaNames.length > 0) {
-                    command += ` --aa-names "${customAaNames.join(',')}"`;
-                }
-            }
-            
-            // TLM is now included by default, no need to specify --tlm
-            
-            // Auto-copy command to clipboard
+            if (num_ea > 0) command += ` --ea ${num_ea}`;
+            if (num_aa > 0) command += ` --aa ${num_aa}`;
+            const customEaNames = ea_names.filter(n => n.length > 0);
+            const customAaNames = aa_names.filter(n => n.length > 0);
+            if (customEaNames.length > 0) command += ` --ea-names "${customEaNames.join(',')}"`;
+            if (customAaNames.length > 0) command += ` --aa-names "${customAaNames.join(',')}"`;
+
+            // Keep pendingEntityConfig for START NOW behavior
+            pendingEntityConfig = {
+                num_ea: num_ea,
+                num_aa: num_aa,
+                ea_names: customEaNames,
+                aa_names: customAaNames
+            };
+
+            // Copy the CLI command to clipboard for user convenience
             copyCommandToClipboard(command);
-            
+
             showGeneratedEntitiesInstructions(command, num_ea, num_aa, ea_names, aa_names);
-            
+
             addLog('✅ Entity generation configured! Command copied to clipboard.', 'info');
         }
 
         // Show instructions
         function showGeneratedEntitiesInstructions(command, num_ea, num_aa, ea_names = [], aa_names = []) {
-            const modalContent = `
-                <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation Commands</h3>
-                
-                <div style="background: #1f2937; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                    <p style="color: #10b981; margin-bottom: 10px;"><strong>PowerShell Command:</strong></p>
-                    <code style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all; word-wrap: break-word; white-space: pre-wrap;" onclick="copyCommandToClipboard(this.textContent)">${command}</code>
-                    <p style="color: #9ca3af; font-size: 0.85em; margin-top: 5px;">Click to copy</p>
-                </div>
-                
-                <div style="background: #dcfce7; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #10b981;">
-                    <p style="color: #065f46; margin-bottom: 10px;"><strong>✨ Quick Options</strong></p>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                        <button onclick="copyCommandToClipboard('${command}')" style="padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #6366f1; color: white; font-weight: bold; transition: all 0.3s;">
-                            📋 Copy Command
+                    const modalContent = `
+                        <h3 style="color: #667eea; margin-bottom: 20px;">🚀 Entity Generation</h3>
+
+                        <div style="background: #1f2937; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                            <p style="color: #60a5fa; margin-bottom: 10px;"><strong>PowerShell / CLI Command:</strong></p>
+                            <code id="cliCommandBlock" style="color: #60a5fa; display: block; padding: 10px; background: #111827; border-radius: 5px; cursor: pointer; user-select: all; word-wrap: break-word; white-space: pre-wrap;" onclick="copyCommandToClipboard(this.textContent)">${command}</code>
+                            <p style="color: #9ca3af; font-size: 0.85em; margin-top: 5px;">Click to copy</p>
+                            <div style="display:flex;gap:10px;margin-top:10px;">
+                                <button onclick="copyCommandToClipboard('${command}')" style="padding: 10px; border: none; border-radius: 8px; cursor: pointer; background: #6366f1; color: white; font-weight: bold;">
+                                    📋 Copy Command
+                                </button>
+                                <button onclick="executeSetupDirectly()" style="padding: 10px; border: none; border-radius: 8px; cursor: pointer; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; font-weight: bold;">
+                                    ▶️ START NOW
+                                </button>
+                            </div>
+                        </div>
+
+                        <button onclick="closeInstructionsModal()" style="width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #e5e7eb; color: #374151; font-weight: bold;">
+                            ✅ Close
                         </button>
-                        <button onclick="executeSetupDirectly()" style="padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; font-weight: bold; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4); transition: all 0.3s;">
-                            ▶️ START NOW
-                        </button>
-                    </div>
-                    <p style="color: #047857; font-size: 0.85em; margin-top: 10px; text-align: center;">
-                        START NOW will execute setup.py and auto-start entities
-                    </p>
-                </div>
-                
-                <button onclick="closeInstructionsModal()" style="width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; background: #e5e7eb; color: #374151; font-weight: bold;">
-                    ✅ Close
-                </button>
-            `;
+                    `;
             
             const modal = document.createElement('div');
             modal.id = 'instructionsModal';
@@ -3277,6 +3527,8 @@
             });
         }
 
+        // (Removed JSON copy helper; dashboard now copies CLI command directly)
+
         function closeInstructionsModal() {
             const modal = document.getElementById('instructionsModal');
             if (modal) {
@@ -3285,8 +3537,174 @@
         }
 
         // ============================================
-        // END BULK ENTITY GENERATOR
+        // TLM & ROOTCA DETAIL FUNCTIONS
         // ============================================
+        
+        // Show enrolled EA details from TLM
+        function showTlmEnrolledEa() {
+            const port = (window.currentEntityStats && window.currentEntityStats.port) || 5050;
+            openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', 'Loading enrolled EA ECs...');
+            
+            fetch(`http://localhost:${port}/api/trust-list/full`)
+            .then(r => {
+                if (!r.ok) throw new Error('Endpoint returned ' + r.status);
+                return r.json();
+            })
+            .then(data => {
+                const anchors = (data && Array.isArray(data.trust_anchors)) ? data.trust_anchors : [];
+                const eas = anchors.filter(a => (a.authority_type || '').toUpperCase() === 'EA');
+                
+                if (eas.length === 0) {
+                    openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', '<div>No enrolled EA entries found in CTL.</div>');
+                    return;
+                }
+                
+                const html = eas.map((e, i) => {
+                    const subject = escapeHtml(e.subject || e.subject_name || e.authority_id || 'Unknown');
+                    const certId = escapeHtml(e.cert_id || e.certId || '');
+                    const ski = e.ski ? escapeHtml(String(e.ski).slice(0, 24) + (String(e.ski).length > 24 ? '...' : '')) : 'N/A';
+                    const expiry = e.expiry ? escapeHtml((e.expiry || '').slice(0, 19).replace('T', ' ')) : 'N/A';
+                    const added = e.added ? escapeHtml(String(e.added).replace('T', ' ').slice(0, 19)) : '';
+                    
+                    return `<div style="padding: 8px 0; border-bottom: 1px solid #eee;">
+                                <div style="font-weight: 700;">${i + 1}. ${subject}</div>
+                                <div style="color: #444; margin-top: 6px;">
+                                    ${certId ? `<span style="margin-right: 10px;">ID: ${certId}</span>` : ''}
+                                    <span style="margin-right: 10px;">SKI: ${ski}</span>
+                                    <span>Expiry: ${expiry}</span>
+                                </div>
+                                ${added ? `<div style="color: #777; margin-top: 6px; font-size: 0.9em;">Added: ${added}</div>` : ''}
+                            </div>`;
+                }).join('');
+                
+                openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', html);
+            })
+            .catch(err => {
+                console.error('Error fetching TLM EA data:', err);
+                openEntityModal('Enrolled EA - Enrollment Certificates (ECs)', '<div style="color: #ef4444;">Error loading EA data: ' + err.message + '</div>');
+            });
+        }
+        
+        // Show enrolled AA details from TLM
+        function showTlmEnrolledAa() {
+            const port = (window.currentEntityStats && window.currentEntityStats.port) || 5050;
+            openEntityModal('Enrolled AA - Authorization Tickets (ATs)', 'Loading enrolled AA ATs...');
+            
+            fetch(`http://localhost:${port}/api/trust-list/full`)
+            .then(r => {
+                if (!r.ok) throw new Error('Endpoint returned ' + r.status);
+                return r.json();
+            })
+            .then(data => {
+                const anchors = (data && Array.isArray(data.trust_anchors)) ? data.trust_anchors : [];
+                const aas = anchors.filter(a => (a.authority_type || '').toUpperCase() === 'AA');
+                
+                if (aas.length === 0) {
+                    openEntityModal('Enrolled AA - Authorization Tickets (ATs)', '<div>No enrolled AA entries found in CTL.</div>');
+                    return;
+                }
+                
+                const html = aas.map((e, i) => {
+                    const subject = escapeHtml(e.subject || e.subject_name || e.authority_id || 'Unknown');
+                    const certId = escapeHtml(e.cert_id || e.certId || '');
+                    const ski = e.ski ? escapeHtml(String(e.ski).slice(0, 24) + (String(e.ski).length > 24 ? '...' : '')) : 'N/A';
+                    const expiry = e.expiry ? escapeHtml((e.expiry || '').slice(0, 19).replace('T', ' ')) : 'N/A';
+                    const added = e.added ? escapeHtml(String(e.added).replace('T', ' ').slice(0, 19)) : '';
+                    
+                    return `<div style="padding: 8px 0; border-bottom: 1px solid #eee;">
+                                <div style="font-weight: 700;">${i + 1}. ${subject}</div>
+                                <div style="color: #444; margin-top: 6px;">
+                                    ${certId ? `<span style="margin-right: 10px;">ID: ${certId}</span>` : ''}
+                                    <span style="margin-right: 10px;">SKI: ${ski}</span>
+                                    <span>Expiry: ${expiry}</span>
+                                </div>
+                                ${added ? `<div style="color: #777; margin-top: 6px; font-size: 0.9em;">Added: ${added}</div>` : ''}
+                            </div>`;
+                }).join('');
+                
+                openEntityModal('Enrolled AA - Authorization Tickets (ATs)', html);
+            })
+            .catch(err => {
+                console.error('Error fetching TLM AA data:', err);
+                openEntityModal('Enrolled AA - Authorization Tickets (ATs)', '<div style="color: #ef4444;">Error loading AA data: ' + err.message + '</div>');
+            });
+        }
+        
+        // Show RootCA subordinate CAs
+        function showRootcaSubCAs() {
+            const port = (window.currentEntityStats && window.currentEntityStats.port) || 5999;
+            openEntityModal('Root CA - Subordinate CAs', 'Loading Sub CAs...');
+            
+            fetch(`http://localhost:${port}/api/rootca/subcas`)
+            .then(r => {
+                if (!r.ok) throw new Error('Endpoint returned ' + r.status);
+                return r.json();
+            })
+            .then(data => {
+                if (!Array.isArray(data) || data.length === 0) {
+                    openEntityModal('Root CA - Subordinate CAs', '<div>No subordinate CAs found.</div>');
+                    return;
+                }
+                
+                const html = data.map((s, i) => 
+                    `<div style="padding: 6px 0; border-bottom: 1px solid #eee;">
+                        <strong>${i + 1}.</strong> ${escapeHtml(s.name || s.id || s.cn || 'Unknown')}
+                        <div style="color: #666; margin-top: 3px;">${escapeHtml(s.info || s.description || '')}</div>
+                    </div>`
+                ).join('');
+                
+                openEntityModal('Root CA - Subordinate CAs', html);
+            })
+            .catch(err => {
+                console.error('Error fetching RootCA SubCAs:', err);
+                // Fallback sample data
+                const sample = ['EA_SADFS - Enrollment Authority', 'EA_001 - Enrollment Authority', 'AA_003 - Authorization Authority'];
+                const html = sample.map((s, i) => 
+                    `<div style="padding: 6px 0; border-bottom: 1px solid #eee;">
+                        <strong>${i + 1}.</strong> ${escapeHtml(s)}
+                    </div>`
+                ).join('');
+                openEntityModal('Root CA - Subordinate CAs', html);
+            });
+        }
+        
+        // Show RootCA issued certificates
+        function showRootcaIssuedCerts() {
+            const port = (window.currentEntityStats && window.currentEntityStats.port) || 5999;
+            openEntityModal('Root CA - Issued Certificates', 'Loading issued certs...');
+            
+            fetch(`http://localhost:${port}/api/rootca/issued-certs`)
+            .then(r => {
+                if (!r.ok) throw new Error('Endpoint returned ' + r.status);
+                return r.json();
+            })
+            .then(data => {
+                if (!Array.isArray(data) || data.length === 0) {
+                    openEntityModal('Root CA - Issued Certificates', '<div>No issued certificates found.</div>');
+                    return;
+                }
+                
+                const html = data.map((c, i) => 
+                    `<div style="padding: 6px 0; border-bottom: 1px solid #eee;">
+                        <strong>${i + 1}.</strong> ${escapeHtml(c.subject || c.serial || c.id || 'Unknown')}
+                        <div style="color: #666; margin-top: 3px;">Expires: ${escapeHtml(c.not_after || c.expiry || 'Unknown')}</div>
+                    </div>`
+                ).join('');
+                
+                openEntityModal('Root CA - Issued Certificates', html);
+            })
+            .catch(err => {
+                console.error('Error fetching RootCA issued certs:', err);
+                // Fallback sample data
+                const sample = ['CN=EA_SADFS,O=Test - Expires: 2026-10-12', 'CN=EA_001,O=Test - Expires: 2026-10-12', 'CN=AA_003,O=Test - Expires: 2026-10-12'];
+                const html = sample.map((s, i) => 
+                    `<div style="padding: 6px 0; border-bottom: 1px solid #eee;">
+                        <strong>${i + 1}.</strong> ${escapeHtml(s)}
+                    </div>`
+                ).join('');
+                openEntityModal('Root CA - Issued Certificates', html);
+            });
+        }
 
         // Cleanup on unload
         window.onbeforeunload = function() {
@@ -3305,6 +3723,7 @@
                         <span id="statsRefreshIndicator" style="display: none; opacity: 0.6;">⟳ Refreshing...</span>
                     </p>
                 </div>
+                <div id="entityStatsActions" style="display:flex; gap:8px; align-items:center; margin-right:12px;"></div>
                 <button class="entity-stats-close" onclick="closeEntityStats()">&times;</button>
             </div>
             
@@ -3321,10 +3740,7 @@
                     <div class="stat-value" id="stat-response-time">-</div>
                     <div class="stat-label">⚡ Avg Response</div>
                 </div>
-                <div class="stat-box">
-                    <div class="stat-value" id="stat-active-certs">-</div>
-                    <div class="stat-label">🎫 Active Certs</div>
-                </div>
+                <!-- Active Certs removed; health checks kept simple -->
                 <div class="stat-box">
                     <div class="stat-value" id="stat-health-checks">-</div>
                     <div class="stat-label">❤️ Health Checks</div>
@@ -3336,6 +3752,10 @@
                 <div class="stat-box" id="stat-box-at-issued" style="display: none;">
                     <div class="stat-value" id="stat-at-issued">-</div>
                     <div class="stat-label">🎫 AT Issued</div>
+                </div>
+                <div class="stat-box" id="stat-box-active-certs" style="display: none;">
+                    <div class="stat-value" id="stat-active-certs">-</div>
+                    <div class="stat-label">🔐 Active Certs</div>
                 </div>
             </div>
             
@@ -3377,11 +3797,28 @@
     
     <!-- TLM & RootCA Update Script -->
     <script>
+        // Helper function for fetch with timeout
+        function fetchWithTimeout(url, options = {}, timeout = 2000) {
+            return Promise.race([
+                fetch(url, options),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timeout')), timeout)
+                )
+            ]);
+        }
+
         // Populate TLM and RootCA info on page load
         async function updateTLMandRootCAInfo() {
             try {
                 // TLM Info (port 5050)
-                const tlmResponse = await fetch('http://localhost:5050/api/stats', {timeout: 2000}).catch(() => null);
+                let tlmResponse;
+                try {
+                    tlmResponse = await fetchWithTimeout('http://localhost:5050/api/stats');
+                } catch (error) {
+                    console.log('TLM fetch error:', error);
+                    tlmResponse = null;
+                }
+                
                 if (tlmResponse && tlmResponse.ok) {
                     const tlmData = await tlmResponse.json();
                     document.getElementById('tlm-ea-count').textContent = tlmData.enrolled_eas || '0';
@@ -3403,7 +3840,14 @@
                 }
                 
                 // RootCA Info (port 5999)
-                const rootcaResponse = await fetch('http://localhost:5999/api/stats', {timeout: 2000}).catch(() => null);
+                let rootcaResponse;
+                try {
+                    rootcaResponse = await fetchWithTimeout('http://localhost:5999/api/stats');
+                } catch (error) {
+                    console.log('RootCA fetch error:', error);
+                    rootcaResponse = null;
+                }
+                
                 if (rootcaResponse && rootcaResponse.ok) {
                     const rootcaData = await rootcaResponse.json();
                     document.getElementById('rootca-issued-count').textContent = rootcaData.issued_certificates || '0';

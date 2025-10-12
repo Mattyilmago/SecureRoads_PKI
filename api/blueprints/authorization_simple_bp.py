@@ -410,5 +410,99 @@ def create_simple_authorization_blueprint(aa_instance):
                 "error": "Internal server error",
                 "message": str(e)
             }), 500
+        
+    @bp.route("/revoke", methods=["POST"])
+    @rate_limit
+    @optional_auth
+    def revoke_authorization_ticket():
+        """
+        POST /authorization/revoke
+        
+        Revoke an Authorization Ticket by serial number.
+        
+        Request Body (JSON):
+            {
+                "serial_number": "hex_serial_number",
+                "reason": "unspecified",
+                "its_id": "VEHICLE_001"
+            }
+        
+        Response Body (JSON):
+            {
+                "success": true,
+                "message": "Authorization Ticket revoked",
+                "serial_number": "hex_serial",
+                "reason": "unspecified"
+            }
+        """
+        current_app.logger.info("Received AT Revocation Request")
+        
+        try:
+            # 1. Parse JSON request
+            if not request.is_json:
+                return jsonify({
+                    "error": "Invalid Content-Type",
+                    "message": "Expected application/json"
+                }), 415
+            
+            data = request.get_json()
+            
+            # 2. Validate required fields
+            required_fields = ["serial_number"]
+            missing = [f for f in required_fields if f not in data]
+            if missing:
+                return jsonify({
+                    "error": "Missing required fields",
+                    "missing": missing
+                }), 400
+            
+            serial_hex = data["serial_number"]
+            reason = data.get("reason", "unspecified")
+            its_id = data.get("its_id", "unknown")
+            
+            current_app.logger.info(f"Revoking AT: serial={serial_hex}, reason={reason}, its_id={its_id}")
+            
+            # 3. Convert hex serial to int
+            try:
+                serial_int = int(serial_hex, 16)
+            except ValueError:
+                return jsonify({
+                    "error": "Invalid serial number format",
+                    "message": "Must be hexadecimal string"
+                }), 400
+            
+            # 4. Find and revoke the AT
+            # For simplicity, we'll revoke by serial (AA has revoke_by_serial method)
+            try:
+                bp.aa.revoke_by_serial(serial_hex, reason)
+                current_app.logger.info(f"AT revoked successfully: {serial_hex}")
+                
+                # Publish delta CRL
+                bp.aa.crl_manager.publish_delta_crl()
+                current_app.logger.info("Delta CRL published after AT revocation")
+                
+                return jsonify({
+                    "success": True,
+                    "message": "Authorization Ticket revoked successfully",
+                    "serial_number": serial_hex,
+                    "reason": reason,
+                    "its_id": its_id
+                }), 200
+                
+            except Exception as e:
+                current_app.logger.error(f"Failed to revoke AT: {e}")
+                return jsonify({
+                    "error": "Revocation failed",
+                    "message": str(e)
+                }), 500
+        
+        except Exception as e:
+            current_app.logger.error(f"Unexpected error in AT revocation: {e}")
+            import traceback
+            current_app.logger.error(traceback.format_exc())
+            return jsonify({
+                "error": "Internal server error",
+                "message": str(e)
+            }), 500
 
     return bp

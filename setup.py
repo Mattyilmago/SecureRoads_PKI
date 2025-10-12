@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import subprocess
+import re
 from pathlib import Path
 
 # Add project root to path
@@ -70,6 +71,170 @@ def find_existing_entities(entity_type, base_dir="./data"):
             pass
     
     return existing
+
+
+def find_used_ports():
+    """
+    Controllo semplice delle porte con netstat.
+    
+    Returns:
+        set: Insieme delle porte già in uso
+    """
+    used_ports = set()
+    
+    try:
+        result = subprocess.run(['netstat', '-ano'], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            lines = result.stdout.split('\n')
+            for line in lines:
+                if 'LISTENING' in line:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        addr_part = parts[1]
+                        if ':' in addr_part:
+                            port_str = addr_part.split(':')[-1]
+                            try:
+                                port = int(port_str)
+                                if 5000 <= port <= 5999:  # Solo porte PKI
+                                    used_ports.add(port)
+                            except ValueError:
+                                pass
+    except Exception as e:
+        print(f"⚠️  Errore controllo porte: {e}")
+    
+    # Aggiungi anche le porte configurate in entity_configs.json
+    config_file = Path("entity_configs.json")
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            
+            # Estrai porte dai comandi di avvio
+            for cmd_entry in config.get('start_commands', []):
+                command = cmd_entry.get('command', '')
+                # Cerca pattern --port PORTA
+                port_match = re.search(r'--port\s+(\d+)', command)
+                if port_match:
+                    try:
+                        port = int(port_match.group(1))
+                        used_ports.add(port)
+                    except ValueError:
+                        pass
+        except Exception as e:
+            print(f"⚠️  Errore leggendo configurazione porte: {e}")
+    
+    return used_ports
+
+
+def check_entity_active(port, entity_type, timeout=3):
+    """
+    Controlla se un'entità è già attiva sulla porta specificata controllando se la porta è in uso.
+    
+    Args:
+        port: Porta da controllare
+        entity_type: Tipo di entità ('RootCA', 'TLM', 'EA', 'AA')
+        timeout: Timeout in secondi (non usato per socket)
+        
+    Returns:
+        bool: True se la porta è in uso (entità probabilmente attiva), False se libera
+    """
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(('localhost', port))
+        sock.close()
+        return result == 0  # 0 means connection successful, port is in use
+    except Exception:
+        return False
+
+
+def generate_entity_name_with_suffix(desired_name, existing_entities):
+    """
+    Genera un nome entità con suffisso numerico se il nome base già esiste.
+    Supporta sia il nuovo formato con underscore che il vecchio con parentesi.
+    
+    Esempi:
+    - Se "EA_001" non esiste, restituisce "EA_001"
+    - Se "EA_001" esiste, cerca "EA_001_2", "EA_001_3", etc.
+    - Se esistono "EA_001" e "EA_001_2", restituisce "EA_001_3"
+    - Riconosce anche vecchi formati come "EA_001 (2)" per backward compatibility
+    
+    Args:
+        desired_name: Nome desiderato per l'entità
+        existing_entities: Lista delle entità esistenti
+        
+    Returns:
+        String: Nome con suffisso se necessario (sempre nuovo formato)
+    """
+    if desired_name not in existing_entities:
+        return desired_name
+    
+    # Trova tutti i nomi che iniziano con desired_name (supporta sia vecchio che nuovo formato)
+    base_pattern = re.escape(desired_name)
+    # Pattern per nuovo formato: EA_001_2, EA_001_3, etc.
+    new_suffix_pattern = re.compile(rf'^{base_pattern}_(\d+)$')
+    # Pattern per vecchio formato: EA_001 (2), EA_001 (3), etc.
+    old_suffix_pattern = re.compile(rf'^{base_pattern}\s*\((\d+)\)$')
+    
+    max_suffix = 1
+    for entity in existing_entities:
+        # Controlla nuovo formato
+        match = new_suffix_pattern.match(entity)
+        if match:
+            suffix_num = int(match.group(1))
+            max_suffix = max(max_suffix, suffix_num)
+        else:
+            # Controlla vecchio formato per backward compatibility
+            match = old_suffix_pattern.match(entity)
+            if match:
+                suffix_num = int(match.group(1))
+                max_suffix = max(max_suffix, suffix_num)
+    
+    # Il prossimo suffisso è max_suffix + 1
+    return f"{desired_name}_{max_suffix + 1}"
+
+
+def cleanup_obsolete_entities(requested_entities, entity_type):
+    """
+    Rimuove dalla configurazione entity_configs.json le entità che non sono più richieste.
+    
+    Args:
+        requested_entities: Lista delle entità che dovrebbero rimanere
+        entity_type: Tipo di entità ('EA', 'AA', 'TLM')
+    """
+    config_file = Path("entity_configs.json")
+    if not config_file.exists():
+        return
+    
+    try:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        original_commands = config.get('start_commands', [])
+        updated_commands = []
+        
+        for cmd in original_commands:
+            entity_name = cmd.get('entity', '')
+            # Mantieni RootCA e TLM sempre
+            if entity_name in ['ROOT_CA', 'TLM_MAIN']:
+                updated_commands.append(cmd)
+            # Mantieni entità del tipo richiesto che sono nella lista
+            elif entity_name.startswith(f"{entity_type}_") and entity_name in requested_entities:
+                updated_commands.append(cmd)
+            # Rimuovi entità obsolete
+            elif entity_name.startswith(f"{entity_type}_"):
+                print(f"🗑️  Rimozione entità obsoleta dalla configurazione: {entity_name}")
+            else:
+                updated_commands.append(cmd)
+        
+        config['start_commands'] = updated_commands
+        
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+            
+    except Exception as e:
+        print(f"⚠️  Errore durante la pulizia delle entità obsolete: {e}")
 
 
 def ensure_root_ca_exists(base_dir="./data/root_ca"):
@@ -169,11 +334,11 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
             root_ca, root_ca_created = ensure_root_ca_exists()
             
             # Comando per avviare RootCA
-            start_cmd = f"python server.py --entity RootCA --id ROOT_CA"
+            start_cmd = f"python server.py --entity RootCA --id ROOT_CA --port 5999"
             config["start_commands"].append({
                 "entity": "ROOT_CA",
                 "command": start_cmd,
-                "description": f"Start Root CA (auto port 5999, PKI trust anchor)"
+                "description": f"Start Root CA (port 5999, PKI trust anchor)"
             })
             
             if root_ca_created:
@@ -193,71 +358,139 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
         print(f"⚠️  ATTENZIONE: Richieste {num_aa} AA, ma il massimo è 20. Limito a 20.")
         num_aa = 20
     
+    # STEP 2: Prepara lista delle entità che saranno create
+    entities_to_keep = []
+    
+    # Aggiungi RootCA e TLM sempre
+    entities_to_keep.extend(["ROOT_CA", "TLM_MAIN"])
+    
+    # Ottieni lista delle entità esistenti
+    existing_eas = find_existing_entities("EA")
+    existing_aas = find_existing_entities("AA")
+    
+    print(f"📊 Entità esistenti rilevate: {len(existing_eas)} EA, {len(existing_aas)} AA")
+    if existing_eas:
+        print(f"   EA esistenti: {', '.join(existing_eas)}")
+    if existing_aas:
+        print(f"   AA esistenti: {', '.join(existing_aas)}")
+    print()
+    
+    # Determina quali EA saranno create
+    created_eas = []
+    for i in range(num_ea):
+        if ea_names and i < len(ea_names) and ea_names[i]:
+            desired_ea_name = ea_names[i]
+            ea_id = generate_entity_name_with_suffix(desired_ea_name, existing_eas)
+            if ea_id != desired_ea_name:
+                print(f"🆕 EA '{desired_ea_name}' già esistente, verrà creata come '{ea_id}'")
+            else:
+                print(f"🆕 EA '{ea_id}' sarà creata")
+            entities_to_keep.append(ea_id)
+            created_eas.append(ea_id)
+        else:
+            # Trova prossimo numero disponibile (saltando quelli esistenti)
+            ea_num = 1
+            while True:
+                ea_id = f"EA_{ea_num:03d}"
+                if ea_id not in entities_to_keep and ea_id not in existing_eas:
+                    entities_to_keep.append(ea_id)
+                    created_eas.append(ea_id)
+                    break
+                ea_num += 1
+    
+    # Determina quali AA saranno create
+    created_aas = []
+    for i in range(num_aa):
+        if aa_names and i < len(aa_names) and aa_names[i]:
+            desired_aa_name = aa_names[i]
+            aa_id = generate_entity_name_with_suffix(desired_aa_name, existing_aas)
+            if aa_id != desired_aa_name:
+                print(f"🆕 AA '{desired_aa_name}' già esistente, verrà creata come '{aa_id}'")
+            else:
+                print(f"🆕 AA '{aa_id}' sarà creata")
+            entities_to_keep.append(aa_id)
+            created_aas.append(aa_id)
+        else:
+            # Trova prossimo numero disponibile (saltando quelli esistenti)
+            aa_num = 1
+            while True:
+                aa_id = f"AA_{aa_num:03d}"
+                if aa_id not in entities_to_keep and aa_id not in existing_aas:
+                    entities_to_keep.append(aa_id)
+                    created_aas.append(aa_id)
+                    break
+                aa_num += 1
+    
+    # Pulisci entità obsolete dalla configurazione
+    print("🧹 Pulizia entità obsolete...")
+    cleanup_obsolete_entities(entities_to_keep, "EA")
+    cleanup_obsolete_entities(entities_to_keep, "AA")
+    print("✅ Pulizia completata\n")
+    
+    # Controlla porte già in uso
+    print("🔍 Controllo porte già in uso...")
+    used_ports = find_used_ports()
+    if used_ports:
+        print(f"   Porte già in uso: {sorted(used_ports)}")
+    else:
+        print("   Nessuna porta in uso rilevata")
+    print()
+    
     # Genera configurazioni EA
     if num_ea > 0:
         print(f"📝 Generazione configurazioni per {num_ea} Enrollment Authorities...")
-        existing_eas = find_existing_entities("EA")
+        print(f"   Verranno create/riutilizzate: {', '.join(created_eas)}")
         
-        for i in range(num_ea):
-            # Usa nome custom se fornito, altrimenti auto-genera
-            if ea_names and i < len(ea_names) and ea_names[i]:
-                ea_id = ea_names[i]
-                # Verifica che non esista già
-                if ea_id in existing_eas:
-                    print(f"  ⚠️  EA '{ea_id}' già esistente, SKIP (non verrà duplicato)")
-                    continue  # Skip this entity, don't add it again
-            else:
-                # Trova prossimo numero disponibile
-                ea_num = 1
-                while True:
-                    ea_id = f"EA_{ea_num:03d}"
-                    if ea_id not in existing_eas:
-                        break
-                    ea_num += 1
+        for ea_id in created_eas:
+            # Trova prossima porta disponibile per EA (5000-5019)
+            ea_port = 5000
+            while ea_port in used_ports and ea_port <= 5019:
+                ea_port += 1
             
-            # Comando per avviare (senza --port, usa auto-selezione)
-            start_cmd = f"python server.py --entity EA --id {ea_id}"
+            if ea_port > 5019:
+                print(f"  ❌ ERRORE: Non ci sono porte disponibili per {ea_id} (range EA esaurito)")
+                continue
+                
+            used_ports.add(ea_port)  # Marca come usata
+            start_cmd = f"python server.py --entity EA --id {ea_id} --port {ea_port}"
             config["start_commands"].append({
                 "entity": ea_id,
                 "command": start_cmd,
-                "description": f"Start Enrollment Authority {ea_id} (auto port 5000-5019)"
+                "description": f"Start Enrollment Authority {ea_id} (port {ea_port})"
             })
             
-            existing_eas.append(ea_id)
-            print(f"  ✅ {ea_id} configurato (porta auto-assegnata dal range 5000-5019)")
+            if ea_id in existing_eas:
+                print(f"  🔄 {ea_id} esistente riutilizzato (porta {ea_port})")
+            else:
+                print(f"  ✅ {ea_id} configurato (porta {ea_port})")
     
     # Genera configurazioni AA
     if num_aa > 0:
         print(f"\n🎫 Generazione configurazioni per {num_aa} Authorization Authorities...")
-        existing_aas = find_existing_entities("AA")
+        print(f"   Verranno create/riutilizzate: {', '.join(created_aas)}")
         
-        for i in range(num_aa):
-            # Usa nome custom se fornito, altrimenti auto-genera
-            if aa_names and i < len(aa_names) and aa_names[i]:
-                aa_id = aa_names[i]
-                # Verifica che non esista già
-                if aa_id in existing_aas:
-                    print(f"  ⚠️  AA '{aa_id}' già esistente, SKIP (non verrà duplicato)")
-                    continue  # Skip this entity, don't add it again
-            else:
-                # Trova prossimo numero disponibile
-                aa_num = 1
-                while True:
-                    aa_id = f"AA_{aa_num:03d}"
-                    if aa_id not in existing_aas:
-                        break
-                    aa_num += 1
+        for aa_id in created_aas:
+            # Trova prossima porta disponibile per AA (5020-5039)
+            aa_port = 5020
+            while aa_port in used_ports and aa_port <= 5039:
+                aa_port += 1
             
-            # Comando per avviare (senza --port, usa auto-selezione)
-            start_cmd = f"python server.py --entity AA --id {aa_id}"
+            if aa_port > 5039:
+                print(f"  ❌ ERRORE: Non ci sono porte disponibili per {aa_id} (range AA esaurito)")
+                continue
+                
+            used_ports.add(aa_port)  # Marca come usata
+            start_cmd = f"python server.py --entity AA --id {aa_id} --port {aa_port}"
             config["start_commands"].append({
                 "entity": aa_id,
                 "command": start_cmd,
-                "description": f"Start Authorization Authority {aa_id} (auto port 5020-5039, creates EA_FOR_{aa_id})"
+                "description": f"Start Authorization Authority {aa_id} (port {aa_port}, creates EA_FOR_{aa_id})"
             })
             
-            existing_aas.append(aa_id)
-            print(f"  ✅ {aa_id} configurato (porta auto-assegnata dal range 5020-5039)")
+            if aa_id in existing_aas:
+                print(f"  🔄 {aa_id} esistente riutilizzato (porta {aa_port})")
+            else:
+                print(f"  ✅ {aa_id} configurato (porta {aa_port})")
     
     # Genera configurazione TLM (sempre singolo, centralizzato)
     if num_tlm > 0:
@@ -273,12 +506,12 @@ def generate_entity_configs(num_ea=0, num_aa=0, num_tlm=0, ea_names=None, aa_nam
         else:
             print(f"  🆕 Creazione nuovo TLM '{tlm_id}'")
         
-        # Comando per avviare (senza --port, usa auto-selezione)
-        start_cmd = f"python server.py --entity TLM --id {tlm_id}"
+        # Comando per avviare (con porta esplicita)
+        start_cmd = f"python server.py --entity TLM --id {tlm_id} --port 5050"
         config["start_commands"].append({
             "entity": tlm_id,
             "command": start_cmd,
-            "description": f"Start Trust List Manager (auto port 5050, central trust anchor repository)"
+            "description": f"Start Trust List Manager (port 5050, central trust anchor repository)"
         })
         
         print(f"  ✅ {tlm_id} configurato (porta 5050)")
@@ -341,8 +574,9 @@ def save_config(config, output_file="entity_configs.json"):
         print(f"  🆕 Creazione nuovo file di configurazione...")
     
     # Salva configurazione (sovrascrittura completa con dati merged)
-    with open(output_file, 'w') as f:
-        json.dump(config, f, indent=2)
+    # Use ensure_ascii=False to preserve non-ASCII characters in descriptions
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
     
     print(f"💾 Configurazione salvata in: {output_file}\n")
 
@@ -378,21 +612,6 @@ def generate_batch_script(config, output_file="start_all_entities.bat"):
     print(f"📜 Script batch Windows salvato in: {output_file}")
 
 
-def generate_powershell_script(config, output_file="start_all_entities.ps1"):
-    """Genera script PowerShell per avviare tutte le entità"""
-    with open(output_file, 'w') as f:
-        f.write("# Script generato automaticamente per avviare tutte le entità PKI\n")
-        f.write("# Ogni entità viene avviata in una nuova finestra PowerShell\n\n")
-        
-        for cmd_info in config["start_commands"]:
-            entity_id = cmd_info["entity"]
-            command = cmd_info["command"]
-            f.write(f'Start-Process powershell -ArgumentList "-NoExit", "-Command", "{command}"\n')
-        
-        f.write('\nWrite-Host "Tutte le entità sono state avviate in finestre separate!" -ForegroundColor Green\n')
-    
-    print(f"📜 Script PowerShell salvato in: {output_file}\n")
-
 
 def start_entities_in_vscode_terminals(config):
     """
@@ -427,7 +646,30 @@ def start_entities_in_vscode_terminals(config):
     print(f"  📌 Using: {pythonw_exe}")
     print()
     
-    for idx, cmd_info in enumerate(config["start_commands"]):
+    # Filtra le entità da avviare: salta RootCA e TLM se già attivi
+    entities_to_start = []
+    for cmd_info in config["start_commands"]:
+        entity_id = cmd_info["entity"]
+        command = cmd_info["command"]
+        
+        # Controlla se RootCA è già attivo sulla porta 5999
+        if entity_id == "ROOT_CA":
+            if check_entity_active(5999, "RootCA"):
+                print(f"  ⏭️  ROOT_CA already active on port 5999, skipping...")
+                continue
+        
+        # Controlla se TLM è già attivo sulla porta 5050
+        elif entity_id == "TLM_MAIN":
+            if check_entity_active(5050, "TLM"):
+                print(f"  ⏭️  TLM_MAIN already active on port 5050, skipping...")
+                continue
+        
+        entities_to_start.append(cmd_info)
+    
+    print(f"  📊 Will start {len(entities_to_start)} out of {len(config['start_commands'])} entities")
+    print()
+    
+    for idx, cmd_info in enumerate(entities_to_start):
         entity_id = cmd_info["entity"]
         command = cmd_info["command"]
         
@@ -531,20 +773,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Genera 3 EA, 2 AA + TLM con RootCA (default)
-  python setup.py --ea 3 --aa 2 --tlm
-  
-  # Genera 5 EA con nomi custom e li avvia
-  python setup.py --ea 5 --ea-names "EA_SEMAFORO_02,EA_SEMAFORO_04,EA_SEMAFORO_03"
-  
-  # Genera 2 AA con nomi custom (senza RootCA)
-  python setup.py --aa 2 --aa-names "AA_HIGHWAY,AA_CITY" --no-root-ca
-  
-  # Genera solo configurazioni senza avviare
-  python setup.py --ea 3 --aa 2 --tlm --no-auto-start
-  
-  # Carica da file JSON e avvia
-  python setup.py --config dashboard_request.json
+    # Genera 3 EA, 2 AA + TLM con RootCA (default)
+    python setup.py --ea 3 --aa 2 --tlm
+
+    # Recommended: crea un file JSON (UTF-8) e passa --config to avoid quoting/encoding issues
+    # Esempio file `my_entities.json`:
+    # {
+    #   "num_ea": 5,
+    #   "ea_names": ["EA_SEMAFORO_02","EA_SEMAFORO_04","EA_SEMAFORO_03"]
+    # }
+    python setup.py --config my_entities.json
+
+    # Genera solo configurazioni senza avviare
+    python setup.py --ea 3 --aa 2 --tlm --no-auto-start
+
+    # Nota: --ea-names/--aa-names rimangono supportati come modalità legacy,
+    # ma l'approccio con --config è raccomandato per sicurezza e compatibilità.
 
 Note:
   - RootCA viene verificata/creata automaticamente (disabilita con --no-root-ca)
@@ -581,19 +825,63 @@ Note:
         aa_names = [name.strip() for name in args.aa_names.split(',') if name.strip()]
         print(f"📝 Nomi custom per AA: {aa_names}")
     
+    # Helper: sanitize entity id to avoid shells / file injection
+    def sanitize_entity_id(name, max_len=64):
+        if not isinstance(name, str):
+            name = str(name)
+        # Trim
+        n = name.strip()
+        # Replace spaces with underscore
+        n = re.sub(r"\s+", "_", n)
+        # Remove problematic chars, allow letters, digits, underscore, hyphen and dot
+        n = re.sub(r"[^A-Za-z0-9_\-\.]+", "_", n)
+        # Collapse multiple underscores
+        n = re.sub(r"_+", "_", n)
+        # Trim leading/trailing underscores/dots/hyphens
+        n = n.strip('._-')
+        if not n:
+            n = 'entity'
+        # Limit length
+        if len(n) > max_len:
+            n = n[:max_len]
+        return n
+    
     # Carica da file se specificato
     if args.config:
         if not os.path.exists(args.config):
             print(f"❌ Errore: File {args.config} non trovato!")
             sys.exit(1)
         
-        with open(args.config, 'r') as f:
+        with open(args.config, 'r', encoding='utf-8') as f:
             request_config = json.load(f)
         
         num_ea = request_config.get("num_ea", 0)
         num_aa = request_config.get("num_aa", 0)
         # TLM dal file: 0 o 1 (qualsiasi valore > 0 diventa 1)
         num_tlm = 1 if request_config.get("num_tlm", 0) > 0 else 0
+
+        # Read custom names from config (prefer lists, but accept comma strings)
+        rc_ea_names = request_config.get('ea_names')
+        if rc_ea_names:
+            if isinstance(rc_ea_names, str):
+                ea_names = [n.strip() for n in rc_ea_names.split(',') if n.strip()]
+            elif isinstance(rc_ea_names, list):
+                ea_names = [str(n).strip() for n in rc_ea_names if str(n).strip()]
+
+        rc_aa_names = request_config.get('aa_names')
+        if rc_aa_names:
+            if isinstance(rc_aa_names, str):
+                aa_names = [n.strip() for n in rc_aa_names.split(',') if n.strip()]
+            elif isinstance(rc_aa_names, list):
+                aa_names = [str(n).strip() for n in rc_aa_names if str(n).strip()]
+
+        # Sanitize names to produce safe entity IDs used in filenames/commands
+        ea_names = [sanitize_entity_id(n) for n in ea_names]
+        aa_names = [sanitize_entity_id(n) for n in aa_names]
+        if ea_names:
+            print(f"\n📝 Nomi custom per EA (da config): {ea_names}")
+        if aa_names:
+            print(f"📝 Nomi custom per AA (da config): {aa_names}")
     else:
         num_ea = args.ea
         num_aa = args.aa
@@ -623,9 +911,9 @@ Note:
     print_start_commands(config)
     
     # Genera script di avvio
-    if not args.no_scripts:
-        generate_batch_script(config)
-        generate_powershell_script(config)
+    #if not args.no_scripts:
+       # generate_batch_script(config)
+        # generate_powershell_script(config)  # RIMOSSO - ora start_all_entities.ps1 è fisso
     
     # Avvia automaticamente (comportamento predefinito, disabilitabile con --no-auto-start)
     if not args.no_auto_start:
@@ -635,7 +923,7 @@ Note:
         print("  Puoi avviare le entità con:\n")
         print("  1. Comandi manuali (vedi sopra)")
         print("  2. Script batch:      start_all_entities.bat")
-        print("  3. Script PowerShell: .\\start_all_entities.ps1")
+        print("  3. Script PowerShell: .\\start_all_entities.ps1 (fisso - non rigenerato)")
         print("  4. Rilanciare senza --no-auto-start per avvio automatico\n")
 
 

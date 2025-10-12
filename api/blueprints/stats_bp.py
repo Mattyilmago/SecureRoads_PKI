@@ -55,12 +55,12 @@ def create_stats_blueprint(entity_instance, entity_type):
                 if hasattr(bp.entity, 'crl_manager'):
                     try:
                         # Get revoked count from CRL metadata
-                        metadata_path = bp.entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
+                        metadata_path = bp.entity.crl_manager.metadata_path
                         if os.path.exists(metadata_path):
                             import json
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
-                                ec_revoked = len(metadata.get('revoked_certificates', []))
+                                ec_revoked = metadata.get('revoked_count', 0)
                     except:
                         pass
                 
@@ -103,12 +103,12 @@ def create_stats_blueprint(entity_instance, entity_type):
                 if hasattr(bp.entity, 'crl_manager'):
                     try:
                         # Get revoked count from CRL metadata
-                        metadata_path = bp.entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
+                        metadata_path = bp.entity.crl_manager.metadata_path
                         if os.path.exists(metadata_path):
                             import json
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
-                                at_revoked = len(metadata.get('revoked_certificates', []))
+                                at_revoked = metadata.get('revoked_count', 0)
                     except:
                         pass
                 
