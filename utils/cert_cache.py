@@ -32,7 +32,7 @@ def load_certificate_cached(cert_path: str) -> x509.Certificate:
         ValueError: If certificate format is invalid
     
     Example:
-        >>> cert = load_certificate_cached("data/root_ca/certificates/root_ca_certificate.pem")
+        >>> cert = load_certificate_cached("pki_data/root_ca/certificates/root_ca_certificate.pem")
         >>> print(cert.subject)
     
     Note:
@@ -70,7 +70,7 @@ def load_private_key_cached(
         ValueError: If key format is invalid or password is wrong
     
     Example:
-        >>> key = load_private_key_cached("data/root_ca/private_keys/root_ca_key.pem")
+        >>> key = load_private_key_cached("pki_data/root_ca/private_keys/root_ca_key.pem")
         >>> signature = key.sign(data, ...)
     
     Warning:
@@ -100,7 +100,7 @@ def invalidate_certificate_cache(cert_path: Optional[str] = None):
     
     Example:
         >>> # After certificate revocation:
-        >>> invalidate_certificate_cache("data/ea/EA_001/certificates/ea_cert.pem")
+        >>> invalidate_certificate_cache("pki_data/ea/EA_001/certificates/ea_cert.pem")
         
         >>> # Clear entire cache:
         >>> invalidate_certificate_cache()
@@ -125,7 +125,7 @@ def invalidate_key_cache(key_path: Optional[str] = None):
     
     Example:
         >>> # After key rotation:
-        >>> invalidate_key_cache("data/ea/EA_001/private_keys/ea_key.pem")
+        >>> invalidate_key_cache("pki_data/ea/EA_001/private_keys/ea_key.pem")
         
         >>> # Clear entire cache:
         >>> invalidate_key_cache()
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     
     import time
     
-    cert_path = "data/root_ca/certificates/root_ca_certificate.pem"
+    cert_path = "pki_data/root_ca/certificates/root_ca_certificate.pem"
     
     # First load (cold cache)
     start = time.time()

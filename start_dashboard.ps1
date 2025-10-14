@@ -12,6 +12,11 @@ Write-Host "  Dashboard + RootCA + TLM" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Forza HTTP per le entities avviate (evita TLS durante i test interattivi)
+$env:PKI_DISABLE_TLS = "1"
+$env:PKI_FORCE_HTTP = "1"
+Write-Host "[INFO] Modalita' HTTP forzata (TLS disabilitato)" -ForegroundColor Yellow
+
 # Verifica se la porta 8080 e' gia' in uso
 $portInUse = netstat -ano | Select-String ":8080" | Select-String "LISTENING"
 if ($portInUse) {
@@ -61,30 +66,36 @@ if (-not $SkipEntities) {
     # Directory root del progetto
     $projectRoot = $PSScriptRoot
     
+    # Always start RootCA and TLM
+
     # Avvia RootCA (porta 5999) usando Start-Job per tenerlo in background
     Write-Host "[1/2] Avvio RootCA sulla porta 5999..." -ForegroundColor Cyan
-    
+
     $rootcaJob = Start-Job -ScriptBlock {
         param($workDir)
+        $env:PKI_DISABLE_TLS = "1"
+        $env:PKI_FORCE_HTTP = "1"
         Set-Location $workDir
         python server.py --entity RootCA --port 5999
     } -ArgumentList $projectRoot
-    
+
     if ($rootcaJob) {
         Write-Host "      RootCA avviato (Job ID: $($rootcaJob.Id))" -ForegroundColor Green
     } else {
         Write-Host "      ERRORE: Impossibile avviare RootCA" -ForegroundColor Red
     }
-    
+
     # Avvia TLM (porta 5050)
     Write-Host "[2/2] Avvio TLM sulla porta 5050..." -ForegroundColor Cyan
-    
+
     $tlmJob = Start-Job -ScriptBlock {
         param($workDir)
+        $env:PKI_DISABLE_TLS = "1"
+        $env:PKI_FORCE_HTTP = "1"
         Set-Location $workDir
         python server.py --entity TLM --id TLM_MAIN --port 5050
     } -ArgumentList $projectRoot
-    
+
     if ($tlmJob) {
         Write-Host "      TLM avviato (Job ID: $($tlmJob.Id))" -ForegroundColor Green
     } else {

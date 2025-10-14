@@ -106,6 +106,8 @@ class TrustListManager:
 
     def add_trust_anchor(self, certificate, authority_type="UNKNOWN"):
         """Adds a trusted CA to the Certificate Trust List."""
+        from filelock import FileLock
+        
         # Usa Subject + SKI invece del serial number
         cert_id = get_certificate_identifier(certificate)
         ski = get_certificate_ski(certificate)
@@ -119,32 +121,48 @@ class TrustListManager:
         self.logger.info(f"  Tipo: {authority_type}")
         self.logger.info(f"  Scadenza: {expiry_date}")
 
-        # Controlla se già presente (usa SKI per confronto)
-        if any(anchor["ski"] == ski for anchor in self.trust_anchors):
-            self.logger.info(f"Trust anchor già presente nella lista")
-            return
+        # LOCK ATOMICO: load + check + add + save devono essere atomici
+        lock_path = self.metadata_path + ".lock"
+        lock = FileLock(lock_path, timeout=10)
+        
+        try:
+            with lock:
+                # IMPORTANTE: Ricarica metadata per fare merge con anchor già salvati da altri processi
+                self.load_metadata()
 
-        trust_anchor_entry = {
-            "certificate": certificate,
-            "cert_id": cert_id,  # Identificatore human-readable (Subject + SKI)
-            "ski": ski,  # Subject Key Identifier per confronti univoci
-            "subject_name": subject_name,
-            "authority_type": authority_type,
-            "added_date": added_date,
-            "expiry_date": expiry_date,
-            # Mantieni serial_number per backward compatibility (solo logging)
-            "serial_number": certificate.serial_number,
-        }
+                # Controlla se già presente (usa SKI per confronto)
+                if any(anchor["ski"] == ski for anchor in self.trust_anchors):
+                    self.logger.info(f"Trust anchor già presente nella lista")
+                    return
 
-        # Aggiunge a entrambe le liste
-        self.trust_anchors.append(trust_anchor_entry)
-        self.delta_additions.append(trust_anchor_entry)
+                trust_anchor_entry = {
+                    "certificate": certificate,
+                    "cert_id": cert_id,  # Identificatore human-readable (Subject + SKI)
+                    "ski": ski,  # Subject Key Identifier per confronti univoci
+                    "subject_name": subject_name,
+                    "authority_type": authority_type,
+                    "added_date": added_date,
+                    "expiry_date": expiry_date,
+                    # Mantieni serial_number per backward compatibility (solo logging)
+                    "serial_number": certificate.serial_number,
+                }
 
-        self.logger.info(f"Trust anchor aggiunto. Totale: {len(self.trust_anchors)}")
-        self.logger.info(f"Aggiunte delta pending: {len(self.delta_additions)}")
+                # Aggiunge a entrambe le liste
+                self.trust_anchors.append(trust_anchor_entry)
+                self.delta_additions.append(trust_anchor_entry)
 
-        # Genera automaticamente link certificate per questa CA
-        self._generate_link_certificate_for_authority(certificate, authority_type)
+                self.logger.info(f"Trust anchor aggiunto. Totale: {len(self.trust_anchors)}")
+                self.logger.info(f"Aggiunte delta pending: {len(self.delta_additions)}")
+
+                # Genera automaticamente link certificate per questa CA
+                self._generate_link_certificate_for_authority(certificate, authority_type)
+                
+                # Salva metadata per persistenza (skip lock perché siamo già dentro il lock!)
+                self.save_metadata(_skip_lock=True)
+                
+        except Exception as e:
+            self.logger.error(f"❌ Errore durante add_trust_anchor con lock: {e}")
+            raise
 
     def remove_trust_anchor(self, certificate, reason="unspecified"):
         """
@@ -198,6 +216,9 @@ class TrustListManager:
 
         # Rimuovi anche i link certificates associati
         self._remove_link_certificates_for_ski(ski)
+        
+        # Salva metadata per persistenza
+        self.save_metadata()
 
     def is_trusted(self, certificate):
         """
@@ -869,12 +890,30 @@ class TrustListManager:
         Simile a cleanup nel CRLManager, ma per certificati fidati.
         Un certificato scaduto non può più essere usato per firmare,
         quindi non serve mantenerlo nei trust anchors.
+        
+        IMPORTANTE - AGGIORNAMENTO AUTOMATICO METRICHE:
+        Questo metodo viene chiamato automaticamente in diversi momenti per garantire
+        che i conteggi siano sempre aggiornati secondo gli standard ETSI:
+        
+        1. Quando viene pubblicata una Full CTL (publish_full_ctl)
+        2. Quando vengono richieste le statistiche (get_statistics)
+        3. Quando il dashboard richiede metriche (/api/monitoring/metrics)
+        4. Quando viene richiesto lo stato dell'entità (/api/stats)
+        
+        Questo garantisce che:
+        - I trust anchors scaduti vengono rimossi automaticamente
+        - Le metriche riflettono sempre lo stato reale del sistema
+        - La dashboard mostra conteggi accurati e aggiornati
+        - Il sistema è conforme agli standard ETSI TS 102 941
+        
+        Le rimozioni vengono tracciate anche nei delta_removals per il prossimo Delta CTL.
         """
         now = datetime.now(timezone.utc)
         old_count = len(self.trust_anchors)
 
         # Filtra solo trust anchors non ancora scaduti
         filtered = []
+        expired_anchors = []
         for anchor in self.trust_anchors:
             expiry_date = anchor.get("expiry_date")
             if expiry_date:
@@ -883,14 +922,31 @@ class TrustListManager:
                 if expiry_date > now:
                     filtered.append(anchor)
                 else:
+                    expired_anchors.append(anchor)
                     self.logger.info(f"Rimozione trust anchor scaduto: {anchor['subject_name']}")
 
         self.trust_anchors = filtered
+        
+        # Aggiungi gli anchor scaduti ai delta_removals per tracciamento
+        for anchor in expired_anchors:
+            removal_entry = {
+                "cert_id": anchor.get("cert_id"),
+                "ski": anchor.get("ski"),
+                "subject_name": anchor.get("subject_name"),
+                "removal_date": now,
+                "reason": "expired",
+                "serial_number": anchor.get("serial_number"),
+            }
+            # Evita duplicati nei delta_removals
+            if not any(r.get("ski") == removal_entry["ski"] for r in self.delta_removals):
+                self.delta_removals.append(removal_entry)
 
         removed = old_count - len(self.trust_anchors)
         if removed > 0:
             self.logger.info(f"Pulizia: rimossi {removed} trust anchors scaduti")
             self.logger.info(f"Trust anchors attivi rimasti: {len(self.trust_anchors)}")
+            # Salva metadata per persistenza
+            self.save_metadata()
 
     def load_full_ctl(self):
         """
@@ -939,13 +995,17 @@ class TrustListManager:
 
         return delta_data
 
-    def save_metadata(self):
+    def save_metadata(self, _skip_lock=False):
         """
         Salva metadata TLM su file JSON per persistenza.
 
         Simile a CRLManager, mantiene stato tra restart.
         Salva anche i trust anchors in formato serializzabile.
+        NOTA: _skip_lock=True quando chiamato da dentro add_trust_anchor() che ha già il lock.
         """
+        import tempfile
+        from pathlib import Path
+        
         # Serializza trust anchors (solo i campi necessari, non il certificato completo)
         serialized_anchors = []
         for anchor in self.trust_anchors:
@@ -976,8 +1036,44 @@ class TrustListManager:
             "link_certificates_count": len(self.link_certificates),
         }
 
-        with open(self.metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        def _do_save():
+            """Funzione interna per salvare (usata con/senza lock)"""
+            # Scrivi su file temporaneo e rename atomico
+            temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(self.metadata_path), text=True)
+            try:
+                with os.fdopen(temp_fd, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                
+                # Atomic rename (gestione Windows vs Unix)
+                if os.name == 'nt':
+                    # Windows: rimuovi prima il file esistente
+                    if os.path.exists(self.metadata_path):
+                        try:
+                            os.remove(self.metadata_path)
+                        except OSError:
+                            pass
+                    os.rename(temp_path, self.metadata_path)
+                else:
+                    # Unix: rename atomico sovrascrive
+                    os.rename(temp_path, self.metadata_path)
+                
+            except Exception as e:
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                raise
+
+        # Se skip_lock=True (chiamato da dentro add_trust_anchor che ha già il lock)
+        if _skip_lock:
+            _do_save()
+        else:
+            # Altrimenti usa file lock
+            from filelock import FileLock
+            lock_path = self.metadata_path + ".lock"
+            lock = FileLock(lock_path, timeout=10)
+            with lock:
+                _do_save()
 
         self.logger.info(f"Metadata salvati: {self.metadata_path}")
         self.logger.info(f"  Trust anchors salvati: {len(serialized_anchors)}")
@@ -986,6 +1082,7 @@ class TrustListManager:
         """
         Carica metadata TLM da file JSON.
         Ricarica anche i trust anchors salvati.
+        NOTA: Deve essere chiamato dentro un lock quando usato da add_trust_anchor().
         """
         if not os.path.exists(self.metadata_path):
             self.logger.info(f"Nessun metadata esistente, inizializzo nuovo")
@@ -1002,6 +1099,9 @@ class TrustListManager:
             if last_full:
                 self.last_full_ctl_time = datetime.fromisoformat(last_full)
 
+            # IMPORTANTE: Svuota la lista prima di ricaricare per evitare duplicati
+            self.trust_anchors.clear()
+            
             # NUOVO: Ricarica trust anchors
             serialized_anchors = metadata.get("trust_anchors", [])
             if serialized_anchors:
@@ -1034,15 +1134,22 @@ class TrustListManager:
             self.logger.info(f"  Trust anchors ricaricati: {len(self.trust_anchors)}")
 
         except Exception as e:
-            self.logger.info(f"Errore caricamento metadata: {e}")
+            self.logger.error(f"Errore caricamento metadata: {e}")
 
     def get_statistics(self):
         """
         Restituisce statistiche sullo stato del Trust List Manager.
+        
+        IMPORTANTE: Ricarica metadata prima di restituire le statistiche
+        per garantire che i dati siano aggiornati (necessario quando EA/AA
+        si registrano tramite istanze TLM locali).
 
         Returns:
             dict con statistiche
         """
+        # Ricarica metadata per ottenere trust anchors aggiornati
+        self.load_metadata()
+        
         stats = {
             "ctl_number": self.ctl_number,
             "base_ctl_number": self.base_ctl_number,

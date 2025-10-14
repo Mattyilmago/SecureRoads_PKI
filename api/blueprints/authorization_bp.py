@@ -217,24 +217,40 @@ def create_authorization_blueprint(aa_instance):
             if enrollment_cert and hasattr(bp.aa, "tlm") and bp.aa.tlm is not None and len(bp.aa.tlm.trust_anchors) > 0:
                 # Modern approach: Use TLM
                 current_app.logger.info("Validating EC with TLM...")
+                current_app.logger.info(f"TLM has {len(bp.aa.tlm.trust_anchors)} trust anchors")
                 try:
                     # Check if the EC issuer is in TLM trust anchors for EA
                     ea_issuer_name = enrollment_cert.issuer.rfc4514_string()
-                    for anchor in bp.aa.tlm.trust_anchors:
-                        if anchor["authority_type"] == "EA" and anchor["certificate"].subject.rfc4514_string() == ea_issuer_name:
+                    current_app.logger.info(f"EC Issuer (EA): {ea_issuer_name}")
+                    
+                    # Log all EA trust anchors for debugging
+                    ea_anchors = [a for a in bp.aa.tlm.trust_anchors if a["authority_type"] == "EA"]
+                    current_app.logger.info(f"Found {len(ea_anchors)} EA trust anchors in TLM:")
+                    for anchor in ea_anchors:
+                        anchor_subject = anchor["certificate"].subject.rfc4514_string()
+                        current_app.logger.info(f"  - {anchor_subject}")
+                        if anchor_subject == ea_issuer_name:
                             is_trusted = True
                             current_app.logger.info("✓ EA is trusted by TLM")
                             break
+                    
                     if not is_trusted:
-                        current_app.logger.warning("✗ EA not in TLM trust list")
+                        current_app.logger.warning(f"✗ EA '{ea_issuer_name}' not found in TLM trust list")
+                        current_app.logger.warning(f"   Available EA count: {len(ea_anchors)}")
                 except Exception as e:
                     current_app.logger.error(f"TLM validation error: {e}")
+                    import traceback
+                    current_app.logger.error(traceback.format_exc())
             else:
                 # Legacy approach: Validate with EA directly or skip in testing mode
-                current_app.logger.info("TLM not available or empty, using legacy EA validation")
-                # In production, make HTTP request to EA validation endpoint
-                # For now, assume trusted if not revoked
-                is_trusted = True
+                if enrollment_cert:
+                    current_app.logger.info("TLM not available or empty, using legacy EA validation")
+                    # In production, make HTTP request to EA validation endpoint
+                    # For now, assume trusted if not revoked
+                    is_trusted = True
+                else:
+                    current_app.logger.info("No enrollment certificate provided, accepting in testing mode")
+                    is_trusted = True
 
             if not is_trusted:
                 current_app.logger.warning("Enrollment Certificate not trusted")

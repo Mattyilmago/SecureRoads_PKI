@@ -5,7 +5,7 @@ Centralizza tutta la logica di gestione dei path del filesystem PKI per garantir
 consistenza tra tutte le entità (RootCA, EA, AA, TLM, ITS Station).
 
 Previene problemi come:
-- Directory duplicate (es: data/ea/EA_001/EA_001/)
+- Directory duplicate (es: pki_data/ea/EA_001/EA_001/)
 - Path inconsistenti tra entità diverse
 - Difficoltà nel refactoring della struttura directory
 
@@ -78,7 +78,7 @@ class PKIPathManager:
     Gestisce la struttura delle directory del filesystem PKI.
     
     Struttura standard:
-        data/
+        pki_data/
         ├── root_ca/
         │   ├── certificates/
         │   ├── private_keys/
@@ -124,7 +124,7 @@ class PKIPathManager:
     
     # Directory radice del progetto PKI
     PROJECT_ROOT = Path(__file__).parent.parent
-    DATA_ROOT = PROJECT_ROOT / "data"
+    DATA_ROOT = PROJECT_ROOT / "pki_data" 
     
     # Entity type directories
     ENTITY_TYPE_DIRS = {
@@ -159,7 +159,7 @@ class PKIPathManager:
         Example:
             >>> paths = PKIPathManager.get_entity_paths("EA", "EA_001")
             >>> print(paths.base_dir)
-            PosixPath('data/ea/EA_001')
+            PosixPath('pki_data/ea/EA_001')
         """
         # Check cache per performance
         cache_key = (entity_type.upper(), entity_id, base_dir)
@@ -180,8 +180,8 @@ class PKIPathManager:
             base_path = Path(base_dir)
             
             # IMPORTANTE: Se base_dir contiene già entity_id, non duplicare!
-            # Es: se base_dir = "data/ea/EA_001", NON aggiungere /EA_001
-            # Per RootCA: "data/root_ca" contiene già la struttura corretta
+            # Es: se base_dir = "pki_data/ea/EA_001", NON aggiungere /EA_001
+            # Per RootCA: "pki_data/root_ca" contiene già la struttura corretta
             if entity_type == "ROOTCA":
                 # RootCA non ha sottodirectory per entity_id
                 pass
@@ -244,8 +244,8 @@ class PKIPathManager:
         Normalizza un base_dir per evitare duplicazioni di entity_id.
         
         Previene errori come:
-            Input: base_dir="data/ea/EA_001", entity_id="EA_001"
-            Output: data/ea/EA_001 (NON data/ea/EA_001/EA_001)
+            Input: base_dir="pki_data/ea/EA_001", entity_id="EA_001"
+            Output: pki_data/ea/EA_001 (NON pki_data/ea/EA_001/EA_001)
         
         Args:
             entity_type: Tipo di entità

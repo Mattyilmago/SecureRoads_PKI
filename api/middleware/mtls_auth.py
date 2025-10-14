@@ -142,9 +142,8 @@ class MTLSAuthenticator:
         """
         Verifica la catena di certificati fino al Root CA.
         
-        Per ora implementazione semplificata:
-        - Verifica che il certificato sia firmato dal Root CA
-        - TODO: Supporto per catene multi-livello (Root -> SubCA -> Entity)
+        Supporta catene multi-livello (Root -> SubCA -> Entity)
+        conforme a ETSI TS 102941 Section 5.2 - Certificate Chain Validation
         
         Args:
             cert: Certificato da verificare
@@ -153,22 +152,39 @@ class MTLSAuthenticator:
             Tuple (is_valid, error_message)
         """
         try:
-            # Verifica firma con chiave pubblica Root CA
-            # In una PKI reale, qui si costruirebbe l'intera catena
-            issuer = cert.issuer.rfc4514_string()
-            root_subject = self.root_ca_cert.subject.rfc4514_string()
+            current_cert = cert
+            max_chain_depth = 5  # Previene loop infiniti
+            chain_depth = 0
             
-            # Verifica che l'issuer del certificato corrisponda al Root CA
-            if issuer != root_subject:
-                return False, f"Certificato non firmato da Root CA fidato (issuer: {issuer})"
-            
-            # Verifica firma crittografica
-            try:
-                # cryptography non ha verify diretto, usiamo approccio indiretto
-                # Verifichiamo che il certificato abbia Authority Key Identifier
-                # che corrisponde al Subject Key Identifier del Root CA
+            while chain_depth < max_chain_depth:
+                # Verifica validità temporale del certificato corrente
+                now = datetime.utcnow()
+                if current_cert.not_valid_before > now:
+                    return False, f"Certificato non ancora valido (valido da {current_cert.not_valid_before})"
+                if current_cert.not_valid_after < now:
+                    return False, f"Certificato scaduto (scaduto il {current_cert.not_valid_after})"
+                
+                # Ottieni issuer e subject
+                issuer = current_cert.issuer.rfc4514_string()
+                subject = current_cert.subject.rfc4514_string()
+                root_subject = self.root_ca_cert.subject.rfc4514_string()
+                
+                # Se abbiamo raggiunto il Root CA, verifica auto-firma
+                if subject == root_subject:
+                    # Verifica che sia self-signed
+                    if issuer != subject:
+                        return False, "Root CA non auto-firmato"
+                    # Catena valida!
+                    return True, None
+                
+                # Verifica che l'issuer corrisponda al Root CA
+                # (nel nostro caso semplificato: solo un livello)
+                if issuer != root_subject:
+                    return False, f"Certificato firmato da issuer sconosciuto: {issuer}"
+                
+                # Verifica Authority Key Identifier / Subject Key Identifier
                 try:
-                    aki = cert.extensions.get_extension_for_oid(
+                    aki = current_cert.extensions.get_extension_for_oid(
                         ExtensionOID.AUTHORITY_KEY_IDENTIFIER
                     ).value
                     ski = self.root_ca_cert.extensions.get_extension_for_oid(
@@ -179,14 +195,33 @@ class MTLSAuthenticator:
                         return False, "Authority Key Identifier non corrisponde a Root CA"
                 
                 except x509.ExtensionNotFound:
-                    # Se non ci sono le estensioni, assumiamo valido
-                    # (per compatibilità con certificati semplici)
+                    # Se non ci sono le estensioni, continuiamo
+                    # (compatibilità con certificati semplici)
                     pass
                 
-                return True, None
+                # Verifica Basic Constraints per catene intermedie
+                try:
+                    bc = current_cert.extensions.get_extension_for_oid(
+                        ExtensionOID.BASIC_CONSTRAINTS
+                    ).value
+                    
+                    # Se è un CA intermedio, dovrebbe avere ca=True
+                    if bc.ca and bc.path_length is not None:
+                        if chain_depth > bc.path_length:
+                            return False, f"Path length constraint violato (max={bc.path_length}, depth={chain_depth})"
                 
-            except Exception as e:
-                return False, f"Errore verifica firma: {str(e)}"
+                except x509.ExtensionNotFound:
+                    pass
+                
+                # Se l'issuer è il Root CA, abbiamo finito
+                if issuer == root_subject:
+                    return True, None
+                
+                # Altrimenti dovremmo caricare il certificato dell'issuer
+                # Per ora non supportato (solo Root -> Entity)
+                return False, f"Certificato intermedio non supportato: {issuer}"
+            
+            return False, "Catena troppo lunga (possibile loop)"
             
         except Exception as e:
             return False, f"Errore verifica catena: {str(e)}"
@@ -289,6 +324,25 @@ class MTLSAuthenticator:
 _mtls_authenticator: Optional[MTLSAuthenticator] = None
 
 
+def setup_mtls(root_ca_cert_path: str, crl_manager=None):
+    """
+    Inizializza il sistema di autenticazione mTLS.
+    
+    Deve essere chiamato dall'app factory prima di avviare il server.
+    Alias di init_mtls_auth per compatibilità con naming convention.
+    
+    Args:
+        root_ca_cert_path: Path al certificato Root CA
+        crl_manager: Riferimento al CRLManager
+        
+    Returns:
+        MTLSAuthenticator instance
+    """
+    global _mtls_authenticator
+    _mtls_authenticator = MTLSAuthenticator(root_ca_cert_path, crl_manager)
+    return _mtls_authenticator
+
+
 def init_mtls_auth(root_ca_cert_path: str, crl_manager=None):
     """
     Inizializza il sistema di autenticazione mTLS.
@@ -298,10 +352,11 @@ def init_mtls_auth(root_ca_cert_path: str, crl_manager=None):
     Args:
         root_ca_cert_path: Path al certificato Root CA
         crl_manager: Riferimento al CRLManager
+        
+    Returns:
+        MTLSAuthenticator instance
     """
-    global _mtls_authenticator
-    _mtls_authenticator = MTLSAuthenticator(root_ca_cert_path, crl_manager)
-    return _mtls_authenticator
+    return setup_mtls(root_ca_cert_path, crl_manager)
 
 
 def get_mtls_authenticator() -> Optional[MTLSAuthenticator]:

@@ -36,10 +36,13 @@ from utils.metrics import get_metrics_collector
 
 
 class EnrollmentAuthority:
-    def __init__(self, root_ca, ea_id=None, base_dir="./data/ea/"):
+    def __init__(self, root_ca, ea_id=None, base_dir="./pki_data/ea/", tlm=None):
         # Genera un ID randomico se non specificato
         if ea_id is None:
             ea_id = f"EA_{secrets.token_hex(4).upper()}"
+
+        # Store TLM reference for auto-registration
+        self._tlm_for_registration = tlm
 
         # Usa PKIPathManager per gestire i path in modo centralizzato
         paths = PKIPathManager.get_entity_paths("EA", ea_id, base_dir)
@@ -131,6 +134,9 @@ class EnrollmentAuthority:
         self.logger.info("Inizializzando scheduler controllo certificati scaduti...")
         self._init_expiry_scheduler()
         self.logger.info("Scheduler certificati scaduti inizializzato!")
+
+        # Auto-register to TLM if available
+        self._auto_register_to_tlm()
 
         self.logger.info(f"Inizializzazione Enrollment Authority {ea_id} completata!")
 
@@ -269,9 +275,9 @@ class EnrollmentAuthority:
         self.crl_manager.revoke_by_serial(serial_hex, reason)
         self.logger.info("Certificato revocato tramite CRLManager")
 
-        # Pubblica Delta CRL incrementale
+        # Pubblica Delta CRL incrementale (senza backup per performance)
         self.logger.info("Pubblicando Delta CRL EA...")
-        self.crl_manager.publish_delta_crl()
+        self.crl_manager.publish_delta_crl(skip_backup=True)
         self.logger.info("Revoca completata!")
 
     # Aggiunge un certificato alla lista dei certificati revocati
@@ -295,9 +301,9 @@ class EnrollmentAuthority:
         self.crl_manager.add_revoked_certificate(certificate, reason)
         self.logger.info("Certificato aggiunto alla lista di revoca EA")
 
-        # Pubblica Delta CRL incrementale
+        # Pubblica Delta CRL incrementale (senza backup per performance)
         self.logger.info("Pubblicando Delta CRL EA...")
-        self.crl_manager.publish_delta_crl()
+        self.crl_manager.publish_delta_crl(skip_backup=True)
         self.logger.info("Revoca completata!")
 
     #  Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM
@@ -481,7 +487,7 @@ class EnrollmentAuthority:
         """
         Processa una EnrollmentRequest ETSI TS 102941 (ASN.1 OER encoded).
 
-        ?? FLUSSO COMPLETO:
+           FLUSSO COMPLETO:
         1. Decripta e decodifica EnrollmentRequest (ASN.1 OER)
         2. Verifica Proof of Possession (firma ITS-S)
         3. Emette Enrollment Certificate
@@ -586,3 +592,49 @@ class EnrollmentAuthority:
             certificate=None,
             itss_public_key=temp_key.public_key(),
         )
+
+    def _auto_register_to_tlm(self):
+        """
+        Auto-registrazione al TLM_MAIN se disponibile.
+        Usa TLM passato nel costruttore, oppure cerca nei globals, oppure crea istanza locale.
+        """
+        try:
+            from managers.trust_list_manager import TrustListManager
+            from utils.cert_utils import get_certificate_ski
+            
+            # 1. Usa TLM passato nel costruttore (priorità massima)
+            tlm = self._tlm_for_registration
+            
+            # 2. Cerca TLM esistente nei globals del modulo server (singleton pattern)
+            if tlm is None:
+                try:
+                    import sys
+                    if 'server' in sys.modules:
+                        server_module = sys.modules['server']
+                        if hasattr(server_module, 'PKIEntityManager'):
+                            manager = server_module.PKIEntityManager()
+                            tlm = manager._tlm_main_instance
+                except Exception:
+                    pass
+            
+            # 3. Se non trovato, crea TLM locale (fallback per script standalone)
+            if tlm is None:
+                self.logger.debug("TLM non trovato, creando istanza locale...")
+                tlm = TrustListManager(self.root_ca, base_dir="./pki_data/tlm")
+            
+            # Controlla se già registrato
+            ea_ski = get_certificate_ski(self.certificate)
+            already_registered = any(anchor.get("ski") == ea_ski for anchor in tlm.trust_anchors)
+            
+            if not already_registered:
+                tlm.add_trust_anchor(self.certificate, authority_type="EA")
+                self.logger.info(f"✅ Auto-registered {self.ea_id} to TLM")
+            else:
+                self.logger.debug(f"EA {self.ea_id} già registrato in TLM")
+                
+        except Exception as e:
+            # Auto-registration è best-effort, non blocca l'inizializzazione
+            self.logger.warning(f"Auto-registration to TLM skipped: {e}")
+            import traceback
+            traceback.print_exc()
+

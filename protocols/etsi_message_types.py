@@ -343,13 +343,17 @@ class ButterflyAuthorizationRequest:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self):
-        """Validate butterfly request"""
+        """Validate butterfly request according to ETSI TS 102941"""
         if self.batchSize != len(self.innerAtRequests):
             raise ValueError(
                 f"Batch size mismatch: expected {self.batchSize}, got {len(self.innerAtRequests)}"
             )
+        
+        # ETSI TS 102941 V2.1.1 Section 6.3.3: batch size limits
         if self.batchSize < 1 or self.batchSize > 100:
-            raise ValueError("Batch size must be between 1 and 100")
+            raise ValueError(
+                f"Batch size must be between 1 and 100 (ETSI TS 102941), got {self.batchSize}"
+            )
 
     def get_message_type(self) -> ETSIMessageType:
         """Returns the message type identifier"""

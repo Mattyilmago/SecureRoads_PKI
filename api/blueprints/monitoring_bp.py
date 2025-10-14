@@ -37,6 +37,66 @@ def get_metrics():
     stats_all = metrics.get_stats()
     stats_5min = metrics.get_stats(last_n_minutes=5)
     counters = metrics.get_counters()
+    
+    # Get entity-specific statistics
+    entity = current_app.config.get('ENTITY_INSTANCE')
+    entity_type = current_app.config.get('ENTITY_TYPE')
+    
+    # Add entity-specific counters based on type
+    if entity_type == 'TLM' and entity:
+        try:
+            # Cleanup expired trust anchors before getting stats
+            if hasattr(entity, '_cleanup_expired_trust_anchors'):
+                entity._cleanup_expired_trust_anchors()
+            
+            # Get TLM statistics
+            if hasattr(entity, 'get_statistics'):
+                tlm_stats = entity.get_statistics()
+                counters['trust_anchors'] = tlm_stats.get('total_trust_anchors', 0)
+                counters['enrolled_entities'] = tlm_stats.get('total_trust_anchors', 0)
+                counters['tlm_enrolled'] = tlm_stats.get('total_trust_anchors', 0)
+                counters['enrolled_eas'] = tlm_stats.get('trust_anchors_by_type', {}).get('EA', 0)
+                counters['enrolled_aas'] = tlm_stats.get('trust_anchors_by_type', {}).get('AA', 0)
+                counters['ctl_number'] = tlm_stats.get('ctl_number', 0)
+                counters['delta_additions_pending'] = tlm_stats.get('delta_additions_pending', 0)
+                counters['delta_removals_pending'] = tlm_stats.get('delta_removals_pending', 0)
+                current_app.logger.info(f"✅ TLM stats updated: {counters['trust_anchors']} trust anchors ({counters['enrolled_eas']} EA, {counters['enrolled_aas']} AA)")
+            elif hasattr(entity, 'trust_anchors'):
+                # Fallback to direct counting
+                trust_anchors_count = len(entity.trust_anchors)
+                counters['trust_anchors'] = trust_anchors_count
+                counters['enrolled_entities'] = trust_anchors_count
+                counters['tlm_enrolled'] = trust_anchors_count
+                
+                # Count by type
+                ea_count = sum(1 for a in entity.trust_anchors if a.get('authority_type') == 'EA')
+                aa_count = sum(1 for a in entity.trust_anchors if a.get('authority_type') == 'AA')
+                counters['enrolled_eas'] = ea_count
+                counters['enrolled_aas'] = aa_count
+        except Exception as e:
+            current_app.logger.error(f"❌ Error getting TLM stats: {e}")
+    
+    elif entity_type == 'RootCA' and entity:
+        try:
+            # Get RootCA statistics
+            if hasattr(entity, 'get_subordinate_statistics'):
+                root_stats = entity.get_subordinate_statistics()
+                counters['subordinate_cas'] = root_stats.get('total_subordinates', 0)
+                counters['rootca_issued_certificates'] = root_stats.get('total_subordinates', 0)
+                counters['issued_certificates'] = root_stats.get('total_subordinates', 0)
+                counters['active_certificates'] = root_stats.get('active_subordinates', 0)
+                counters['enrolled_eas'] = root_stats.get('ea_count', 0)
+                counters['enrolled_aas'] = root_stats.get('aa_count', 0)
+                current_app.logger.info(f"✅ RootCA stats updated: {counters['subordinate_cas']} subordinates ({counters['enrolled_eas']} EA, {counters['enrolled_aas']} AA), {counters['active_certificates']} active")
+            
+            # Get CRL statistics
+            if hasattr(entity, 'get_crl_statistics'):
+                crl_stats = entity.get_crl_statistics()
+                counters['crl_number'] = crl_stats.get('crl_number', 0)
+                counters['revoked_certificates'] = crl_stats.get('total_revoked', 0)
+        except Exception as e:
+            current_app.logger.error(f"❌ Error getting RootCA stats: {e}")
+    
     # active_certificates counter is now maintained in real-time (ETSI TS 102 941 compliant)
     
     return jsonify({

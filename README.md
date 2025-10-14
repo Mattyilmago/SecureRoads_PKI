@@ -234,7 +234,7 @@ from entities.authorization_authority import AuthorizationAuthority
 from entities.its_station import ITSStation
 
 # Setup PKI Infrastructure
-root_ca = RootCA(base_dir="data/root_ca")
+root_ca = RootCA(base_dir="pki_data/root_ca")
 ea = EnrollmentAuthority(root_ca=root_ca, ea_id="EA_HIGHWAY")
 aa = AuthorizationAuthority(
     ea_certificate_path=ea.ea_certificate_path,
@@ -381,10 +381,11 @@ SecureRoad-PKI/
 ├── protocols/             # ETSI messaging, Butterfly expansion
 ├── api/                   # REST API + middleware
 │   ├── blueprints/        # Blueprint per ogni endpoint
-│   ├── middleware/        # Auth, rate limiting, logging
+│   ├── middleware/        # Auth, rate limiting, mTLS
 │   └── flask_app_factory.py
 ├── utils/                 # Certificati, logging, metriche
-├── data/                  # Dati persistenti (certificati, chiavi, CRL)
+├── pki_data/              # Certificati PKI ETSI (EC, AT, Root)
+├── tls_data/              # Certificati TLS per HTTPS/mTLS
 ├── tests/                 # 130 test automatici
 ├── examples/              # Script dimostrativi e tester
 ├── scripts/               # Script gestione (start, stop, check)
@@ -394,10 +395,15 @@ SecureRoad-PKI/
 └── pki_dashboard.html     # Dashboard web interattiva
 ```
 
-### Architettura Directory `data/`
+### Architettura Directory PKI
+
+SecureRoad-PKI utilizza **due directory separate** per gestire i certificati:
+
+#### 1. **pki_data/** - Certificati PKI ETSI (V2X)
+Certificati conformi ETSI TS 102941 e IEEE 1609.2 per firmare messaggi V2X:
 
 ```
-data/
+pki_data/
 ├── root_ca/                    # Root Certificate Authority
 │   ├── certificates/           # Certificato Root CA
 │   ├── private_keys/           # Chiave privata Root CA
@@ -430,6 +436,126 @@ data/
         ├── delta_lists/        # Delta CTL
         └── logs/               # Log operazioni
 ```
+
+#### 2. **tls_data/** - Certificati TLS (HTTPS/mTLS)
+Certificati X.509 RFC 5280 per comunicazione sicura HTTPS tra entità PKI:
+
+```
+tls_data/
+├── ca/                         # TLS Certificate Authority
+│   ├── tls_ca_cert.pem         # CA Certificate
+│   └── tls_ca_key.pem          # CA Private Key
+│
+├── servers/                    # Certificati server
+│   ├── root_ca/
+│   │   ├── rootca_cert.pem
+│   │   └── rootca_key.pem
+│   ├── ea/
+│   │   ├── ea_001_cert.pem
+│   │   ├── ea_001_key.pem
+│   │   └── ...                 # Fino a ea_020
+│   ├── aa/
+│   │   ├── aa_001_cert.pem
+│   │   ├── aa_001_key.pem
+│   │   └── ...                 # Fino a aa_020
+│   └── tlm/
+│       ├── tlm_main_cert.pem
+│       └── tlm_main_key.pem
+│
+└── clients/                    # Certificati client (ITS-S test)
+    ├── its_001_cert.pem
+    ├── its_001_key.pem
+    └── ...
+```
+
+**Differenze tra i due tipi di certificati:**
+
+| Aspetto | pki_data/ | tls_data/ |
+|---------|-----------|-----------|
+| **Standard** | ETSI TS 102941, IEEE 1609.2 | RFC 5280 (X.509) |
+| **Scopo** | Firmare certificati V2X (EC, AT) | Comunicazione HTTPS/mTLS |
+| **Utilizzato da** | RootCA → EA, EA → ITS-S, AA → ITS-S | Flask server (inter-authority) |
+| **Formato** | ASN.1 OER/DER (custom V2X) | PEM (standard TLS) |
+| **Validazione** | ETSI signature schemes | TLS 1.2+ chain validation |
+
+---
+
+## 🔧 Setup Certificati TLS
+
+SecureRoad-PKI utilizza **mTLS (mutual TLS)** per la comunicazione sicura tra entità PKI.
+
+### Generazione Certificati TLS
+
+Lo script `setup_tls_certificates.py` genera automaticamente:
+- **CA TLS**: Authority per firmare certificati server/client
+- **Certificati Server**: Per EA, AA, RootCA, TLM
+- **Certificati Client**: Per ITS-S e testing
+
+```powershell
+# Genera tutti i certificati TLS necessari
+python scripts/setup_tls_certificates.py
+```
+
+**Output:**
+```
+tls_data/
+├── ca/
+│   ├── tls_ca_cert.pem          # ✅ Committed (CA pubblico)
+│   └── tls_ca_key.pem           # ⚠️  .gitignored (CA privato)
+├── servers/
+│   ├── root_ca/rootca_*.pem
+│   ├── ea/ea_001_*.pem, ea_002_*.pem, ...
+│   ├── aa/aa_001_*.pem, aa_002_*.pem, ...
+│   └── tlm/tlm_main_*.pem
+└── clients/
+    └── test_client_*.pem
+```
+
+### Configurazione mTLS in entity_configs.json
+
+```json
+{
+  "tls_config": {
+    "tls_enabled": true,
+    "ca_cert": "tls_data/ca/tls_ca_cert.pem",
+    "RootCA": {
+      "cert": "tls_data/servers/root_ca/rootca_cert.pem",
+      "key": "tls_data/servers/root_ca/rootca_key.pem"
+    },
+    "EA": {
+      "cert": "tls_data/servers/ea/ea_{id}_cert.pem",
+      "key": "tls_data/servers/ea/ea_{id}_key.pem"
+    },
+    "AA": {
+      "cert": "tls_data/servers/aa/aa_{id}_cert.pem",
+      "key": "tls_data/servers/aa/aa_{id}_key.pem"
+    },
+    "TLM": {
+      "cert": "tls_data/servers/tlm/tlm_main_cert.pem",
+      "key": "tls_data/servers/tlm/tlm_main_key.pem"
+    }
+  }
+}
+```
+
+**⚠️ Placeholder {id}**: Viene automaticamente sostituito (es. `EA_001` → `001` → `ea_001_cert.pem`)
+
+### Test mTLS con Interactive Tester
+
+```bash
+# Con mTLS (HTTPS + autenticazione client)
+python examples/interactive_pki_tester.py --mtls
+
+# Senza mTLS (HTTP)
+python examples/interactive_pki_tester.py
+```
+
+**Documentazione completa mTLS:**
+- [docs/MTLS_SETUP.md](docs/MTLS_SETUP.md) - Setup dettagliato
+- [docs/MTLS_IMPLEMENTATION_SUMMARY.md](docs/MTLS_IMPLEMENTATION_SUMMARY.md) - Riepilogo tecnico
+- [QUICK_MTLS_SETUP.md](QUICK_MTLS_SETUP.md) - Quick start
+
+---
 
 ### Port Management (Auto-Assignment)
 

@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from flask import Blueprint, current_app, jsonify, request
 
-from api.middleware import optional_auth, rate_limit
+from api.middleware import optional_auth, rate_limit, require_mtls
 from protocols.etsi_message_encoder import ETSIMessageEncoder, asn1_compiler, asn1_to_inner_ec_request
 from protocols.etsi_message_types import ResponseCode, InnerEcRequestSignedForPop
 from utils.metrics import get_metrics_collector
@@ -336,7 +336,7 @@ def create_enrollment_blueprint(ea_instance):
 
     @bp.route("/validation", methods=["POST"])
     @rate_limit
-    @optional_auth
+    @require_mtls(allowed_authorities=["AA"])
     def authorization_validation():
         """
         POST /enrollment/validation
@@ -345,6 +345,8 @@ def create_enrollment_blueprint(ea_instance):
         Used when AA doesn't have TLM and needs EA to validate EC.
 
         ETSI TS 102941 Section 6.4.1 - AuthorizationValidationRequest
+        
+        **SECURITY: Requires mTLS authentication from Authorization Authority (AA)**
 
         Request Body (ASN.1 OER encoded):
             AuthorizationValidationRequest {

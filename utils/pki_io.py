@@ -17,13 +17,18 @@ class PKIFileHandler:
     """Handler centralizzato per operazioni I/O su chiavi e certificati PKI"""
 
     @staticmethod
-    def load_private_key(key_path: str, password: Optional[bytes] = None):
+    def load_private_key(
+        key_path: str,
+        password: Optional[bytes] = None,
+        use_cache: Optional[bool] = None
+    ):
         """
         Carica chiave privata da file PEM con LRU cache per performance.
 
         Args:
             key_path: Path al file della chiave privata
             password: Password per chiave cifrata (opzionale)
+            use_cache: Se False bypassa LRU cache (default: None -> env)
 
         Returns:
             Chiave privata caricata (cached se già caricata)
@@ -36,6 +41,7 @@ class PKIFileHandler:
             Performance: ~2000x più veloce per chiavi già caricate.
         """
         from utils.cert_cache import load_private_key_cached
+
         return load_private_key_cached(key_path, password)
 
     @staticmethod
@@ -70,12 +76,16 @@ class PKIFileHandler:
             )
 
     @staticmethod
-    def load_certificate(cert_path: str) -> x509.Certificate:
+    def load_certificate(
+        cert_path: str,
+        use_cache: Optional[bool] = None
+    ) -> x509.Certificate:
         """
         Carica certificato da file PEM con LRU cache per performance.
 
         Args:
             cert_path: Path al file del certificato
+            use_cache: Se False bypassa LRU cache (default: None -> env)
 
         Returns:
             Certificato X.509 caricato (cached se già caricato)
@@ -89,6 +99,7 @@ class PKIFileHandler:
             First load: ~2ms, Cached load: ~0.001ms
         """
         from utils.cert_cache import load_certificate_cached
+
         return load_certificate_cached(cert_path)
 
     @staticmethod

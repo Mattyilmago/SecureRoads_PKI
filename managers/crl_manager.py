@@ -296,7 +296,7 @@ class CRLManager:
         self.logger.info(f"=== FULL CRL PUBBLICATA ===")
         return self.full_crl_path
 
-    def publish_delta_crl(self, validity_hours=24):
+    def publish_delta_crl(self, validity_hours=24, skip_backup=False):
         """
         Genera e pubblica una Delta CRL contenente SOLO le nuove revoche.
 
@@ -308,6 +308,7 @@ class CRLManager:
 
         Args:
             validity_hours: Ore di validità della Delta CRL
+            skip_backup: Se True, salta il backup per migliorare performance (default: False)
         """
         self.logger.info(f"=== GENERAZIONE DELTA CRL ===")
 
@@ -371,7 +372,7 @@ class CRLManager:
         # Salva metadata manager generale
         self.save_metadata()
 
-        # Log e backup
+        # Log operation (senza backup costoso)
         self.log_operation(
             "PUBLISH_DELTA_CRL",
             {
@@ -381,7 +382,12 @@ class CRLManager:
                 "validity_hours": validity_hours,
             },
         )
-        self.backup_crl("delta")
+        
+        # Backup opzionale (disabilitabile per performance)
+        if not skip_backup:
+            self.backup_crl("delta")
+        else:
+            self.logger.info(f"Backup saltato (ottimizzazione performance)")
 
         self.logger.info(f"=== DELTA CRL PUBBLICATA ===")
         return crl

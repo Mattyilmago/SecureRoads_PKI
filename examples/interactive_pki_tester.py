@@ -58,6 +58,43 @@ from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, SharedA
 # Variabile globale per processi avviati
 _started_processes = []
 
+# Forza HTTP di default nei test interattivi (impostare PKI_ALLOW_TLS=1 per riabilitare TLS)
+if os.environ.get("PKI_ALLOW_TLS", "").lower() not in {"1", "true", "yes", "on"}:
+    os.environ["PKI_DISABLE_TLS"] = "1"
+    os.environ["PKI_FORCE_HTTP"] = "1"
+    print("[INFO] TLS disabilitato per test interattivi (PKI_DISABLE_TLS=1)")
+
+
+def get_request_kwargs():
+    """
+    Restituisce kwargs per requests.
+    
+    Returns:
+        dict: Dizionario vuoto (senza configurazione TLS)
+    """
+    return {}
+
+
+def build_url(host, port, path=""):
+    """
+    Costruisce URL HTTP.
+    
+    Args:
+        host: Hostname (es. "localhost", "127.0.0.1")
+        port: Porta
+        path: Path opzionale (es. "/api/stats")
+    
+    Returns:
+        str: URL completo HTTP
+    """
+    schema = "http"
+    path = path.lstrip("/") if path else ""
+    
+    if path:
+        return f"{schema}://{host}:{port}/{path}"
+    else:
+        return f"{schema}://{host}:{port}"
+
 
 def safe_print(text, **kwargs):
     """Stampa testo gestendo errori di encoding su Windows"""
@@ -122,7 +159,11 @@ def start_pki_entities():
             entity_configs.append((entity_type, entity_id, port))
             print(f"    {entity_id}: porta {port}")
         else:
-            print(f"    {entity_id}: ❌ nessuna porta disponibile nel range - SKIP")
+            # Distingui tra TLM/RootCA (già attive) e altre entities (errore)
+            if entity_type in ["TLM", "RootCA"]:
+                print(f"    {entity_id}: ℹ️  già attiva (porta occupata)")
+            else:
+                print(f"    {entity_id}: ❌ nessuna porta disponibile nel range - SKIP")
             # Continua con le altre entities invece di fallire completamente
     
     print("\n  Avvio entities...")
@@ -199,7 +240,8 @@ def start_pki_entities():
         
         if port:
             try:
-                response = requests.get(f"http://localhost:{port}/health", timeout=2)
+                url = build_url("localhost", port, "/health")
+                response = requests.get(url, timeout=2, **get_request_kwargs())
                 if response.status_code == 200:
                     print(f"    {entity_id} (:{port}): ✅")
                     active_count += 1
@@ -228,7 +270,7 @@ def start_pki_entities():
                 'type': entity_type,
                 'id': entity_id,
                 'port': port,
-                'url': f"http://localhost:{port}"
+                'url': build_url("localhost", port)
             })
     
     return entity_info
@@ -284,12 +326,17 @@ class PKITester:
         # Contatori per certificati revocati durante i test
         self.revoked_ec_count = 0
         self.revoked_at_count = 0
-        # Default ports from configured ranges:
-        # EA: 5000-5019, AA: 5020-5039, TLM: 5050
-        # Try to detect running entities dynamically
-        self.ea_url = self._find_entity_url("EA", 5000, 5019)
-        self.aa_url = self._find_entity_url("AA", 5020, 5039) 
+        
+        # Lista delle entità disponibili (popolata da scan_entities_at_startup)
+        self.available_entities = {"EA": [], "AA": []}
+        
+        # Default URLs (will be set after scanning)
+        self.ea_url = None
+        self.aa_url = None
         self.tlm_url = self._find_entity_url("TLM", 5050, 5050)
+
+        # Flag per modalità completamente automatica (--auto)
+        self.auto_mode = False
         
         # ETSI encoder instance
         self.encoder = ETSIMessageEncoder()
@@ -332,7 +379,140 @@ class PKITester:
         default_port = port_start
         self.print_info(f"Nessuna {entity_type} trovata, uso porta default {default_port}")
         return f"http://127.0.0.1:{default_port}"
+    
+    def scan_entities_at_startup(self):
+        """Scansiona tutte le porte da 5000 a 5039 all'avvio per identificare EA e AA disponibili"""
+        self.print_info("🔍 Scansione entità disponibili (porte 5000-5039)...")
         
+        import socket
+        import concurrent.futures
+        import requests
+        
+        def check_port(port):
+            """Controlla una singola porta e restituisce info entità se trovata"""
+            try:
+                # Test connessione TCP
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                
+                if result == 0:
+                    # Porta aperta, verifica se è un'entità PKI
+                    url = f"http://127.0.0.1:{port}"
+                    try:
+                        response = requests.get(f"{url}/", timeout=2)
+                        if response.status_code == 200:
+                            data = response.json()
+                            entity_type = data.get('entity_type')
+                            entity_id = data.get('entity_id', f'{entity_type}_UNKNOWN')
+                            
+                            if entity_type in ["EA", "AA"]:
+                                return {
+                                    'entity_type': entity_type,
+                                    'id': entity_id,
+                                    'url': url,
+                                    'port': port
+                                }
+                    except:
+                        pass
+                        
+            except:
+                pass
+            
+            return None
+        
+        # Scansiona tutte le porte in parallelo
+        found_entities = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            # Sottometti tutti i task
+            future_to_port = {executor.submit(check_port, port): port for port in range(5000, 5040)}
+            
+            # Raccogli i risultati man mano che arrivano
+            for future in concurrent.futures.as_completed(future_to_port):
+                result = future.result()
+                if result:
+                    found_entities.append(result)
+        
+        # Separa per tipo e ordina per numero di porta
+        found_ea = sorted([e for e in found_entities if e['entity_type'] == 'EA'], key=lambda x: x['port'])
+        found_aa = sorted([e for e in found_entities if e['entity_type'] == 'AA'], key=lambda x: x['port'])
+        
+        self.available_entities["EA"] = found_ea
+        self.available_entities["AA"] = found_aa
+        
+        # Imposta URL di default alla prima disponibile
+        if found_ea:
+            self.ea_url = found_ea[0]['url']
+        if found_aa:
+            self.aa_url = found_aa[0]['url']
+        
+        # Log dei risultati
+        total_found = len(found_ea) + len(found_aa)
+        if total_found > 0:
+            self.print_success(f"Trovate {total_found} entità: {len(found_ea)} EA, {len(found_aa)} AA")
+            for ea in found_ea:
+                self.print_info(f"  EA: {ea['id']} (porta {ea['port']})")
+            for aa in found_aa:
+                self.print_info(f"  AA: {aa['id']} (porta {aa['port']})")
+        else:
+            self.print_info("Nessuna entità PKI trovata nelle porte 5000-5039")
+    
+    def select_entity_interactive(self, entity_type):
+        """Mostra lista delle autorità disponibili dalla cache e chiede all'utente quale scegliere"""
+        available_entities = self.available_entities.get(entity_type, [])
+
+        if self.auto_mode:
+            if available_entities:
+                selected = available_entities[0]
+                selected_url = selected['url']
+                self.print_info(
+                    f"Modalità auto: uso {entity_type} {selected['id']} (porta {selected['port']})"
+                )
+            else:
+                selected_url = self.ea_url if entity_type == "EA" else self.aa_url
+                if selected_url:
+                    self.print_info(
+                        f"Modalità auto: nessuna {entity_type} scansionata, uso URL predefinito {selected_url}"
+                    )
+                else:
+                    self.print_error(f"Modalità auto: nessuna {entity_type} disponibile")
+                    return None
+
+            if entity_type == "EA":
+                self.ea_url = selected_url
+            elif entity_type == "AA":
+                self.aa_url = selected_url
+            return selected_url
+        
+        if not available_entities:
+            self.print_error(f"Nessuna {entity_type} disponibile trovata nella cache!")
+            self.print_info("Riprova a eseguire la scansione con --scan-entities")
+            return None
+        
+        # Mostra la lista delle autorità disponibili dalla cache
+        self.print_info(f"Autorità {entity_type} disponibili:")
+        for i, entity in enumerate(available_entities, 1):
+            print(f"  {i}. {entity['id']} - Porta {entity['port']}")
+        
+        # Chiedi all'utente quale scegliere
+        while True:
+            try:
+                choice = input(f"\nScegli l'{entity_type} da usare (1-{len(available_entities)}) o 0 per annullare: ").strip()
+                choice_num = int(choice)
+                
+                if choice_num == 0:
+                    self.print_info("Operazione annullata")
+                    return None
+                elif 1 <= choice_num <= len(available_entities):
+                    selected = available_entities[choice_num - 1]
+                    self.print_success(f"Selezionata {entity_type}: {selected['id']} su porta {selected['port']}")
+                    return selected['url']
+                else:
+                    self.print_error(f"Scelta non valida. Inserisci un numero tra 1 e {len(available_entities)} o 0 per annullare")
+            except ValueError:
+                self.print_error("Inserisci un numero valido")
+    
     def print_header(self, text):
         """Stampa intestazione formattata"""
         print("\n" + "="*70)
@@ -346,10 +526,18 @@ class PKITester:
     def print_error(self, text):
         """Stampa messaggio di errore"""
         print(f"❌ {text}")
+    
+    def print_warning(self, text):
+        """Stampa messaggio di warning"""
+        print(f"⚠️  {text}")
         
     def print_info(self, text):
         """Stampa informazione"""
         print(f"ℹ️  {text}")
+    
+    def print_test_execution_time(self, test_name, duration):
+        """Stampa il tempo di esecuzione di un test"""
+        self.print_info(f"⏱️  Tempo esecuzione {test_name}: {duration:.2f}s")
     
     @staticmethod
     def time_test_execution(test_name=None):
@@ -384,7 +572,7 @@ class PKITester:
         self.test_results.append(result)
         
         # Salva su file per la dashboard
-        results_file = Path("data/test_results.json")
+        results_file = Path("pki_data/test_results.json")
         results_file.parent.mkdir(parents=True, exist_ok=True)
         
         with open(results_file, 'w') as f:
@@ -393,7 +581,7 @@ class PKITester:
     def get_entity_metrics(self, entity_url):
         """Ottiene le metriche da un'entità PKI"""
         try:
-            response = requests.get(f"{entity_url}/api/stats", timeout=5)
+            response = requests.get(f"{entity_url}/api/stats", timeout=5, **get_request_kwargs())
             if response.status_code == 200:
                 return response.json()
             else:
@@ -419,12 +607,25 @@ class PKITester:
             self.print_info(f"    Tickets attivi: {aa_metrics.get('active_certificates', 0)}")
             self.print_info(f"    Tickets revocati: {aa_metrics.get('revoked_certificates', 0)}")
     
-    def get_ea_certificate(self):
+    def get_ea_certificate(self, ea_url=None):
         """Ottiene il certificato pubblico dell'EA dall'endpoint"""
+        # Usa URL passato come parametro o fallback a self.ea_url
+        url = ea_url or self.ea_url
+        if not url:
+            self.print_error("Nessun URL EA disponibile")
+            return None, None
+        
+        # Se l'URL è cambiato, invalida la cache
+        if hasattr(self, '_last_ea_url') and self._last_ea_url != url:
+            self._ea_certificate = None
+            self._ea_public_key = None
+        
+        self._last_ea_url = url
+            
         if self._ea_certificate is None:
             try:
                 # Ottieni certificato dall'endpoint EA
-                response = requests.get(f"{self.ea_url}/api/enrollment/certificate", timeout=5)
+                response = requests.get(f"{url}/api/enrollment/certificate", timeout=5, **get_request_kwargs())
                 if response.status_code == 200:
                     cert_pem = response.text
                     self._ea_certificate = x509.load_pem_x509_certificate(
@@ -459,12 +660,25 @@ class PKITester:
         except Exception as e:
             self.print_error(f"Errore caricamento certificato EA dal file system: {e}")
     
-    def get_aa_certificate(self):
+    def get_aa_certificate(self, aa_url=None):
         """Ottiene il certificato pubblico dell'AA dall'endpoint"""
+        # Usa URL passato come parametro o fallback a self.aa_url
+        url = aa_url or self.aa_url
+        if not url:
+            self.print_error("Nessun URL AA disponibile")
+            return None, None
+        
+        # Se l'URL è cambiato, invalida la cache
+        if hasattr(self, '_last_aa_url') and self._last_aa_url != url:
+            self._aa_certificate = None
+            self._aa_public_key = None
+        
+        self._last_aa_url = url
+            
         if self._aa_certificate is None:
             try:
                 # Ottieni certificato dall'endpoint AA
-                response = requests.get(f"{self.aa_url}/api/authorization/certificate", timeout=5)
+                response = requests.get(f"{url}/api/authorization/certificate", timeout=5)
                 if response.status_code == 200:
                     cert_pem = response.text
                     self._aa_certificate = x509.load_pem_x509_certificate(
@@ -499,11 +713,11 @@ class PKITester:
         except Exception as e:
             self.print_error(f"Errore caricamento certificato AA dal file system: {e}")
     
-    def create_etsi_enrollment_request(self, vehicle_id, private_key, public_key_pem):
+    def create_etsi_enrollment_request(self, vehicle_id, private_key, public_key_pem, ea_url=None):
         """Crea una richiesta enrollment ETSI ASN.1 OER"""
         try:
             # Ottieni certificato EA
-            ea_cert, ea_public_key = self.get_ea_certificate()
+            ea_cert, ea_public_key = self.get_ea_certificate(ea_url)
             if not ea_cert or not ea_public_key:
                 raise ValueError("Certificato EA non disponibile")
             
@@ -554,11 +768,11 @@ class PKITester:
             traceback.print_exc()
             return None
     
-    def create_etsi_authorization_request(self, vehicle_id, enrollment_cert_pem, private_key, public_key_pem, hmac_key=None):
+    def create_etsi_authorization_request(self, vehicle_id, enrollment_cert_pem, private_key, public_key_pem, hmac_key=None, aa_url=None):
         """Crea una richiesta authorization ETSI ASN.1 OER"""
         try:
             # Ottieni certificato AA
-            aa_cert, aa_public_key = self.get_aa_certificate()
+            aa_cert, aa_public_key = self.get_aa_certificate(aa_url)
             if not aa_cert or not aa_public_key:
                 raise ValueError("Certificato AA non disponibile")
             
@@ -607,11 +821,11 @@ class PKITester:
             self.print_error(f"Errore creazione richiesta authorization ETSI: {e}")
             return None, None
     
-    def create_etsi_butterfly_request(self, vehicle_id, enrollment_cert_pem, num_tickets=5):
+    def create_etsi_butterfly_request(self, vehicle_id, enrollment_cert_pem, num_tickets=5, aa_url=None):
         """Crea una richiesta butterfly ETSI ASN.1 OER per batch authorization"""
         try:
             # Ottieni certificato AA dall'endpoint REST
-            aa_cert, aa_public_key = self.get_aa_certificate()
+            aa_cert, aa_public_key = self.get_aa_certificate(aa_url)
             if not aa_cert or not aa_public_key:
                 raise ValueError("Certificato AA non disponibile")
             
@@ -707,10 +921,17 @@ class PKITester:
             traceback.print_exc()
             return None, None
 
-    @time_test_execution("Enrollment Veicolo")
     def test_1_vehicle_enrollment(self):
         """Test 1: Enrollment completo di un veicolo usando API ETSI standard"""
         self.print_header("TEST 1: Enrollment Veicolo (ETSI Standard)")
+        
+        # Chiedi all'utente quale EA usare
+        ea_url = self.select_entity_interactive("EA")
+        if not ea_url:
+            return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         try:
             vehicle_id = f"VEHICLE_{int(time.time())}"
@@ -725,12 +946,12 @@ class PKITester:
             ).decode('utf-8')
             
             # Crea richiesta enrollment ETSI ASN.1 OER
-            encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+            encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem, ea_url)
             if not encoded_request:
                 self.print_error("Impossibile creare richiesta enrollment ETSI")
                 return False
             
-            self.print_info(f"Invio richiesta ETSI a {self.ea_url}/api/enrollment/request")
+            self.print_info(f"Invio richiesta ETSI a {ea_url}/api/enrollment/request")
             self.print_info(f"Payload ASN.1 OER: {len(encoded_request)} bytes")
             
             # Headers per ETSI
@@ -739,10 +960,11 @@ class PKITester:
             }
             
             response = requests.post(
-                f"{self.ea_url}/api/enrollment/request",
+                f"{ea_url}/api/enrollment/request",
                 data=encoded_request,
                 headers=headers,
-                timeout=10
+                timeout=10,
+                **get_request_kwargs()
             )
             
             if response.status_code == 200:
@@ -822,34 +1044,66 @@ class PKITester:
                 
                 self.enrolled_vehicles[vehicle_id] = vehicle_info
                 
+                # Calcola e stampa tempo di esecuzione
+                duration = time.time() - start_time
+                self.print_test_execution_time("Enrollment Veicolo", duration)
+                
                 self.save_test_result(
                     "vehicle_enrollment_etsi",
                     "success",
                     {
                         "vehicle_id": vehicle_id,
                         "response_size": len(response_data),
-                        "message": "ETSI enrollment successful"
+                        "message": "ETSI enrollment successful",
+                        "execution_time": duration
                     }
                 )
                 return True
             else:
+                duration = time.time() - start_time
+                self.print_test_execution_time("Enrollment Veicolo", duration)
                 self.print_error(f"Enrollment ETSI fallito! Status: {response.status_code}")
                 self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("vehicle_enrollment_etsi", "failed", {"status": response.status_code})
+                self.save_test_result("vehicle_enrollment_etsi", "failed", {"status": response.status_code, "execution_time": duration})
                 return False
                 
         except requests.exceptions.ConnectionError:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Enrollment Veicolo", duration)
             self.print_error(f"Impossibile connettersi a {self.ea_url}")
-            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": "Connection refused"})
+            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": "Connection refused", "execution_time": duration})
             return False
         except Exception as e:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Enrollment Veicolo", duration)
             self.print_error(f"Errore: {e}")
-            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": str(e)})
+            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": str(e), "execution_time": duration})
             return False
     
-    def test_batch_vehicle_enrollment(self, num_vehicles=5):
+    def test_batch_vehicle_enrollment(self, num_vehicles=None):
         """Test ottimizzato: Enrollment batch di veicoli per migliorare performance"""
+        
+        # Chiedi numero di veicoli se non specificato
+        if num_vehicles is None:
+            if self.auto_mode:
+                num_vehicles = 10
+                self.print_info("Modalità auto: uso 10 veicoli per enrollment batch.")
+            else:
+                try:
+                    num_vehicles_input = input("  Quanti veicoli enrollare in batch? (default 10): ").strip()
+                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 10
+                    if num_vehicles <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 10.")
+                    num_vehicles = 10
+        
         self.print_header(f"TEST BATCH: Enrollment {num_vehicles} veicoli (Ottimizzato)")
+        
+        # Chiedi all'utente quale EA usare
+        ea_url = self.select_entity_interactive("EA")
+        if not ea_url:
+            return False
         
         try:
             self.print_info(f"Generazione batch enrollment per {num_vehicles} veicoli...")
@@ -883,7 +1137,7 @@ class PKITester:
                 }
                 enrollment_requests.append(enrollment_request)
             
-            self.print_info(f"Invio batch enrollment a {self.ea_url}/api/enrollment/request/batch")
+            self.print_info(f"Invio batch enrollment a {ea_url}/api/enrollment/request/batch")
             
             # Richiesta batch singola invece di N richieste separate
             batch_request = {
@@ -897,9 +1151,10 @@ class PKITester:
             # Prima prova batch endpoint, se non esiste fallback a richieste sequenziali
             try:
                 response = requests.post(
-                    f"{self.ea_url}/api/enrollment/request/batch",
+                    f"{ea_url}/api/enrollment/request/batch",
                     json=batch_request,
-                    timeout=60  # Timeout più lungo per batch
+                    timeout=60,  # Timeout più lungo per batch
+                    **get_request_kwargs()
                 )
                 
                 if response.status_code == 200:
@@ -953,16 +1208,17 @@ class PKITester:
                 req_start = time.time()
                 # Usa endpoint ETSI invece di /simple
                 # Crea richiesta ETSI ASN.1 OER
-                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem, ea_url)
                 if not encoded_request:
                     self.print_error(f"Impossibile creare richiesta ETSI per {vehicle_id}")
                     continue
                 
                 response = requests.post(
-                    f"{self.ea_url}/api/enrollment/request",
+                    f"{ea_url}/api/enrollment/request",
                     data=encoded_request,
                     headers={"Content-Type": "application/octet-stream"},
-                    timeout=10
+                    timeout=10,
+                    **get_request_kwargs()
                 )
                 req_elapsed = time.time() - req_start
                 total_elapsed += req_elapsed
@@ -1022,7 +1278,7 @@ class PKITester:
             return enrolled_count > 0
             
         except requests.exceptions.ConnectionError:
-            self.print_error(f"Impossibile connettersi a {self.ea_url}")
+            self.print_error(f"Impossibile connettersi a {ea_url}")
             self.save_test_result("batch_vehicle_enrollment", "error", {"error": "Connection refused"})
             return False
         except Exception as e:
@@ -1030,14 +1286,21 @@ class PKITester:
             self.save_test_result("batch_vehicle_enrollment", "error", {"error": str(e)})
             return False
     
-    @time_test_execution("Authorization Ticket")
     def test_3_authorization_ticket(self):
         """Test 3: Richiesta Authorization Ticket usando API ETSI standard"""
         self.print_header("TEST 3: Authorization Ticket (ETSI Standard)")
         
+        # Chiedi all'utente quale AA usare
+        aa_url = self.select_entity_interactive("AA")
+        if not aa_url:
+            return False
+        
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
             return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         try:
             # Usa primo veicolo disponibile
@@ -1081,7 +1344,7 @@ class PKITester:
             
             # Crea richiesta authorization ETSI ASN.1 OER
             encoded_request, hmac_key = self.create_etsi_authorization_request(
-                vehicle_id, enrollment_cert_pem, private_key, public_key_pem
+                vehicle_id, enrollment_cert_pem, private_key, public_key_pem, None, aa_url
             )
             if not encoded_request:
                 self.print_error("Impossibile creare richiesta authorization ETSI")
@@ -1102,10 +1365,11 @@ class PKITester:
                 headers["X-Enrollment-Certificate"] = base64.b64encode(cert_der).decode('utf-8')
             
             response = requests.post(
-                f"{self.aa_url}/api/authorization/request",
+                f"{aa_url}/api/authorization/request",
                 data=encoded_request,
                 headers=headers,
-                timeout=10
+                timeout=10,
+                **get_request_kwargs()
             )
             
             if response.status_code == 200:
@@ -1179,31 +1443,62 @@ class PKITester:
                 except Exception as e:
                     self.print_warning(f"Errore salvataggio AT ETSI: {e}")
                 
+                # Calcola e stampa tempo di esecuzione
+                duration = time.time() - start_time
+                self.print_test_execution_time("Authorization Ticket", duration)
+                
                 self.save_test_result(
                     "authorization_ticket_etsi",
                     "success",
                     {
                         "vehicle_id": vehicle_id,
                         "response_size": len(response_data),
-                        "message": "ETSI authorization successful"
+                        "message": "ETSI authorization successful",
+                        "execution_time": duration
                     }
                 )
                 return True
             else:
+                duration = time.time() - start_time
+                self.print_test_execution_time("Authorization Ticket", duration)
                 self.print_error(f"Authorization ETSI fallita! Status: {response.status_code}")
                 self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("authorization_ticket_etsi", "failed", {"status": response.status_code})
+                self.save_test_result("authorization_ticket_etsi", "failed", {"status": response.status_code, "execution_time": duration})
                 return False
                 
         except Exception as e:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Authorization Ticket", duration)
             self.print_error(f"Errore: {e}")
-            self.save_test_result("authorization_ticket_etsi", "error", {"error": str(e)})
+            self.save_test_result("authorization_ticket_etsi", "error", {"error": str(e), "execution_time": duration})
             return False
     
-    @time_test_execution("Enrollment Flotta Veicoli")
-    def test_2_multiple_vehicles(self, num_vehicles=5):
+    def test_2_multiple_vehicles(self, num_vehicles=None):
         """Test 2: Enrollment multiplo (flotta veicoli) usando API REST"""
         self.print_header("TEST 2: Enrollment Flotta Veicoli")
+        
+        # Chiedi numero di veicoli se non specificato
+        if num_vehicles is None:
+            if self.auto_mode:
+                num_vehicles = 5
+                self.print_info("Modalità auto: uso 5 veicoli per enrollment flotta.")
+            else:
+                try:
+                    num_vehicles_input = input("  Quanti veicoli enrollare nella flotta? (default 5): ").strip()
+                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 5
+                    if num_vehicles <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 5.")
+                    num_vehicles = 5
+        
+        # Chiedi all'utente quale EA usare
+        ea_url = self.select_entity_interactive("EA")
+        if not ea_url:
+            return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         self.print_info(f"Enrollment di {num_vehicles} veicoli...")
         
@@ -1227,7 +1522,7 @@ class PKITester:
                 ).decode('utf-8')
                 
                 # Crea richiesta ETSI ASN.1 OER
-                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem, ea_url)
                 if not encoded_request:
                     print(f"❌ (ETSI encoding failed)")
                     failed_count += 1
@@ -1235,10 +1530,11 @@ class PKITester:
                 
                 req_start = time.time()
                 response = requests.post(
-                    f"{self.ea_url}/api/enrollment/request",
+                    f"{ea_url}/api/enrollment/request",
                     data=encoded_request,
                     headers={"Content-Type": "application/octet-stream"},
-                    timeout=10
+                    timeout=10,
+                    **get_request_kwargs()
                 )
                 req_end = time.time()
                 
@@ -1296,7 +1592,7 @@ class PKITester:
             min_time = min(success_times)
             max_time = max(success_times)
             
-            self.print_info(f"Tempo totale: {total_time:.2f}s")
+            self.print_test_execution_time("Enrollment Flotta Veicoli", total_time)
             self.print_info(f"Tempo medio per enrollment: {avg_time:.3f}s")
             self.print_info(f"Tempo minimo: {min_time:.3f}s")
             self.print_info(f"Tempo massimo: {max_time:.3f}s")
@@ -1310,6 +1606,7 @@ class PKITester:
                 "success": success_count,
                 "failed": failed_count,
                 "total_time": total_time,
+                "execution_time": total_time,
                 "avg_time": sum(success_times) / len(success_times) if success_times else 0,
                 "throughput": len(success_times)/total_time if success_times else 0
             }
@@ -1317,7 +1614,6 @@ class PKITester:
         
         return success_count > 0
     
-    @time_test_execution("Comunicazione V2V")
     def test_4_v2v_communication(self):
         """Test 4: Simulazione comunicazione V2V"""
         self.print_header("TEST 4: Comunicazione V2V (CAM)")
@@ -1325,6 +1621,9 @@ class PKITester:
         if len(self.enrolled_vehicles) < 2:
             self.print_error("Servono almeno 2 veicoli! Esegui prima il Test 2")
             return False
+        
+        # Inizia timer (nessun input utente in questo test)
+        start_time = time.time()
         
         try:
             # Prendi primi due veicoli
@@ -1366,6 +1665,10 @@ class PKITester:
             
             self.print_success("Test V2V comunicazione completato!")
             
+            # Calcola e stampa tempo di esecuzione
+            duration = time.time() - start_time
+            self.print_test_execution_time("Comunicazione V2V", duration)
+            
             self.save_test_result(
                 "v2v_communication",
                 status,
@@ -1375,17 +1678,19 @@ class PKITester:
                     "message_type": "CAM",
                     "sender_has_cert": sender_has_cert,
                     "receiver_has_cert": receiver_has_cert,
-                    "note": note
+                    "note": note,
+                    "execution_time": duration
                 }
             )
             return True
             
         except Exception as e:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Comunicazione V2V", duration)
             self.print_error(f"Errore: {e}")
-            self.save_test_result("v2v_communication", "error", {"error": str(e)})
+            self.save_test_result("v2v_communication", "error", {"error": str(e), "execution_time": duration})
             return False
     
-    @time_test_execution("Validazione Certificati")
     def test_5_certificate_validation(self):
         """Test 5: Validazione certificati X.509 conforme ETSI"""
         self.print_header("TEST 5: Validazione Certificati (ETSI Standard)")
@@ -1393,6 +1698,9 @@ class PKITester:
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo disponibile!")
             return False
+        
+        # Inizia timer (nessun input utente in questo test)
+        start_time = time.time()
         
         try:
             from cryptography import x509
@@ -1487,6 +1795,10 @@ class PKITester:
             if invalid_count > 0:
                 self.print_error(f"Certificati invalidi: {invalid_count}/{total}")
             
+            # Calcola e stampa tempo di esecuzione
+            duration = time.time() - start_time
+            self.print_test_execution_time("Validazione Certificati", duration)
+            
             self.save_test_result(
                 "certificate_validation",
                 "success" if valid_count == total else "partial",
@@ -1494,29 +1806,56 @@ class PKITester:
                     "total": total,
                     "valid": valid_count,
                     "invalid": invalid_count,
-                    "validation_details": validation_details
+                    "validation_details": validation_details,
+                    "execution_time": duration
                 }
             )
             return valid_count > 0
             
         except Exception as e:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Validazione Certificati", duration)
             self.print_error(f"Errore: {e}")
             import traceback
             self.print_error(traceback.format_exc()[:200])
-            self.save_test_result("certificate_validation", "error", {"error": str(e)})
+            self.save_test_result("certificate_validation", "error", {"error": str(e), "execution_time": duration})
             return False
     
-    @time_test_execution("Butterfly Key Expansion")
-    def test_6_butterfly_expansion(self, num_tickets=20):
+    def test_6_butterfly_expansion(self, num_tickets=None):
         """
         Test Butterfly Key Expansion per generazione batch di Authorization Tickets.
         Genera multiple AT in una singola richiesta usando chiave master HMAC.
         """
         self.print_header("TEST 6: Butterfly Key Expansion")
         
+        # Chiedi numero di ticket se non specificato
+        if num_tickets is None:
+            if self.auto_mode:
+                num_tickets = 20
+                self.print_info("Modalità auto: uso 20 Authorization Tickets per Butterfly.")
+            else:
+                try:
+                    num_tickets_input = input("  Quanti AT richiedere in batch (Butterfly)? (default 20, max 100 ETSI): ").strip()
+                    num_tickets = int(num_tickets_input) if num_tickets_input else 20
+                    
+                    # ETSI TS 102941 V2.1.1 Section 6.3.3: batch size limits
+                    if num_tickets < 1 or num_tickets > 100:
+                        raise ValueError(f"Batch size deve essere tra 1 e 100 (ETSI TS 102941), ricevuto {num_tickets}")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 20.")
+                    num_tickets = 20
+        
+        # Chiedi all'utente quale AA usare
+        aa_url = self.select_entity_interactive("AA")
+        if not aa_url:
+            return False
+        
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
             return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         try:
             # Usa primo veicolo disponibile
@@ -1535,7 +1874,7 @@ class PKITester:
             start_time = time.time()
             # Crea richiesta ETSI butterfly completa
             encoded_request, hmac_keys = self.create_etsi_butterfly_request(
-                vehicle_id, enrollment_cert, num_tickets
+                vehicle_id, enrollment_cert, num_tickets, aa_url
             )
             
             if not encoded_request or not hmac_keys:
@@ -1543,10 +1882,11 @@ class PKITester:
                 return False
             
             response = requests.post(
-                f"{self.aa_url}/api/authorization/request/butterfly",
+                f"{aa_url}/api/authorization/request/butterfly",
                 data=encoded_request,
                 headers={"Content-Type": "application/octet-stream"},
-                timeout=30
+                timeout=30,
+                **get_request_kwargs()
             )
             elapsed = time.time() - start_time
             
@@ -1561,7 +1901,7 @@ class PKITester:
                     self.print_success(f"Butterfly Expansion completato (ETSI)!")
                     self.print_info(f"  Authorization Tickets generati: {at_count}")
                     self.print_info(f"  HMAC keys derivate: {len(hmac_keys)}")
-                    self.print_info(f"  Tempo impiegato: {elapsed:.2f}s")
+                    self.print_test_execution_time("Butterfly Key Expansion", elapsed)
                     self.print_info(f"  Throughput: {at_count/elapsed:.2f} AT/s")
                     
                     # Incrementa contatore AT emessi
@@ -1601,10 +1941,32 @@ class PKITester:
             self.save_test_result("butterfly_expansion", "error", {"error": str(e)})
             return False
     
-    @time_test_execution("Revoca Certificati")
-    def test_7_certificate_revocation(self, num_revocations=1):
+    def test_7_certificate_revocation(self, num_revocations=None):
         """Test 7: Revoca certificati (EC e AT) usando API REST"""
         self.print_header("TEST 7: Revoca Certificati (ETSI Standard)")
+        
+        # Chiedi numero di revoche se non specificato
+        if num_revocations is None:
+            if self.auto_mode:
+                num_revocations = 1
+                self.print_info("Modalità auto: revoca 1 certificato.")
+            else:
+                try:
+                    num_revocations_input = input("  Quanti certificati revocare? (default 1): ").strip()
+                    num_revocations = int(num_revocations_input) if num_revocations_input else 1
+                    if num_revocations <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 1.")
+                    num_revocations = 1
+        
+        # Chiedi all'utente quale EA e AA usare
+        ea_url = self.select_entity_interactive("EA")
+        if not ea_url:
+            return False
+        aa_url = self.select_entity_interactive("AA")
+        if not aa_url:
+            return False
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo disponibile! Esegui prima il Test 1")
@@ -1613,6 +1975,9 @@ class PKITester:
         if num_revocations > len(self.enrolled_vehicles):
             self.print_error(f"Troppi veicoli da revocare! Disponibili: {len(self.enrolled_vehicles)}")
             return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         success_count = 0
         failed_count = 0
@@ -1651,12 +2016,13 @@ class PKITester:
                     "its_id": vehicle_id
                 }
                 
-                self.print_info(f"  Invio richiesta revoca a {self.ea_url}/api/enrollment/revoke...")
+                self.print_info(f"  Invio richiesta revoca a {ea_url}/api/enrollment/revoke...")
                 
                 response = requests.post(
-                    f"{self.ea_url}/api/enrollment/revoke",
+                    f"{ea_url}/api/enrollment/revoke",
                     json=revoke_request,
-                    timeout=10
+                    timeout=10,
+                    **get_request_kwargs()
                 )
                 
                 if response.status_code == 200:
@@ -1669,13 +2035,13 @@ class PKITester:
                     self.revoked_ec_count += 1
                     success_count += 1
                     
-                    # Verifica che il certificato sia nella CRL
+                    # Verifica rapida inserimento in CRL (senza attesa)
+                    # La Delta CRL è pubblicata immediatamente dopo la revoca
                     self.print_info(f"  Verifica inserimento in CRL...")
-                    time.sleep(2)  # Attesa pubblicazione Delta CRL
                     
                     is_revoked = None
                     # Usa Delta CRL per verificare revoche recenti (secondo ETSI)
-                    crl_response = requests.get(f"{self.ea_url}/api/crl/delta", timeout=5)
+                    crl_response = requests.get(f"{ea_url}/api/crl/delta", timeout=5)
                     if crl_response.status_code == 200:
                         try:
                             # Parse CRL - prova prima PEM, poi DER
@@ -1752,12 +2118,13 @@ class PKITester:
                             "its_id": at_vehicle
                         }
                         
-                        self.print_info(f"  Invio richiesta revoca AT a {self.aa_url}/api/authorization/revoke...")
+                        self.print_info(f"  Invio richiesta revoca AT a {aa_url}/api/authorization/revoke...")
                         
                         at_response = requests.post(
-                            f"{self.aa_url}/api/authorization/revoke",
+                            f"{aa_url}/api/authorization/revoke",
                             json=at_revoke_request,
-                            timeout=10
+                            timeout=10,
+                            **get_request_kwargs()
                         )
                         
                         if at_response.status_code == 200:
@@ -1769,12 +2136,12 @@ class PKITester:
                             # Incrementa contatore AT revocati
                             self.revoked_at_count += 1
                             
-                            # Verifica che l'AT sia nella CRL dell'AA
+                            # Verifica rapida inserimento AT in CRL AA (senza attesa)
+                            # La Delta CRL è pubblicata immediatamente dopo la revoca
                             self.print_info(f"  Verifica inserimento AT in CRL AA...")
-                            time.sleep(2)  # Attesa pubblicazione Delta CRL
                             
                             # Usa Delta CRL per verificare revoche recenti (secondo ETSI)
-                            aa_crl_response = requests.get(f"{self.aa_url}/api/crl/delta", timeout=5)
+                            aa_crl_response = requests.get(f"{aa_url}/api/crl/delta", timeout=5)
                             if aa_crl_response.status_code == 200:
                                 try:
                                     # Parse CRL AA - prova prima PEM, poi DER
@@ -1850,21 +2217,36 @@ class PKITester:
         if failed_count > 0:
             self.print_error(f"Revoche fallite: {failed_count}/{num_revocations}")
         
+        # Calcola e stampa tempo di esecuzione
+        duration = time.time() - start_time
+        self.print_test_execution_time("Revoca Certificati", duration)
+        
         self.save_test_result(
             "certificate_revocation",
             "success" if success_count == num_revocations else "partial",
             {
                 "total_requested": num_revocations,
                 "successful": success_count,
-                "failed": failed_count
+                "failed": failed_count,
+                "execution_time": duration
             }
         )
         return success_count > 0
     
-    @time_test_execution("Download CRL")
     def test_8_crl_download(self):
         """Test 8: Download e verifica CRL da EA e AA"""
         self.print_header("TEST 8: Download CRL (Certificate Revocation List)")
+        
+        # Chiedi all'utente quale EA e AA usare
+        ea_url = self.select_entity_interactive("EA")
+        if not ea_url:
+            return False
+        aa_url = self.select_entity_interactive("AA")
+        if not aa_url:
+            return False
+        
+        # Inizia timer DOPO le selezioni dell'utente
+        start_time = time.time()
         
         ea_success = False
         aa_success = False
@@ -1876,9 +2258,10 @@ class PKITester:
             # Force CRL publication for EA
             try:
                 publish_response = requests.post(
-                    f"{self.ea_url}/api/enrollment/publish-crl",
+                    f"{ea_url}/api/enrollment/publish-crl",
                     json={},
-                    timeout=5
+                    timeout=5,
+                    **get_request_kwargs()
                 )
                 if publish_response.status_code in [200, 201]:
                     self.print_success(f"CRL EA pubblicata via API")
@@ -1890,7 +2273,7 @@ class PKITester:
             
             # Test EA CRL
             self.print_info(f"Download CRL da EA...")
-            response = requests.get(f"{self.ea_url}/api/crl/full", timeout=5)
+            response = requests.get(f"{ea_url}/api/crl/full", timeout=5)
             
             if response.status_code == 200:
                 crl_size = len(response.content)
@@ -1899,7 +2282,7 @@ class PKITester:
                 self.print_info(f"  Content-Type: {response.headers.get('Content-Type', 'N/A')}")
                 
                 # Prova anche Delta CRL EA
-                delta_response = requests.get(f"{self.ea_url}/api/crl/delta", timeout=5)
+                delta_response = requests.get(f"{ea_url}/api/crl/delta", timeout=5)
                 if delta_response.status_code == 200:
                     delta_size = len(delta_response.content)
                     self.print_success(f"CRL Delta EA scaricata!")
@@ -1927,7 +2310,7 @@ class PKITester:
             
             # Test AA CRL
             self.print_info(f"Download CRL da AA...")
-            aa_response = requests.get(f"{self.aa_url}/api/crl/full", timeout=5)
+            aa_response = requests.get(f"{aa_url}/api/crl/full", timeout=5)
             
             if aa_response.status_code == 200:
                 aa_crl_size = len(aa_response.content)
@@ -1936,7 +2319,7 @@ class PKITester:
                 self.print_info(f"  Content-Type: {aa_response.headers.get('Content-Type', 'N/A')}")
                 
                 # Prova anche Delta CRL AA
-                aa_delta_response = requests.get(f"{self.aa_url}/api/crl/delta", timeout=5)
+                aa_delta_response = requests.get(f"{aa_url}/api/crl/delta", timeout=5)
                 if aa_delta_response.status_code == 200:
                     aa_delta_size = len(aa_delta_response.content)
                     self.print_success(f"CRL Delta AA scaricata!")
@@ -1975,12 +2358,19 @@ class PKITester:
             else:
                 self.print_error("Nessuna CRL disponibile da EA o AA")
             
+            # Calcola e stampa tempo di esecuzione
+            duration = time.time() - start_time
+            self.print_test_execution_time("Download CRL", duration)
+            
+            results["execution_time"] = duration
             self.save_test_result("crl_download", status, results)
             return overall_success
                 
         except Exception as e:
+            duration = time.time() - start_time
+            self.print_test_execution_time("Download CRL", duration)
             self.print_error(f"Errore: {e}")
-            self.save_test_result("crl_download", "error", {"error": str(e)})
+            self.save_test_result("crl_download", "error", {"error": str(e), "execution_time": duration})
             return False
     
     def run_interactive_menu(self):
@@ -1989,17 +2379,17 @@ class PKITester:
             self.print_header("PKI TESTER - Menu Interattivo (API REST)")
             print("\n  Test Disponibili:")
             print("  1. ✈️  Enrollment singolo veicolo")
-            print("  2. 🚗 Enrollment flotta veicoli (5 veicoli)")
+            print("  2. 🚗 Enrollment flotta veicoli (configurabile)")
             print("  3. 🎫 Richiesta Authorization Ticket")
             print("  4. 📡 Simulazione comunicazione V2V")
             print("  5. ✔️  Validazione certificati")
-            print("  6. 🦋 Butterfly Expansion (20 AT in batch)")
-            print("  7. 🚫 Revoca certificato")
+            print("  6. 🦋 Butterfly Expansion (configurabile)")
+            print("  7. 🚫 Revoca certificato (configurabile)")
             print("  8. 📥 Download CRL (EA & AA)")
-            print("  A. �🔄 Esegui tutti i test")
+            print("  A. 🔄 Esegui tutti i test (configurabile)")
             print("  B. 📊 Mostra risultati")
             print("  C. 🗑️  Pulisci dati test")
-            print("  D. 🚀 Batch Enrollment Ottimizzato")
+            print("  D. 🚀 Batch Enrollment Ottimizzato (configurabile)")
             print("  0. ❌ Esci")
             
             print("\n  Stato corrente:")
@@ -2011,15 +2401,7 @@ class PKITester:
             if choice == "1":
                 self.test_1_vehicle_enrollment()
             elif choice == "2":
-                try:
-                    num_vehicles_input = input("  Quanti veicoli enrollare? (default 5): ").strip()
-                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 5
-                    if num_vehicles <= 0:
-                        raise ValueError("Deve essere positivo")
-                except ValueError as e:
-                    self.print_error(f"Input non valido: {e}. Uso default 5.")
-                    num_vehicles = 5
-                self.test_2_multiple_vehicles(num_vehicles)
+                self.test_2_multiple_vehicles()
             elif choice == "3":
                 self.test_3_authorization_ticket()
             elif choice == "4":
@@ -2027,25 +2409,9 @@ class PKITester:
             elif choice == "5":
                 self.test_5_certificate_validation()
             elif choice == "6":
-                try:
-                    num_tickets_input = input("  Quanti AT richiedere in batch? (default 20): ").strip()
-                    num_tickets = int(num_tickets_input) if num_tickets_input else 20
-                    if num_tickets <= 0:
-                        raise ValueError("Deve essere positivo")
-                except ValueError as e:
-                    self.print_error(f"Input non valido: {e}. Uso default 20.")
-                    num_tickets = 20
-                self.test_6_butterfly_expansion(num_tickets)
+                self.test_6_butterfly_expansion()
             elif choice == "7":
-                try:
-                    num_revocations_input = input("  Quanti certificati revocare? (default 1): ").strip()
-                    num_revocations = int(num_revocations_input) if num_revocations_input else 1
-                    if num_revocations <= 0:
-                        raise ValueError("Deve essere positivo")
-                except ValueError as e:
-                    self.print_error(f"Input non valido: {e}. Uso default 1.")
-                    num_revocations = 1
-                self.test_7_certificate_revocation(num_revocations)
+                self.test_7_certificate_revocation()
             elif choice == "8":
                 self.test_8_crl_download()
             elif choice == "A":
@@ -2055,15 +2421,7 @@ class PKITester:
             elif choice == "C":
                 self.cleanup()
             elif choice == "D":
-                try:
-                    num_vehicles_input = input("  Quanti veicoli enrollare in batch? (default 10): ").strip()
-                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 10
-                    if num_vehicles <= 0:
-                        raise ValueError("Deve essere positivo")
-                except ValueError as e:
-                    self.print_error(f"Input non valido: {e}. Uso default 10.")
-                    num_vehicles = 10
-                self.test_batch_vehicle_enrollment(num_vehicles)
+                self.test_batch_vehicle_enrollment()
             elif choice == "0":
                 self.print_info("Uscita...")
                 break
@@ -2076,14 +2434,20 @@ class PKITester:
         """Esegui tutti i test in sequenza"""
         self.print_header("ESECUZIONE TUTTI I TEST")
         
+        if self.auto_mode:
+            self.print_info("Modalità auto: uso valori predefiniti per tutti i test.")
+        else:
+            self.print_info("Ogni test configurabile chiederà i suoi parametri durante l'esecuzione.")
+        print()  # Riga vuota per separazione
+        
         tests = [
             ("Test 1", self.test_1_vehicle_enrollment),
-            ("Test 2", lambda: self.test_2_multiple_vehicles(5)),
+            ("Test 2", self.test_2_multiple_vehicles),
             ("Test 3", self.test_3_authorization_ticket),
             ("Test 4", self.test_4_v2v_communication),
             ("Test 5", self.test_5_certificate_validation),
-            ("Test 6", lambda: self.test_6_butterfly_expansion(20)),
-            ("Test 7", lambda: self.test_7_certificate_revocation(1)),
+            ("Test 6", self.test_6_butterfly_expansion),
+            ("Test 7", self.test_7_certificate_revocation),
             ("Test 8", self.test_8_crl_download)
         ]
         
@@ -2197,6 +2561,12 @@ def main():
         help="Non avviare automaticamente le entities PKI (usa quelle già attive)"
     )
     
+    parser.add_argument(
+        "--scan-entities",
+        action="store_true",
+        help="Scansiona tutte le porte 5000-5039 all'avvio per identificare EA/AA disponibili"
+    )
+    
     args = parser.parse_args()
     
     # Avvia entities se richiesto
@@ -2207,20 +2577,24 @@ def main():
         print("\n[WARNING] Modalità --no-start: usando entities già attive")
     
     tester = PKITester()
+    tester.auto_mode = args.auto
+    tester.ea_url = args.ea_url
+    tester.aa_url = args.aa_url
+    
+    # SEMPRE scansiona le porte 5000-5039 per trovare EA e AA disponibili
+    # (sia che le abbiamo appena avviate, sia in modalità --no-start)
+    print("\n" + "="*70)
+    print("  SCANSIONE ENTITÀ DISPONIBILI")
+    print("="*70)
+    tester.scan_entities_at_startup()
     
     # Configura URL dinamicamente se entities sono state avviate
     if started_entities:
         for entity in started_entities:
             if entity['type'] == 'EA':
-                tester.ea_url = entity['url']
-                print(f"  EA configurato: {entity['id']} su {entity['url']}")
+                print(f"  EA avviato: {entity['id']} su {entity['url']}")
             elif entity['type'] == 'AA':
-                tester.aa_url = entity['url']
-                print(f"  AA configurato: {entity['id']} su {entity['url']}")
-    else:
-        # Usa URL da argomenti command line (per modalità --no-start)
-        tester.ea_url = args.ea_url
-        tester.aa_url = args.aa_url
+                print(f"  AA avviato: {entity['id']} su {entity['url']}")
     
     if args.dashboard:
         print("\n[DASHBOARD] Integrazione dashboard attiva")
@@ -2242,7 +2616,8 @@ def main():
                 print("  Oppure: python stop_all.ps1")
                 print("  Premi Ctrl+C per uscire")
                 print("="*70)
-                input("\nPremi Enter per continuare...")
+                if not tester.auto_mode:
+                    input("\nPremi Enter per continuare...")
         
         else:
             tester.run_interactive_menu()

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 management_bp = Blueprint('management', __name__, url_prefix='/api/management')
+from utils.config_utils import write_atomic_json, read_json
 
 
 @management_bp.route('/entities', methods=['GET'])
@@ -192,9 +193,9 @@ def delete_entity(entity_id):
         # Step 3: Remove from entity_configs.json
         if config_path.exists():
             try:
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                
+
                 # Remove from start_commands
                 original_count = len(config.get('start_commands', []))
                 config['start_commands'] = [
@@ -202,19 +203,23 @@ def delete_entity(entity_id):
                     if cmd.get('entity') != entity_id
                 ]
                 new_count = len(config['start_commands'])
-                
+
                 if original_count > new_count:
-                    # Save updated config
-                    with open(config_path, 'w') as f:
-                        json.dump(config, f, indent=2)
-                    
+                    # Save updated config atomically
+                    try:
+                        write_atomic_json(config_path, config, indent=2)
+                    except Exception:
+                        # Fallback
+                        with open(config_path, 'w', encoding='utf-8') as f:
+                            json.dump(config, f, indent=2)
+
                     results['config_removed'] = True
                     results['message'] = f"Removed {entity_id} from entity_configs.json"
                     print(f"[DELETE_ENTITY] Removed {entity_id} from entity_configs.json")
                 else:
                     results['errors'].append(f"{entity_id} not found in entity_configs.json")
                     print(f"[DELETE_ENTITY] {entity_id} not found in entity_configs.json")
-                    
+
             except Exception as e:
                 results['errors'].append(f"Failed to update entity_configs.json: {str(e)}")
                 print(f"[DELETE_ENTITY] ERROR updating entity_configs.json: {str(e)}")
@@ -454,10 +459,13 @@ def delete_all_entities_by_type(entity_types):
             # Continue even if cleanup fails
             pass
         
-        # Step 6: Save config
+        # Step 6: Save config atomically
         try:
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            try:
+                write_atomic_json(config_path, config, indent=2)
+            except Exception:
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2)
         except Exception as e:
             return jsonify({
                 "success": False,
@@ -499,7 +507,7 @@ def delete_all_entities_type(entity_type):
 @management_bp.route('/setup', methods=['POST'])
 def run_setup():
     """
-    Execute setup.py to create and start entities
+    Execute server.py (via config) to create and start entities
     
     Request body:
     {
@@ -571,15 +579,15 @@ def run_setup():
             tmpf_path = tmpf.name
         finally:
             tmpf.close()
-
-        # Build command to call setup.py with --config <tmpf_path>
-        cmd = ['python', 'setup.py', '--config', tmpf_path]
+        # Build command to call server.py with --config <tmpf_path>
+        # Use --no-auto-start to let the management API control starting if requested
+        cmd = ['python', 'server.py', '--config', tmpf_path]
 
         # Add --no-auto-start if requested
         if not auto_start:
             cmd.append('--no-auto-start')
 
-        # Execute setup.py (passing args as list; no shell)
+        # Execute server.py (passing args as list; no shell)
         try:
             result = subprocess.run(
                 cmd,
@@ -594,10 +602,10 @@ def run_setup():
                 Path(tmpf_path).unlink()
             except Exception:
                 pass
-        
+
         # Parse output
         success = result.returncode == 0
-        
+
         return jsonify({
             "success": success,
             "command": ' '.join(cmd),

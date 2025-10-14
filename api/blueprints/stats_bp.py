@@ -125,90 +125,119 @@ def create_stats_blueprint(entity_instance, entity_type):
             elif bp.entity_type == "TLM":
                 stats["entity_id"] = "TLM_MAIN"
                 
-                # Count trust anchors directly from TLM instance
+                # Get comprehensive statistics from TLM instance
                 import os
                 from pathlib import Path
                 
-                trust_anchors_count = 0
-                if hasattr(bp.entity, 'trust_anchors'):
-                    trust_anchors_count = len(bp.entity.trust_anchors)
-                
-                # Count by type
-                ea_count = 0
-                aa_count = 0
-                if hasattr(bp.entity, 'trust_anchors'):
-                    for anchor in bp.entity.trust_anchors:
-                        auth_type = anchor.get('authority_type', 'UNKNOWN')
-                        if auth_type == 'EA':
-                            ea_count += 1
-                        elif auth_type == 'AA':
-                            aa_count += 1
-                
-                stats["trust_anchors"] = trust_anchors_count
-                stats["active_certificates"] = trust_anchors_count  # For dashboard consistency
-                stats["enrolled_eas"] = ea_count
-                stats["enrolled_aas"] = aa_count
-                stats["trust_list_version"] = "v1.0"
-                
-                # Check CTL (Certificate Trust List) metadata for last update
-                ctl_metadata_path = Path(bp.entity.base_dir) / "ctl" / "ctl_metadata.json"
-                
-                if ctl_metadata_path.exists():
-                    import datetime
-                    import json
-                    try:
-                        with open(ctl_metadata_path, 'r') as f:
-                            ctl_meta = json.load(f)
-                            last_full_time = ctl_meta.get('last_full_ctl_time')
-                            if last_full_time:
-                                stats["last_update"] = last_full_time
-                            stats["ctl_number"] = ctl_meta.get('ctl_number', 0)
-                    except:
+                # Use get_statistics() method for accurate, real-time data
+                if hasattr(bp.entity, 'get_statistics'):
+                    tlm_stats = bp.entity.get_statistics()
+                    
+                    # First cleanup expired trust anchors to get accurate count
+                    if hasattr(bp.entity, '_cleanup_expired_trust_anchors'):
+                        bp.entity._cleanup_expired_trust_anchors()
+                    
+                    # Get updated statistics after cleanup
+                    tlm_stats = bp.entity.get_statistics()
+                    
+                    stats["trust_anchors"] = tlm_stats.get('total_trust_anchors', 0)
+                    stats["active_certificates"] = tlm_stats.get('total_trust_anchors', 0)  # For dashboard consistency
+                    stats["ctl_number"] = tlm_stats.get('ctl_number', 0)
+                    stats["base_ctl_number"] = tlm_stats.get('base_ctl_number', 0)
+                    stats["delta_additions_pending"] = tlm_stats.get('delta_additions_pending', 0)
+                    stats["delta_removals_pending"] = tlm_stats.get('delta_removals_pending', 0)
+                    
+                    # Count by type from trust_anchors_by_type
+                    anchors_by_type = tlm_stats.get('trust_anchors_by_type', {})
+                    stats["enrolled_eas"] = anchors_by_type.get('EA', 0)
+                    stats["enrolled_aas"] = anchors_by_type.get('AA', 0)
+                    
+                    # Last update time
+                    last_full_ctl = tlm_stats.get('last_full_ctl')
+                    if last_full_ctl:
+                        stats["last_update"] = last_full_ctl
+                    else:
                         import datetime
                         stats["last_update"] = datetime.datetime.utcnow().isoformat()
                 else:
+                    # Fallback to direct count if get_statistics not available
+                    trust_anchors_count = 0
+                    if hasattr(bp.entity, 'trust_anchors'):
+                        trust_anchors_count = len(bp.entity.trust_anchors)
+                    
+                    # Count by type
+                    ea_count = 0
+                    aa_count = 0
+                    if hasattr(bp.entity, 'trust_anchors'):
+                        for anchor in bp.entity.trust_anchors:
+                            auth_type = anchor.get('authority_type', 'UNKNOWN')
+                            if auth_type == 'EA':
+                                ea_count += 1
+                            elif auth_type == 'AA':
+                                aa_count += 1
+                    
+                    stats["trust_anchors"] = trust_anchors_count
+                    stats["active_certificates"] = trust_anchors_count  # For dashboard consistency
+                    stats["enrolled_eas"] = ea_count
+                    stats["enrolled_aas"] = aa_count
+                    
                     import datetime
                     stats["last_update"] = datetime.datetime.utcnow().isoformat()
+                
+                stats["trust_list_version"] = "v1.0"
                 
             elif bp.entity_type == "RootCA":
                 stats["entity_id"] = "RootCA"
                 
-                # Count issued Sub-CA certificates (EA, AA)
+                # Get comprehensive statistics from RootCA instance
                 import os
                 from pathlib import Path
                 
-                cert_dir = Path(bp.entity.base_dir) / "certificates"
-                sub_ca_count = 0
-                
-                if cert_dir.exists():
-                    # Count all certificates except root_ca_certificate.pem
-                    for cert_file in cert_dir.glob("*.pem"):
-                        if cert_file.name != "root_ca_certificate.pem":
-                            sub_ca_count += 1
-                
-                # If no Sub-CAs issued, check in typical EA/AA directories
-                if sub_ca_count == 0:
-                    # Check if EA/AA certs were issued by counting their existence
-                    data_root = Path(bp.entity.base_dir).parent
+                # Use get_subordinate_statistics() method for accurate, real-time data
+                if hasattr(bp.entity, 'get_subordinate_statistics'):
+                    sub_stats = bp.entity.get_subordinate_statistics()
                     
-                    # Count EA instances
-                    ea_dir = data_root / "ea"
-                    if ea_dir.exists():
-                        ea_instances = [d for d in ea_dir.iterdir() if d.is_dir() and d.name.startswith("EA_")]
-                        sub_ca_count += len(ea_instances)
+                    stats["issued_certificates"] = sub_stats.get('total_subordinates', 0)
+                    stats["sub_cas"] = sub_stats.get('total_subordinates', 0)
+                    stats["active_certificates"] = sub_stats.get('active_subordinates', 0)
+                    stats["enrolled_eas"] = sub_stats.get('ea_count', 0)
+                    stats["enrolled_aas"] = sub_stats.get('aa_count', 0)
+                else:
+                    # Fallback to directory counting
+                    cert_dir = Path(bp.entity.base_dir) / "subordinates"
+                    sub_ca_count = 0
+                    ea_count = 0
+                    aa_count = 0
                     
-                    # Count AA instances  
-                    aa_dir = data_root / "aa"
-                    if aa_dir.exists():
-                        aa_instances = [d for d in aa_dir.iterdir() if d.is_dir() and d.name.startswith("AA_")]
-                        sub_ca_count += len(aa_instances)
+                    if cert_dir.exists():
+                        # Count all certificates
+                        cert_files = list(cert_dir.glob("*.pem"))
+                        sub_ca_count = len(cert_files)
+                        
+                        # Count by type
+                        for cert_file in cert_files:
+                            if cert_file.name.startswith('EA_'):
+                                ea_count += 1
+                            elif cert_file.name.startswith('AA_'):
+                                aa_count += 1
+                    
+                    stats["issued_certificates"] = sub_ca_count
+                    stats["sub_cas"] = sub_ca_count
+                    stats["active_certificates"] = sub_ca_count  # Simplified fallback
+                    stats["enrolled_eas"] = ea_count
+                    stats["enrolled_aas"] = aa_count
                 
-                stats["issued_certificates"] = sub_ca_count
-                stats["sub_cas"] = sub_ca_count
                 stats["certificate_chain"] = "Root → EA/AA"
                 stats["status"] = "Active"
                 
-                # Get CRL info
+                # Get CRL statistics
+                if hasattr(bp.entity, 'get_crl_statistics'):
+                    crl_stats = bp.entity.get_crl_statistics()
+                    stats["crl_number"] = crl_stats.get('crl_number', 0)
+                    stats["revoked_certificates"] = crl_stats.get('total_revoked', 0)
+                    stats["delta_pending"] = crl_stats.get('delta_pending', 0)
+                
+                # Get CRL availability info
                 if hasattr(bp.entity, 'crl_manager'):
                     try:
                         crl_path = bp.entity.crl_manager.full_crl_path

@@ -303,7 +303,7 @@ class ITSStation:
                 # Scarica CRL di tutte le AA fidate
                 trusted_aa_list = tlm_obj.get_trusted_aa_list()
                 for aa in trusted_aa_list:
-                    aa_crl_path = f"./data/aa/{aa}/crl/full_crl.pem"
+                    aa_crl_path = f"./pki_data/aa/{aa}/crl/full_crl.pem"
                     # In produzione: scaricare via V2X/HTTP dal TLM
                     self.logger.info(f"[OK] CRL aggiornata per AA: {aa}")
 
@@ -314,7 +314,7 @@ class ITSStation:
                 self.logger.info(f"Scaricando CRL per AA specifica: {aa_id}...")
 
                 # Percorso CRL dell'AA
-                aa_crl_path = f"./data/aa/{aa_id}/crl/full_crl.pem"
+                aa_crl_path = f"./pki_data/aa/{aa_id}/crl/full_crl.pem"
 
                 # In un sistema reale, qui si farebbe:
                 # 1. Richiesta HTTP/V2X al server CRL dell'AA
@@ -340,14 +340,14 @@ class ITSStation:
                 # === CASO 3: Scansione automatica di tutte le AA disponibili ===
                 self.logger.info(f"Aggiornamento automatico CRL per tutte le AA disponibili...")
 
-                if not os.path.exists("./data/aa/"):
+                if not os.path.exists("./pki_data/aa/"):
                     self.logger.info(f"[WARNING] Nessuna directory AA trovata")
                     return False
 
                 aa_dirs = [
                     d
-                    for d in os.listdir("./data/aa/")
-                    if os.path.isdir(os.path.join("./data/aa/", d))
+                    for d in os.listdir("./pki_data/aa/")
+                    if os.path.isdir(os.path.join("./pki_data/aa/", d))
                 ]
 
                 updated_count = 0
@@ -561,11 +561,11 @@ class ITSStation:
                 aa_id_from_issuer = issuer_cn.replace("AuthorizationAuthority_", "")
 
                 aa_dirs = []
-                if os.path.exists("./data/aa/"):
+                if os.path.exists("./pki_data/aa/"):
                     all_aa_dirs = [
                         d
-                        for d in os.listdir("./data/aa/")
-                        if os.path.isdir(os.path.join("./data/aa/", d))
+                        for d in os.listdir("./pki_data/aa/")
+                        if os.path.isdir(os.path.join("./pki_data/aa/", d))
                     ]
                     # Priorit: AA con nome ESATTO che matcha l'issuer
                     matching_aa = [d for d in all_aa_dirs if d == aa_id_from_issuer]
@@ -584,7 +584,7 @@ class ITSStation:
 
                 crl_checked = False
                 for aa_dir in aa_dirs:
-                    crl_path = f"./data/aa/{aa_dir}/crl/full_crl.pem"
+                    crl_path = f"./pki_data/aa/{aa_dir}/crl/full_crl.pem"
                     if os.path.exists(crl_path):
                         try:
                             with open(crl_path, "rb") as f:

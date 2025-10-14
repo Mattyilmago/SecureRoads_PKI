@@ -56,8 +56,16 @@ venv.bak/
 *~
 .DS_Store
 
-# Project specific
+# Project specific - PKI Data
+pki_data/
 data/
+
+# Project specific - TLS Certificates
+tls_data/
+!tls_data/ca/
+certs/
+
+# Project specific - Logs and configs
 configs/
 logs/
 *.log
@@ -78,9 +86,10 @@ test_*.py
 !raspberry_pi_test.py
 !analyze_results.py
 
-# Security
+# Security - Certificates and Keys
 *.key
 *.pem
+!tls_data/ca/*.pem
 *.p12
 *.pfx
 *.crt
@@ -93,6 +102,5 @@ config.json
 .env.*
 secrets/
 ssl/
-certs/
 *.der
 *.bin

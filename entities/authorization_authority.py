@@ -38,7 +38,7 @@ from utils.metrics import get_metrics_collector
 
 class AuthorizationAuthority:
     def __init__(
-        self, root_ca, tlm, aa_id=None, base_dir="./data/aa/"
+        self, root_ca, tlm, aa_id=None, base_dir="./pki_data/aa/"
     ):
         """
         Inizializza Authorization Authority.
@@ -137,6 +137,10 @@ class AuthorizationAuthority:
         self.logger.info("Inizializzando scheduler controllo certificati scaduti...")
         self._init_expiry_scheduler()
         self.logger.info("Scheduler certificati scaduti inizializzato!")
+
+        # 🆕 AUTO-REGISTER TO TLM
+        # AA si auto-registra sempre al TLM passato nel costruttore
+        self._auto_register_to_tlm()
 
         self.logger.info(f"Inizializzazione Authorization Authority {aa_id} completata!")
 
@@ -296,7 +300,7 @@ class AuthorizationAuthority:
                     if isinstance(pk, dict):
                         # publicKeys  un dict, prendi il primo valore
                         for key in pk.values():
-                            # La chiave pu essere bytes o gi un oggetto chiave pubblica
+                            # La chiave può essere bytes o già un oggetto chiave pubblica
                             if isinstance(key, bytes):
                                 # Prova a convertire bytes in chiave pubblica EC
                                 try:
@@ -310,7 +314,7 @@ class AuthorizationAuthority:
                                     # Se fallisce la deserializzazione, usa i bytes direttamente
                                     extracted_keys.append(key)
                             else:
-                                #  gi un oggetto chiave pubblica
+                                #  già un oggetto chiave pubblica
                                 extracted_keys.append(key)
                             break  # Una chiave per request
                     else:
@@ -355,9 +359,9 @@ class AuthorizationAuthority:
         self.crl_manager.add_revoked_certificate(certificate, reason)
         self.logger.info(f"Authorization Ticket aggiunto alla lista di revoca AA")
 
-        # Pubblica Delta CRL incrementale
+        # Pubblica Delta CRL incrementale (senza backup per performance)
         self.logger.info(f"Pubblicando Delta CRL AA...")
-        self.crl_manager.publish_delta_crl()
+        self.crl_manager.publish_delta_crl(skip_backup=True)
         self.logger.info(f"Revoca completata!")
 
     def revoke_by_serial(self, serial_hex, reason=ReasonFlags.unspecified):
@@ -375,9 +379,9 @@ class AuthorizationAuthority:
         self.crl_manager.revoke_by_serial(serial_hex, reason)
         self.logger.info("Authorization Ticket revocato tramite CRLManager")
 
-        # Pubblica Delta CRL incrementale
+        # Pubblica Delta CRL incrementale (senza backup per performance)
         self.logger.info("Pubblicando Delta CRL AA...")
-        self.crl_manager.publish_delta_crl()
+        self.crl_manager.publish_delta_crl(skip_backup=True)
         self.logger.info("Revoca completata!")
 
     # Genera e salva una Full CRL completa conforme X.509 ASN.1 su file PEM
@@ -693,3 +697,30 @@ class AuthorizationAuthority:
         return self.message_encoder.encode_authorization_response(
             response_code=error_code, request_hash=request_hash, certificate=None, hmac_key=hmac_key
         )
+
+    def _auto_register_to_tlm(self):
+        """
+        Auto-registrazione al TLM.
+        AA ha già un riferimento al TLM nel costruttore, quindi usa quello.
+        """
+        try:
+            from utils.cert_utils import get_certificate_ski
+            
+            # AA ha già self.tlm dal costruttore
+            if not self.tlm:
+                self.logger.debug("TLM not available for auto-registration")
+                return
+            
+            # Controlla se già registrato
+            aa_ski = get_certificate_ski(self.certificate)
+            already_registered = any(anchor.get("ski") == aa_ski for anchor in self.tlm.trust_anchors)
+            
+            if not already_registered:
+                self.tlm.add_trust_anchor(self.certificate, authority_type="AA")
+                self.logger.info(f"✅ Auto-registered {self.aa_id} to TLM")
+            else:
+                self.logger.debug(f"AA {self.aa_id} già registrato in TLM")
+                
+        except Exception as e:
+            # Auto-registration è best-effort, non blocca l'inizializzazione
+            self.logger.debug(f"Auto-registration to TLM skipped: {e}")

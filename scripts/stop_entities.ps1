@@ -54,22 +54,47 @@ if ($processes) {
         $processes | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         
-        # Also check and kill processes on PKI ports
-        Write-Host "Checking PKI ports..." -ForegroundColor Cyan
+        # Also check and kill processes on PKI ports (parallel processing)
+        Write-Host "Checking PKI ports in parallel..." -ForegroundColor Cyan
         # EA: 5000-5019 (20 ports), AA: 5020-5039 (20 ports), TLM: 5050, RootCA: 5999
-        $ports = @()
-        $ports += 5000..5019  # EA range
-        $ports += 5020..5039  # AA range
-        $ports += 5050        # TLM
-        $ports += 5999        # RootCA
+        # Note: Dashboard port 8080 is NOT stopped by this script
         
-        foreach ($port in $ports) {
-            $connection = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-            if ($connection) {
-                $processId = $connection.OwningProcess
-                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-                Write-Host "  Killed process on port $port [ID=$processId]" -ForegroundColor Yellow
+        # Dividi le porte in gruppi per parallelizzare (same method as stop_all.ps1)
+        $portGroups = @(
+            @(5000..5019),  # Gruppo EA (20 ports)
+            @(5020..5039),  # Gruppo AA (20 ports)
+            @(5050, 5999)   # Gruppo TLM e RootCA (escludendo dashboard 8080)
+        )
+        
+        # Avvia job per ogni gruppo di porte
+        $jobs = @()
+        foreach ($group in $portGroups) {
+            $job = Start-Job -ScriptBlock {
+                param($portsInGroup)
+                $messages = @()
+                foreach ($port in $portsInGroup) {
+                    $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
+                    if ($conn) {
+                        $processId = $conn.OwningProcess
+                        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                        $messages += "Killed process on port $port"
+                    }
+                }
+                $messages
+            } -ArgumentList $group
+            $jobs += $job
+        }
+        
+        # Aspetta che tutti i job finiscano
+        $jobs | Wait-Job
+        
+        # Raccogli output dai job e mostra messaggi
+        foreach ($job in $jobs) {
+            $outputs = Receive-Job $job
+            foreach ($output in $outputs) {
+                Write-Host "  $output" -ForegroundColor Yellow
             }
+            Remove-Job $job
         }
         
         # Verify

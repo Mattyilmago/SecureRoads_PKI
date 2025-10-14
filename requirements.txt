@@ -17,3 +17,4 @@ psutil>=5.9.0
 
 # Scheduling dependencies
 schedule>=1.2.0
+portalocker>=2.8.0

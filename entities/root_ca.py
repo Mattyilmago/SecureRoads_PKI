@@ -374,3 +374,102 @@ class RootCA:
         self.logger.info(f"  Certificati revocati totali: {stats['total_revoked']}")
         self.logger.info(f"  Revoche delta pending: {stats['delta_pending']}")
         return stats
+    
+    def get_subordinate_statistics(self):
+        """
+        Restituisce statistiche sui certificati subordinati emessi dalla Root CA.
+        
+        Conta i certificati subordinati (EA, AA) nella directory 'subordinates'.
+        Include il conteggio totale e per tipo (EA, AA).
+        
+        IMPORTANTE - AGGIORNAMENTO AUTOMATICO METRICHE:
+        Questo metodo calcola dinamicamente le statistiche in tempo reale:
+        
+        1. Legge tutti i certificati dalla directory 'subordinates'
+        2. Verifica per ogni certificato se è ancora valido (non scaduto)
+        3. Controlla se il certificato è stato revocato (presente nella CRL)
+        4. Conta solo i certificati attivi (validi E non revocati)
+        
+        Viene chiamato automaticamente quando:
+        - Il dashboard richiede metriche (/api/monitoring/metrics)
+        - Viene richiesto lo stato dell'entità (/api/stats)
+        
+        Questo garantisce che:
+        - I certificati scaduti non vengono contati come attivi
+        - I certificati revocati non vengono contati come attivi
+        - Le metriche riflettono sempre lo stato reale del sistema
+        - La dashboard mostra conteggi accurati e aggiornati
+        - Il sistema è conforme agli standard ETSI TS 102 941
+        
+        Returns:
+            dict con:
+                - total_subordinates: numero totale di certificati subordinati
+                - ea_count: numero di Enrollment Authorities
+                - aa_count: numero di Authorization Authorities
+                - active_subordinates: numero di certificati subordinati validi (non scaduti, non revocati)
+        """
+        from pathlib import Path
+        
+        subordinates_dir = Path(self.base_dir) / "subordinates"
+        
+        stats = {
+            'total_subordinates': 0,
+            'ea_count': 0,
+            'aa_count': 0,
+            'active_subordinates': 0
+        }
+        
+        if not subordinates_dir.exists():
+            return stats
+        
+        # Conta tutti i certificati subordinati
+        cert_files = list(subordinates_dir.glob("*.pem"))
+        stats['total_subordinates'] = len(cert_files)
+        
+        # Conta per tipo e verifica validità
+        now = datetime.now(timezone.utc)
+        for cert_file in cert_files:
+            try:
+                # Leggi il certificato
+                with open(cert_file, 'rb') as f:
+                    from cryptography.hazmat.backends import default_backend
+                    cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+                
+                # Determina il tipo dal nome del file
+                if cert_file.name.startswith('EA_'):
+                    stats['ea_count'] += 1
+                elif cert_file.name.startswith('AA_'):
+                    stats['aa_count'] += 1
+                
+                # Verifica se il certificato è ancora valido (non scaduto e non revocato)
+                expiry_date = get_certificate_expiry_time(cert)
+                if expiry_date.tzinfo is None:
+                    expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                
+                # Verifica scadenza
+                is_expired = expiry_date <= now
+                
+                # Verifica revoca (controlla se il serial è nella CRL)
+                is_revoked = False
+                if hasattr(self, 'crl_manager'):
+                    # Controlla se il certificato è nella lista dei revocati
+                    is_revoked = any(
+                        rev['serial_number'] == cert.serial_number 
+                        for rev in self.crl_manager.revoked_certificates
+                    )
+                
+                # Se non scaduto e non revocato, è attivo
+                if not is_expired and not is_revoked:
+                    stats['active_subordinates'] += 1
+                    
+            except Exception as e:
+                self.logger.warning(f"Errore nel processare {cert_file.name}: {e}")
+                continue
+        
+        self.logger.info(f"Statistiche subordinati RootCA:")
+        self.logger.info(f"  Totale certificati: {stats['total_subordinates']}")
+        self.logger.info(f"  EA: {stats['ea_count']}")
+        self.logger.info(f"  AA: {stats['aa_count']}")
+        self.logger.info(f"  Attivi: {stats['active_subordinates']}")
+        
+        return stats

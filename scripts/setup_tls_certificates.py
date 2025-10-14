@@ -19,12 +19,12 @@ def create_tls_ca():
     """Crea Certificate Authority per TLS"""
     print("\n=== Creazione TLS CA ===")
     
-    # Directory per certificati
-    certs_dir = Path("certs")
-    certs_dir.mkdir(exist_ok=True)
+    # Directory per certificati TLS
+    ca_dir = Path("tls_data/ca")
+    ca_dir.mkdir(exist_ok=True, parents=True)
     
-    ca_key_path = certs_dir / "tls_ca_key.pem"
-    ca_cert_path = certs_dir / "tls_ca_cert.pem"
+    ca_key_path = ca_dir / "tls_ca_key.pem"
+    ca_cert_path = ca_dir / "tls_ca_cert.pem"
     
     # Genera chiave CA
     ca_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
@@ -90,9 +90,24 @@ def create_server_certificate(entity_id, port, ca_key, ca_cert):
     """Crea certificato TLS per un server"""
     print(f"\n=== Creazione certificato per {entity_id} (:{port}) ===")
     
-    certs_dir = Path("certs")
-    key_path = certs_dir / f"{entity_id.lower()}_key.pem"
-    cert_path = certs_dir / f"{entity_id.lower()}_cert.pem"
+    # Determina la sottocartella in base al tipo di entità
+    entity_type = entity_id.split("_")[0].lower()  # ea, aa, tlm, rootca
+    
+    # Mappa i tipi di entità alle cartelle
+    entity_dirs = {
+        "ea": "servers/ea",
+        "aa": "servers/aa",
+        "tlm": "servers/tlm",
+        "rootca": "servers/root_ca"
+    }
+    
+    # Ottieni la directory corretta
+    subdir = entity_dirs.get(entity_type, "servers")
+    server_dir = Path(f"tls_data/{subdir}")
+    server_dir.mkdir(exist_ok=True, parents=True)
+    
+    key_path = server_dir / f"{entity_id.lower()}_key.pem"
+    cert_path = server_dir / f"{entity_id.lower()}_cert.pem"
     
     # Genera chiave server
     server_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
@@ -182,11 +197,11 @@ def create_client_certificate(client_id, ca_key, ca_cert):
     """Crea certificato client per mTLS"""
     print(f"\n=== Creazione certificato client per {client_id} ===")
     
-    certs_dir = Path("certs/clients")
-    certs_dir.mkdir(exist_ok=True, parents=True)
+    clients_dir = Path("tls_data/clients")
+    clients_dir.mkdir(exist_ok=True, parents=True)
     
-    key_path = certs_dir / f"{client_id.lower()}_key.pem"
-    cert_path = certs_dir / f"{client_id.lower()}_cert.pem"
+    key_path = clients_dir / f"{client_id.lower()}_key.pem"
+    cert_path = clients_dir / f"{client_id.lower()}_cert.pem"
     
     # Genera chiave client
     client_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
@@ -255,6 +270,81 @@ def create_client_certificate(client_id, ca_key, ca_cert):
     return key_path, cert_path
 
 
+def ensure_tls_certificate_for_entity(entity_id, port=None):
+    """
+    Assicura che esistano certificati TLS per una specifica entity.
+    Se non esistono, li genera automaticamente.
+    
+    Questa funzione può essere chiamata da server.py per auto-generare certificati.
+    
+    Args:
+        entity_id: ID entity (es. "EA_001", "AA_003", "TLM_MAIN")
+        port: Porta del server (opzionale, default basato su entity type)
+    
+    Returns:
+        tuple: (cert_path, key_path) or (None, None) se errore
+    """
+    # Determina tipo entity
+    entity_type = entity_id.split("_")[0].lower()
+    
+    # Mappa entity type a directory
+    entity_dirs = {
+        "ea": "servers/ea",
+        "aa": "servers/aa",
+        "tlm": "servers/tlm",
+        "rootca": "servers/root_ca"
+    }
+    
+    if entity_type not in entity_dirs:
+        print(f"⚠️  Tipo entity non riconosciuto: {entity_type}")
+        return None, None
+    
+    # Path certificati
+    cert_dir = Path("tls_data") / entity_dirs[entity_type]
+    cert_path = cert_dir / f"{entity_id.lower()}_cert.pem"
+    key_path = cert_dir / f"{entity_id.lower()}_key.pem"
+    
+    # Se già esistono, ritorna i path
+    if cert_path.exists() and key_path.exists():
+        print(f"✅ Certificati TLS già presenti per {entity_id}")
+        return str(cert_path), str(key_path)
+    
+    # Genera certificati
+    print(f"🔧 Generazione automatica certificati TLS per {entity_id}...")
+    
+    # Carica o crea CA
+    ca_dir = Path("tls_data/ca")
+    ca_key_path = ca_dir / "tls_ca_key.pem"
+    ca_cert_path = ca_dir / "tls_ca_cert.pem"
+    
+    if not ca_key_path.exists() or not ca_cert_path.exists():
+        print("⚠️  TLS CA non trovata! Generazione CA...")
+        ca_key, ca_cert = create_tls_ca()
+    else:
+        # Carica CA esistente
+        with open(ca_key_path, "rb") as f:
+            ca_key = serialization.load_pem_private_key(
+                f.read(), password=None, backend=default_backend()
+            )
+        with open(ca_cert_path, "rb") as f:
+            ca_cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+    
+    # Determina porta di default se non specificata
+    if port is None:
+        default_ports = {
+            "ea": 5000,
+            "aa": 5020,
+            "tlm": 5050,
+            "rootca": 5999
+        }
+        port = default_ports.get(entity_type, 5000)
+    
+    # Genera certificato server
+    create_server_certificate(entity_id, port, ca_key, ca_cert)
+    
+    return str(cert_path), str(key_path)
+
+
 def main():
     """Main function"""
     import ipaddress
@@ -268,12 +358,13 @@ def main():
     
     # Entities da configurare
     entities = [
+        ("RootCA", 5999),
         ("EA_001", 5000),
         ("EA_002", 5001),
         ("EA_003", 5002),
-        ("AA_001", 5003),
-        ("AA_002", 5004),
-        ("TLM_MAIN", 5005),
+        ("AA_001", 5020),
+        ("AA_002", 5021),
+        ("TLM_MAIN", 5050),
     ]
     
     # Crea certificati server
@@ -285,6 +376,12 @@ def main():
     create_client_certificate("TEST_CLIENT", ca_key, ca_cert)
     create_client_certificate("DASHBOARD_CLIENT", ca_key, ca_cert)
     
+    # Crea certificati ITS-S (veicoli/stazioni ITS) per interactive_pki_tester.py
+    print("\n=== Certificati ITS-S (Veicoli) ===")
+    create_client_certificate("ITS_001", ca_key, ca_cert)
+    create_client_certificate("ITS_002", ca_key, ca_cert)
+    create_client_certificate("ITS_003", ca_key, ca_cert)
+    
     print("\n" + "="*70)
     print("  ✅ SETUP COMPLETATO")
     print("="*70)
@@ -293,11 +390,12 @@ def main():
     print("2. Aggiorna config files con tls_enabled: true")
     print("3. Aggiorna test per usare HTTPS con certificati client")
     print("\nFile generati:")
-    print("  - certs/tls_ca_cert.pem (CA pubblico)")
-    print("  - certs/tls_ca_key.pem (CA privato)")
-    print("  - certs/{entity}_cert.pem (certificati server)")
-    print("  - certs/{entity}_key.pem (chiavi private server)")
-    print("  - certs/clients/*_cert.pem (certificati client per mTLS)")
+    print("  - tls_data/ca/tls_ca_cert.pem (CA pubblico)")
+    print("  - tls_data/ca/tls_ca_key.pem (CA privato)")
+    print("  - tls_data/servers/{entity_type}/{entity}_cert.pem (certificati server)")
+    print("  - tls_data/servers/{entity_type}/{entity}_key.pem (chiavi private server)")
+    print("  - tls_data/clients/test_client_*.pem (certificati client per mTLS)")
+    print("  - tls_data/clients/its_*.pem (certificati ITS-S per veicoli/stazioni)")
     print()
 
 

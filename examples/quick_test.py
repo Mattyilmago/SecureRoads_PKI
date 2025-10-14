@@ -33,9 +33,9 @@ _started_processes = []
 
 # Configurazione TLS/mTLS
 TLS_ENABLED = True  # Può essere sovrascritto con --no-tls
-TLS_CA_CERT = "certs/tls_ca_cert.pem"
-TLS_CLIENT_CERT = "certs/clients/test_client_cert.pem"
-TLS_CLIENT_KEY = "certs/clients/test_client_key.pem"
+TLS_CA_CERT = "tls_data/ca/tls_ca_cert.pem"
+TLS_CLIENT_CERT = "tls_data/clients/test_client_cert.pem"
+TLS_CLIENT_KEY = "tls_data/clients/test_client_key.pem"
 
 
 def get_session():

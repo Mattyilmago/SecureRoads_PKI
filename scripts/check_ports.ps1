@@ -26,8 +26,11 @@ Write-Host ""
 $in_use_count = 0
 $available_count = 0
 
+# Ottieni tutte le connessioni in ascolto una volta sola
+$all_listening = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
+
 foreach ($port in $all_ports) {
-    $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    $connections = $all_listening | Where-Object { $_.LocalPort -eq $port }
     
     if ($connections) {
         $in_use_count++
@@ -66,24 +69,4 @@ Write-Host "  Porte disponibili: $available_count" -ForegroundColor Green
 Write-Host "="*70 -ForegroundColor Cyan
 Write-Host ""
 
-# Mostra processi Python attivi
-$python_processes = Get-Process python* -ErrorAction SilentlyContinue
-
-if ($python_processes) {
-    Write-Host "Processi Python attivi:" -ForegroundColor Yellow
-    foreach ($proc in $python_processes) {
-        Write-Host "   PID $($proc.Id): $($proc.Path)" -ForegroundColor Gray
-    }
-    Write-Host ""
-}
-
-# Suggerimenti
-if ($in_use_count -gt 0) {
-    Write-Host "SUGGERIMENTI:" -ForegroundColor Cyan
-    Write-Host "   - Per fermare tutti i processi Python:" -ForegroundColor White
-    Write-Host "     Get-Process python* | Stop-Process -Force" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "   - Per verificare quale processo usa una porta specifica (es. 5000):" -ForegroundColor White
-    Write-Host "     netstat -ano | findstr :5000" -ForegroundColor Gray
-    Write-Host ""
-}
+# Rimossi i suggerimenti e la lista processi Python per velocizzare
