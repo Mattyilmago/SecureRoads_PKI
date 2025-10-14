@@ -170,6 +170,19 @@ class MetricsCollector:
                 self._counters[counter_name] = 0
             self._counters[counter_name] += value
     
+    def decrement_counter(self, counter_name: str, value: int = 1):
+        """
+        Decrement a specific counter (for certificates/tickets revoked)
+        
+        Args:
+            counter_name: Name of counter to decrement
+            value: Amount to decrement (default 1)
+        """
+        with self._lock:
+            if counter_name not in self._counters:
+                self._counters[counter_name] = 0
+            self._counters[counter_name] -= value
+    
     def get_stats(self, last_n_minutes: Optional[int] = None) -> MetricsStats:
         """
         Get aggregated statistics

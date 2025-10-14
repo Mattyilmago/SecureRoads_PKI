@@ -64,6 +64,7 @@ class ResponseCode(Enum):
     WRONG_AA = 13
     DENM_INVALID_PERMISSIONS = 14
     CAM_INVALID_PERMISSIONS = 15
+    UNKNOWN_EA = 16
 
 
 class PublicKeyAlgorithm(Enum):

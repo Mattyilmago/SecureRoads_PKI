@@ -76,8 +76,6 @@ if (-not $SkipEntities) {
         Write-Host "      ERRORE: Impossibile avviare RootCA" -ForegroundColor Red
     }
     
-    Start-Sleep -Seconds 1
-    
     # Avvia TLM (porta 5050)
     Write-Host "[2/2] Avvio TLM sulla porta 5050..." -ForegroundColor Cyan
     

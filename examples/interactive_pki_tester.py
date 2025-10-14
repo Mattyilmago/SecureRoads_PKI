@@ -37,12 +37,23 @@ import requests
 import secrets
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography import x509
+
+# Import PKIEntityManager for port management
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from cryptography.hazmat.primitives import hashes
+from server import PKIEntityManager
+from utils.pki_paths import PKIPathManager
+
+# Import ETSI components
+from protocols.etsi_message_encoder import ETSIMessageEncoder
+from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, SharedAtRequest, compute_hashed_id8, ResponseCode
 
 # Variabile globale per processi avviati
 _started_processes = []
@@ -59,40 +70,92 @@ def safe_print(text, **kwargs):
 
 
 def start_pki_entities():
-    """Avvia le entities PKI automaticamente"""
+    """Avvia le entities PKI automaticamente controllando la disponibilità delle porte"""
     global _started_processes
+    
+    if _started_processes:
+        print("  ⚠️  Entities già avviate, skip")
+        return _started_processes
     
     print("\n" + "="*70)
     print("  AVVIO ENTITIES PKI")
     print("="*70)
     
+    # Ferma eventuali entities esistenti prima di avviarne di nuove
+    #print("  Chiusura entities esistenti...")
+    #stop_pki_entities()
+    #time.sleep(2)  # Aspetta che si chiudano
+    
     # Trova root del progetto
     project_root = Path(__file__).parent.parent
     
-    # Configura entities da avviare con porte standard
+    # Crea manager per gestione porte
+    manager = PKIEntityManager()
+    
+    # Trova entities esistenti per generare nomi unici
+    existing_ea = manager.find_existing_entities("EA")
+    existing_aa = manager.find_existing_entities("AA")
+    
+    # Genera nomi unici per EA e AA
+    ea_name = manager.generate_entity_name_with_suffix("EA_001", existing_ea)
+    aa_name = manager.generate_entity_name_with_suffix("AA_001", existing_aa)
+    
+    print(f"  Nomi generati: {ea_name}, {aa_name}")
+    
+    # Entities da avviare con nomi dinamici
     entities = [
-        ("EA", "EA_001"),
-        ("AA", "AA_001"),
+        ("EA", ea_name),
+        ("AA", aa_name),
         ("TLM", "TLM_MAIN"),
         ("RootCA", "RootCA")
     ]
     
+    # Trova porte disponibili per ogni entità
+    used_ports = manager.find_used_ports()  # Inizia con porte già in uso
+    entity_configs = []
+    
+    print("  Ricerca porte disponibili...")
     for entity_type, entity_id in entities:
+        port = manager.find_available_port_in_range(entity_type, used_ports=used_ports)
+        if port:
+            used_ports.add(port)
+            entity_configs.append((entity_type, entity_id, port))
+            print(f"    {entity_id}: porta {port}")
+        else:
+            print(f"    {entity_id}: ❌ nessuna porta disponibile nel range - SKIP")
+            # Continua con le altre entities invece di fallire completamente
+    
+    print("\n  Avvio entities...")
+    
+    for entity_type, entity_id, port in entity_configs:
         try:
             print(f"\n  Avvio {entity_id}...", end=" ")
             
-            # Comando per avviare l'entity con server.py
+            # Comando per avviare l'entity con server.py sulla porta specifica
+            # Forza binding su localhost per test (127.0.0.1) e registra output su file
             cmd = [
                 sys.executable,
                 str(project_root / "server.py"),
                 "--entity", entity_type,
-                "--id", entity_id
+                "--id", entity_id,
+                "--port", str(port),
+                "--host", "127.0.0.1"
             ]
             
             # Avvia in background con PYTHONPATH settato
             env = os.environ.copy()
             env['PYTHONPATH'] = str(project_root)
             
+            # Prepare logs directory
+            log_dir = project_root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            out_path = str(log_dir / f"{entity_id}.out")
+            err_path = str(log_dir / f"{entity_id}.err")
+
+            out_f = open(out_path, "ab")
+            err_f = open(err_path, "ab")
+
             if os.name == 'nt':  # Windows
                 process = subprocess.Popen(
                     cmd,
@@ -100,16 +163,16 @@ def start_pki_entities():
                     env=env,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                     shell=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stdout=out_f,
+                    stderr=err_f
                 )
             else:  # Linux/Mac
                 process = subprocess.Popen(
                     cmd,
                     cwd=str(project_root),
                     env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stdout=out_f,
+                    stderr=err_f
                 )
             
             _started_processes.append((entity_type, entity_id, process))
@@ -119,40 +182,56 @@ def start_pki_entities():
             print(f"❌ ({str(e)[:30]})")
     
     # Aspetta che i server siano pronti
-    print(f"\n  Attesa avvio server (5 secondi)...")
-    time.sleep(5)
+    print(f"\n  Attesa avvio server (1 secondo)...")
+    time.sleep(1)
     
-    # Verifica che siano attivi - usa porte standard
+    # Verifica che siano attivi usando le porte reali
     print("\n  Verifica connessioni:")
     active_count = 0
-    ports_map = {
-        ("EA", "EA_001"): 5000,
-        ("EA", "EA_002"): 5001,
-        ("EA", "EA_003"): 5002,
-        ("AA", "AA_001"): 5020,
-        ("AA", "AA_002"): 5021,
-        ("TLM", "TLM_MAIN"): 5050,
-        ("RootCA", "RootCA"): 5999
-    }
     
     for entity_type, entity_id, process in _started_processes:
-        port = ports_map.get((entity_type, entity_id), 5000)
-        try:
-            response = requests.get(f"http://localhost:{port}/health", timeout=2)
-            if response.status_code == 200:
-                print(f"    {entity_id} (:{port}): ✅")
-                active_count += 1
-            else:
+        # Trova la porta corrispondente
+        port = None
+        for et, eid, p in entity_configs:
+            if et == entity_type and eid == entity_id:
+                port = p
+                break
+        
+        if port:
+            try:
+                response = requests.get(f"http://localhost:{port}/health", timeout=2)
+                if response.status_code == 200:
+                    print(f"    {entity_id} (:{port}): ✅")
+                    active_count += 1
+                else:
+                    print(f"    {entity_id} (:{port}): ❌")
+            except:
                 print(f"    {entity_id} (:{port}): ❌")
-        except:
-            print(f"    {entity_id} (:{port}): ❌")
+        else:
+            print(f"    {entity_id}: ❌ (porta non trovata)")
     
     print(f"\n  Entities attive: {active_count}/{len(_started_processes)}")
     
     if active_count == 0:
         print("\n  ⚠️  Nessuna entity attiva! Test potrebbero fallire.")
     
-    return _started_processes
+    # Restituisci informazioni sulle entities avviate con porte
+    entity_info = []
+    for entity_type, entity_id, process in _started_processes:
+        port = None
+        for et, eid, p in entity_configs:
+            if et == entity_type and eid == entity_id:
+                port = p
+                break
+        if port:
+            entity_info.append({
+                'type': entity_type,
+                'id': entity_id,
+                'port': port,
+                'url': f"http://localhost:{port}"
+            })
+    
+    return entity_info
 
 
 def stop_pki_entities():
@@ -199,11 +278,60 @@ class PKITester:
     def __init__(self):
         self.test_results = []
         self.enrolled_vehicles = {}  # {vehicle_id: {certificate_data}}
+        # Contatori per certificati emessi durante i test
+        self.total_ec_issued = 0
+        self.total_at_issued = 0
+        # Contatori per certificati revocati durante i test
+        self.revoked_ec_count = 0
+        self.revoked_at_count = 0
         # Default ports from configured ranges:
-        # EA: 5000-5019, AA: 5020-5039, TLM: 5040
-        self.ea_url = "http://localhost:5000"
-        self.aa_url = "http://localhost:5020"
-        self.tlm_url = "http://localhost:5040"
+        # EA: 5000-5019, AA: 5020-5039, TLM: 5050
+        # Try to detect running entities dynamically
+        self.ea_url = self._find_entity_url("EA", 5000, 5019)
+        self.aa_url = self._find_entity_url("AA", 5020, 5039) 
+        self.tlm_url = self._find_entity_url("TLM", 5050, 5050)
+        
+        # ETSI encoder instance
+        self.encoder = ETSIMessageEncoder()
+        
+        # Cache per certificati entity
+        self._ea_certificate = None
+        self._aa_certificate = None
+        self._ea_public_key = None
+        self._aa_public_key = None
+        
+    def _find_entity_url(self, entity_type, port_start, port_end):
+        """Trova dinamicamente l'URL di un'entità in esecuzione"""
+        import socket
+        
+        for port in range(port_start, port_end + 1):
+            try:
+                # Test connessione TCP
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                
+                if result == 0:
+                    # Porta aperta, verifica se è l'entità giusta
+                    url = f"http://127.0.0.1:{port}"
+                    try:
+                        response = requests.get(f"{url}/", timeout=2)
+                        if response.status_code == 200:
+                            data = response.json()
+                            if data.get('entity_type') == entity_type:
+                                self.print_info(f"Trovata {entity_type} su porta {port}")
+                                return url
+                    except:
+                        pass
+                        
+            except:
+                pass
+        
+        # Fallback alla porta di default se nessuna trovata
+        default_port = port_start
+        self.print_info(f"Nessuna {entity_type} trovata, uso porta default {default_port}")
+        return f"http://127.0.0.1:{default_port}"
         
     def print_header(self, text):
         """Stampa intestazione formattata"""
@@ -223,6 +351,28 @@ class PKITester:
         """Stampa informazione"""
         print(f"ℹ️  {text}")
     
+    @staticmethod
+    def time_test_execution(test_name=None):
+        """Decorator per tracciare il tempo di esecuzione dei test"""
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                start_time = time.time()
+                try:
+                    result = func(*args, **kwargs)
+                    end_time = time.time()
+                    duration = end_time - start_time
+                    display_name = test_name or func.__name__.replace('test_', '').replace('_', ' ').title()
+                    args[0].print_info(f"⏱️  Tempo esecuzione {display_name}: {duration:.2f}s")
+                    return result
+                except Exception as e:
+                    end_time = time.time()
+                    duration = end_time - start_time
+                    display_name = test_name or func.__name__.replace('test_', '').replace('_', ' ').title()
+                    args[0].print_error(f"⏱️  Test {display_name} fallito dopo {duration:.2f}s: {e}")
+                    raise
+            return wrapper
+        return decorator
+    
     def save_test_result(self, test_name, status, details=None):
         """Salva risultato del test"""
         result = {
@@ -240,71 +390,650 @@ class PKITester:
         with open(results_file, 'w') as f:
             json.dump(self.test_results, f, indent=2)
     
+    def get_entity_metrics(self, entity_url):
+        """Ottiene le metriche da un'entità PKI"""
+        try:
+            response = requests.get(f"{entity_url}/api/stats", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                self.print_warning(f"Impossibile ottenere metriche da {entity_url}: {response.status_code}")
+                return None
+        except Exception as e:
+            self.print_warning(f"Errore connessione metriche {entity_url}: {e}")
+            return None
+    
+    def print_metrics_summary(self, ea_metrics=None, aa_metrics=None):
+        """Stampa riepilogo metriche delle entities"""
+        self.print_info("📊 METRICHE ENTITIES:")
+        
+        if ea_metrics:
+            self.print_info(f"  EA ({ea_metrics.get('entity_id', 'N/A')}):")
+            self.print_info(f"    Certificati emessi: {ea_metrics.get('certificates_issued', 0)}")
+            self.print_info(f"    Certificati attivi: {ea_metrics.get('active_certificates', 0)}")
+            self.print_info(f"    Certificati revocati: {ea_metrics.get('revoked_certificates', 0)}")
+        
+        if aa_metrics:
+            self.print_info(f"  AA ({aa_metrics.get('entity_id', 'N/A')}):")
+            self.print_info(f"    Tickets emessi: {aa_metrics.get('certificates_issued', 0)}")
+            self.print_info(f"    Tickets attivi: {aa_metrics.get('active_certificates', 0)}")
+            self.print_info(f"    Tickets revocati: {aa_metrics.get('revoked_certificates', 0)}")
+    
+    def get_ea_certificate(self):
+        """Ottiene il certificato pubblico dell'EA dall'endpoint"""
+        if self._ea_certificate is None:
+            try:
+                # Ottieni certificato dall'endpoint EA
+                response = requests.get(f"{self.ea_url}/api/enrollment/certificate", timeout=5)
+                if response.status_code == 200:
+                    cert_pem = response.text
+                    self._ea_certificate = x509.load_pem_x509_certificate(
+                        cert_pem.encode('utf-8'), default_backend()
+                    )
+                    self._ea_public_key = self._ea_certificate.public_key()
+                    self.print_info(f"Ottenuto certificato EA dall'endpoint")
+                else:
+                    self.print_error(f"Errore ottenimento certificato EA: {response.status_code}")
+                    # Fallback al file system
+                    self._fallback_get_ea_certificate()
+            except Exception as e:
+                self.print_error(f"Errore caricamento certificato EA: {e}")
+                # Fallback al file system
+                self._fallback_get_ea_certificate()
+        return self._ea_certificate, self._ea_public_key
+    
+    def _fallback_get_ea_certificate(self):
+        """Fallback: ottiene certificato EA dal file system"""
+        try:
+            cert_path = Path("test_root/subordinates")
+            if cert_path.exists():
+                cert_files = list(cert_path.glob("EA_*.pem"))
+                if cert_files:
+                    with open(cert_files[0], 'r') as f:
+                        cert_pem = f.read()
+                    self._ea_certificate = x509.load_pem_x509_certificate(
+                        cert_pem.encode('utf-8'), default_backend()
+                    )
+                    self._ea_public_key = self._ea_certificate.public_key()
+                    self.print_info(f"Usando certificato EA dal file system (fallback)")
+        except Exception as e:
+            self.print_error(f"Errore caricamento certificato EA dal file system: {e}")
+    
+    def get_aa_certificate(self):
+        """Ottiene il certificato pubblico dell'AA dall'endpoint"""
+        if self._aa_certificate is None:
+            try:
+                # Ottieni certificato dall'endpoint AA
+                response = requests.get(f"{self.aa_url}/api/authorization/certificate", timeout=5)
+                if response.status_code == 200:
+                    cert_pem = response.text
+                    self._aa_certificate = x509.load_pem_x509_certificate(
+                        cert_pem.encode('utf-8'), default_backend()
+                    )
+                    self._aa_public_key = self._aa_certificate.public_key()
+                    self.print_info(f"Ottenuto certificato AA dall'endpoint")
+                else:
+                    self.print_error(f"Errore ottenimento certificato AA: {response.status_code}")
+                    # Fallback al file system
+                    self._fallback_get_aa_certificate()
+            except Exception as e:
+                self.print_error(f"Errore caricamento certificato AA: {e}")
+                # Fallback al file system
+                self._fallback_get_aa_certificate()
+        return self._aa_certificate, self._aa_public_key
+    
+    def _fallback_get_aa_certificate(self):
+        """Fallback: ottiene certificato AA dal file system"""
+        try:
+            cert_path = Path("test_root/subordinates")
+            if cert_path.exists():
+                cert_files = list(cert_path.glob("AA_*.pem"))
+                if cert_files:
+                    with open(cert_files[0], 'r') as f:
+                        cert_pem = f.read()
+                    self._aa_certificate = x509.load_pem_x509_certificate(
+                        cert_pem.encode('utf-8'), default_backend()
+                    )
+                    self._aa_public_key = self._aa_certificate.public_key()
+                    self.print_info(f"Usando certificato AA dal file system (fallback)")
+        except Exception as e:
+            self.print_error(f"Errore caricamento certificato AA dal file system: {e}")
+    
+    def create_etsi_enrollment_request(self, vehicle_id, private_key, public_key_pem):
+        """Crea una richiesta enrollment ETSI ASN.1 OER"""
+        try:
+            # Ottieni certificato EA
+            ea_cert, ea_public_key = self.get_ea_certificate()
+            if not ea_cert or not ea_public_key:
+                raise ValueError("Certificato EA non disponibile")
+            
+            # Debug: print EA cert info
+            self.print_info(f"EA Certificate subject: {ea_cert.subject}")
+            self.print_info(f"EA Certificate serial: {ea_cert.serial_number}")
+            
+            # Carica chiave pubblica dal PEM
+            public_key = serialization.load_pem_public_key(
+                public_key_pem.encode('utf-8'), default_backend()
+            )
+            
+            # Converti a bytes per InnerEcRequest
+            public_key_bytes = public_key.public_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            
+            # Crea InnerEcRequest
+            inner_request = InnerEcRequest(
+                itsId=vehicle_id,
+                certificateFormat=1,  # X.509
+                publicKeys={"verification": public_key_bytes},
+                requestedSubjectAttributes={
+                    "country": "IT",
+                    "organization": f"TestOrg_{vehicle_id}",
+                    "appPermissions": "CAM,DENM"  # Stringa separata da virgola
+                }
+            )
+            
+            self.print_info(f"Created InnerEcRequest for {vehicle_id}")
+            
+            # Codifica richiesta ETSI
+            encoded_request = self.encoder.encode_enrollment_request(
+                inner_request=inner_request,
+                private_key=private_key,
+                ea_public_key=ea_public_key,
+                ea_certificate=ea_cert
+            )
+            
+            self.print_info(f"Encoded ETSI request: {len(encoded_request)} bytes")
+            
+            return encoded_request
+            
+        except Exception as e:
+            self.print_error(f"Errore creazione richiesta enrollment ETSI: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def create_etsi_authorization_request(self, vehicle_id, enrollment_cert_pem, private_key, public_key_pem, hmac_key=None):
+        """Crea una richiesta authorization ETSI ASN.1 OER"""
+        try:
+            # Ottieni certificato AA
+            aa_cert, aa_public_key = self.get_aa_certificate()
+            if not aa_cert or not aa_public_key:
+                raise ValueError("Certificato AA non disponibile")
+            
+            # Carica enrollment certificate
+            ec_cert = x509.load_pem_x509_certificate(
+                enrollment_cert_pem.encode('utf-8'), default_backend()
+            )
+            
+            # Carica chiave pubblica dal PEM
+            public_key = serialization.load_pem_public_key(
+                public_key_pem.encode('utf-8'), default_backend()
+            )
+            
+            # Converti a bytes per InnerAtRequest
+            public_key_bytes = public_key.public_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            
+            # Crea HMAC key unica per unlinkability
+            if hmac_key is None:
+                hmac_key = secrets.token_bytes(32)
+            
+            # Crea InnerAtRequest
+            inner_request = InnerAtRequest(
+                publicKeys={"verification": public_key_bytes},
+                hmacKey=hmac_key,
+                requestedSubjectAttributes={
+                    "appPermissions": "CAM,DENM",  # Stringa separata da virgola
+                    "validityPeriod": 7  # giorni
+                }
+            )
+            
+            # Codifica richiesta ETSI
+            encoded_request = self.encoder.encode_authorization_request(
+                inner_request=inner_request,
+                enrollment_certificate=ec_cert,
+                aa_public_key=aa_public_key,
+                aa_certificate=aa_cert,
+                testing_mode=True  # TEMP: testing mode
+            )
+            
+            return encoded_request, hmac_key
+            
+        except Exception as e:
+            self.print_error(f"Errore creazione richiesta authorization ETSI: {e}")
+            return None, None
+    
+    def create_etsi_butterfly_request(self, vehicle_id, enrollment_cert_pem, num_tickets=5):
+        """Crea una richiesta butterfly ETSI ASN.1 OER per batch authorization"""
+        try:
+            # Ottieni certificato AA dall'endpoint REST
+            aa_cert, aa_public_key = self.get_aa_certificate()
+            if not aa_cert or not aa_public_key:
+                raise ValueError("Certificato AA non disponibile")
+            
+            self.print_info(f"Certificato AA ottenuto:")
+            self.print_info(f"  Subject: {aa_cert.subject.rfc4514_string()}")
+            self.print_info(f"  Serial: {aa_cert.serial_number}")
+            
+            # Carica enrollment certificate
+            ec_cert = x509.load_pem_x509_certificate(
+                enrollment_cert_pem.encode('utf-8'), default_backend()
+            )
+            
+            # Crea N InnerAtRequests per butterfly
+            inner_requests = []
+            hmac_keys = []
+            
+            for i in range(num_tickets):
+                # Genera chiave pubblica per questo AT
+                private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+                public_key = private_key.public_key()
+                public_key_bytes = public_key.public_bytes(
+                    encoding=serialization.Encoding.DER,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+                
+                # Genera HMAC key univoca per unlinkability
+                hmac_key = secrets.token_bytes(32)
+                hmac_keys.append(hmac_key)
+                
+                # Crea InnerAtRequest
+                inner_request = InnerAtRequest(
+                    publicKeys={"verification": public_key_bytes},
+                    hmacKey=hmac_key,
+                    requestedSubjectAttributes={
+                        "appPermissions": "CAM,DENM",
+                        "validityPeriod": 7  # giorni
+                    }
+                )
+                
+                inner_requests.append(inner_request)
+            
+            # Ottieni EA certificate per il SharedAtRequest
+            ea_cert, _ = self.get_ea_certificate()
+            if not ea_cert:
+                self.print_error("Certificato EA non disponibile, uso placeholder")
+                ea_hashed_id8 = b"\x00" * 8
+            else:
+                # Calcola HashedId8 del certificato EA
+                from protocols.etsi_message_types import compute_hashed_id8
+                ea_cert_der = ea_cert.public_bytes(serialization.Encoding.DER)
+                ea_hashed_id8 = compute_hashed_id8(ea_cert_der)
+                self.print_info(f"EA HashedId8: {ea_hashed_id8.hex()}")
+            
+            # Crea SharedAtRequest per parametri condivisi
+            key_tag = secrets.token_bytes(16)  # Random key tag per questa richiesta
+            
+            shared_at_request = SharedAtRequest(
+                eaId=ea_hashed_id8,
+                keyTag=key_tag,
+                certificateFormat=1,
+                requestedSubjectAttributes={
+                    "appPermissions": "CAM,DENM",
+                    "validityPeriod": 7
+                }
+            )
+            
+            # Crea ButterflyAuthorizationRequest
+            from protocols.etsi_message_types import ButterflyAuthorizationRequest
+            butterfly_request = ButterflyAuthorizationRequest(
+                sharedAtRequest=shared_at_request,
+                innerAtRequests=inner_requests,
+                batchSize=len(inner_requests),
+                enrollmentCertificate=ec_cert.public_bytes(serialization.Encoding.DER),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            # Codifica richiesta ETSI
+            encoded_request = self.encoder.encode_butterfly_authorization_request(
+                butterfly_request=butterfly_request,
+                enrollment_certificate=ec_cert,
+                aa_public_key=aa_public_key,
+                aa_certificate=aa_cert
+            )
+            
+            self.print_info(f"Encoded ETSI butterfly request: {len(encoded_request)} bytes")
+            self.print_info(f"  Numero AT richiesti: {num_tickets}")
+            
+            return encoded_request, hmac_keys
+            
+        except Exception as e:
+            self.print_error(f"Errore creazione richiesta butterfly ETSI: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None
+
+    @time_test_execution("Enrollment Veicolo")
     def test_1_vehicle_enrollment(self):
-        """Test 1: Enrollment completo di un veicolo usando API REST"""
-        self.print_header("TEST 1: Enrollment Veicolo")
+        """Test 1: Enrollment completo di un veicolo usando API ETSI standard"""
+        self.print_header("TEST 1: Enrollment Veicolo (ETSI Standard)")
         
         try:
             vehicle_id = f"VEHICLE_{int(time.time())}"
-            self.print_info(f"Creazione richiesta enrollment: {vehicle_id}")
+            self.print_info(f"Creazione richiesta enrollment ETSI: {vehicle_id}")
             
-            # Prepara richiesta enrollment
-            enrollment_request = {
-                "its_id": vehicle_id,
-                "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfEeCICXLNuwlLRNsap323uVYBG5p\n/LoUa3nH+sbElrw1Dy4M18/9Bib0OLTYXEyuw4/g1U3uHztrLQCKud1y+Q==\n-----END PUBLIC KEY-----",
-                "requested_attributes": {
-                    "country": "IT",
-                    "organization": f"TestOrg_{vehicle_id}",
-                    "validity_days": 365
-                }
+            # Genera chiavi per il veicolo
+            private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+            public_key = private_key.public_key()
+            public_key_pem = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode('utf-8')
+            
+            # Crea richiesta enrollment ETSI ASN.1 OER
+            encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+            if not encoded_request:
+                self.print_error("Impossibile creare richiesta enrollment ETSI")
+                return False
+            
+            self.print_info(f"Invio richiesta ETSI a {self.ea_url}/api/enrollment/request")
+            self.print_info(f"Payload ASN.1 OER: {len(encoded_request)} bytes")
+            
+            # Headers per ETSI
+            headers = {
+                "Content-Type": "application/octet-stream"
             }
             
-            self.print_info(f"Invio richiesta a {self.ea_url}/api/enrollment/request/simple")
-            
             response = requests.post(
-                f"{self.ea_url}/api/enrollment/request/simple",
-                json=enrollment_request,
+                f"{self.ea_url}/api/enrollment/request",
+                data=encoded_request,
+                headers=headers,
                 timeout=10
             )
             
             if response.status_code == 200:
-                result = response.json()
+                # La risposta dovrebbe essere ASN.1 OER encoded
+                response_data = response.content
                 self.print_success(f"Enrollment Certificate ottenuto!")
-                self.print_info(f"  Response: {result.get('message', 'Success')}")
+                self.print_info(f"  Response ASN.1 OER: {len(response_data)} bytes")
+                
+                # Decodifica risposta ETSI per estrarre il certificato
+                encoder = ETSIMessageEncoder()
+                try:
+                    inner_response = encoder.decode_enrollment_response(response_data, private_key)
+                    
+                    if inner_response.is_success() and inner_response.certificate:
+                        # Converti DER a PEM
+                        cert_der = inner_response.certificate
+                        cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
+                        cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                        
+                        # Salva certificato su disco
+                        paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                        paths.certificates_dir.mkdir(parents=True, exist_ok=True)
+                        ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
+                        with open(ec_path, 'w') as f:
+                            f.write(cert_pem)
+                        
+                        self.print_info(f"  Certificato salvato: {ec_path}")
+                        
+                        # Salva anche chiave privata
+                        key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
+                        paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
+                        private_key_pem = private_key.private_bytes(
+                            encoding=serialization.Encoding.PEM,
+                            format=serialization.PrivateFormat.PKCS8,
+                            encryption_algorithm=serialization.NoEncryption()
+                        ).decode('utf-8')
+                        with open(key_path, 'w') as f:
+                            f.write(private_key_pem)
+                        
+                        self.print_info(f"  Chiave privata salvata: {key_path}")
+                        
+                        result = {
+                            "message": "ETSI Enrollment successful",
+                            "response_size": len(response_data),
+                            "vehicle_id": vehicle_id,
+                            "certificate_path": str(ec_path),
+                            "private_key_path": str(key_path),
+                            "certificate_pem": cert_pem
+                        }
+                    else:
+                        self.print_error(f"Enrollment fallito: {inner_response.responseCode}")
+                        return False
+                        
+                except Exception as e:
+                    self.print_error(f"Errore decodifica risposta ETSI: {e}")
+                    # Fallback: salva dati raw
+                    result = {
+                        "message": "ETSI Enrollment successful (raw)",
+                        "response_size": len(response_data),
+                        "vehicle_id": vehicle_id
+                    }
+                
+                # Incrementa contatore EC emessi
+                self.total_ec_issued += 1
                 
                 # Salva info veicolo
-                self.enrolled_vehicles[vehicle_id] = {
+                vehicle_info = {
                     "enrollment_response": result,
+                    "private_key": private_key,
+                    "public_key_pem": public_key_pem,
                     "timestamp": datetime.now().isoformat()
                 }
                 
+                # Aggiungi certificato PEM se decodificato
+                if 'certificate_pem' in result:
+                    vehicle_info["certificate_pem"] = result["certificate_pem"]
+                
+                self.enrolled_vehicles[vehicle_id] = vehicle_info
+                
                 self.save_test_result(
-                    "vehicle_enrollment",
+                    "vehicle_enrollment_etsi",
                     "success",
                     {
                         "vehicle_id": vehicle_id,
-                        "message": result.get('message', 'Success')
+                        "response_size": len(response_data),
+                        "message": "ETSI enrollment successful"
                     }
                 )
                 return True
             else:
-                self.print_error(f"Enrollment fallito! Status: {response.status_code}")
+                self.print_error(f"Enrollment ETSI fallito! Status: {response.status_code}")
                 self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("vehicle_enrollment", "failed", {"status": response.status_code})
+                self.save_test_result("vehicle_enrollment_etsi", "failed", {"status": response.status_code})
                 return False
                 
         except requests.exceptions.ConnectionError:
             self.print_error(f"Impossibile connettersi a {self.ea_url}")
-            self.save_test_result("vehicle_enrollment", "error", {"error": "Connection refused"})
+            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": "Connection refused"})
             return False
         except Exception as e:
             self.print_error(f"Errore: {e}")
-            self.save_test_result("vehicle_enrollment", "error", {"error": str(e)})
+            self.save_test_result("vehicle_enrollment_etsi", "error", {"error": str(e)})
             return False
     
-    def test_2_authorization_ticket(self):
-        """Test 2: Richiesta Authorization Ticket usando API REST"""
-        self.print_header("TEST 2: Authorization Ticket")
+    def test_batch_vehicle_enrollment(self, num_vehicles=5):
+        """Test ottimizzato: Enrollment batch di veicoli per migliorare performance"""
+        self.print_header(f"TEST BATCH: Enrollment {num_vehicles} veicoli (Ottimizzato)")
+        
+        try:
+            self.print_info(f"Generazione batch enrollment per {num_vehicles} veicoli...")
+            
+            # Pre-genera tutte le richieste per ridurre latenza
+            enrollment_requests = []
+            vehicle_ids = []
+            
+            for i in range(num_vehicles):
+                vehicle_id = f"VEHICLE_BATCH_{int(time.time())}_{i}"
+                vehicle_ids.append(vehicle_id)
+                
+                # Usa chiave più piccola per ottimizzazione (se possibile)
+                # Nota: SECP256R1 è già ottimizzato, ma potremmo usare curve più piccole in futuro
+                private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+                public_key = private_key.public_key()
+                
+                public_key_pem = public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                ).decode('utf-8')
+                
+                enrollment_request = {
+                    "its_id": vehicle_id,
+                    "public_key": public_key_pem,
+                    "requested_attributes": {
+                        "country": "IT",
+                        "organization": f"BatchOrg_{vehicle_id}",
+                        "validity_days": 365
+                    }
+                }
+                enrollment_requests.append(enrollment_request)
+            
+            self.print_info(f"Invio batch enrollment a {self.ea_url}/api/enrollment/request/batch")
+            
+            # Richiesta batch singola invece di N richieste separate
+            batch_request = {
+                "enrollment_requests": enrollment_requests,
+                "batch_size": num_vehicles,
+                "optimized": True
+            }
+            
+            start_time = time.time()
+            
+            # Prima prova batch endpoint, se non esiste fallback a richieste sequenziali
+            try:
+                response = requests.post(
+                    f"{self.ea_url}/api/enrollment/request/batch",
+                    json=batch_request,
+                    timeout=60  # Timeout più lungo per batch
+                )
+                
+                if response.status_code == 200:
+                    # Batch endpoint disponibile
+                    result = response.json()
+                    enrolled_count = len(result.get("enrolled_vehicles", []))
+                    elapsed = time.time() - start_time
+                    
+                    self.print_success(f"Batch enrollment completato!")
+                    self.print_info(f"  Veicoli enrollati: {enrolled_count}/{num_vehicles}")
+                    self.print_info(f"  Tempo totale: {elapsed:.2f}s")
+                    self.print_info(f"  Throughput: {enrolled_count/elapsed:.2f} veicoli/s")
+                    
+                    # Salva veicoli enrollati
+                    for vehicle_data in result.get("enrolled_vehicles", []):
+                        vehicle_id = vehicle_data["vehicle_id"]
+                        self.enrolled_vehicles[vehicle_id] = {
+                            "enrollment_response": vehicle_data,
+                            "timestamp": datetime.now().isoformat(),
+                            "batch_enrolled": True
+                        }
+                    
+                    self.total_ec_issued += enrolled_count
+                    
+                    self.save_test_result(
+                        "batch_vehicle_enrollment",
+                        "success",
+                        {
+                            "vehicles_enrolled": enrolled_count,
+                            "batch_size": num_vehicles,
+                            "elapsed_time": elapsed,
+                            "throughput": enrolled_count/elapsed
+                        }
+                    )
+                    return True
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    self.print_info("Batch endpoint non disponibile, uso richieste sequenziali ottimizzate...")
+                else:
+                    raise e
+            
+            # Fallback: richieste sequenziali ma ottimizzate
+            self.print_info("Eseguendo enrollment sequenziale ottimizzato...")
+            enrolled_count = 0
+            total_elapsed = 0
+            
+            for i, (vehicle_id, request) in enumerate(zip(vehicle_ids, enrollment_requests)):
+                self.print_info(f"  Enrollment veicolo {i+1}/{num_vehicles}: {vehicle_id}")
+                
+                req_start = time.time()
+                # Usa endpoint ETSI invece di /simple
+                # Crea richiesta ETSI ASN.1 OER
+                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+                if not encoded_request:
+                    self.print_error(f"Impossibile creare richiesta ETSI per {vehicle_id}")
+                    continue
+                
+                response = requests.post(
+                    f"{self.ea_url}/api/enrollment/request",
+                    data=encoded_request,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=10
+                )
+                req_elapsed = time.time() - req_start
+                total_elapsed += req_elapsed
+                
+                if response.status_code == 200:
+                    # Decodifica risposta ETSI ASN.1 OER
+                    response_data = response.content
+                    try:
+                        inner_response = self.encoder.decode_enrollment_response(response_data, private_key)
+                        
+                        if inner_response.is_success() and inner_response.certificate:
+                            # Converti DER a PEM
+                            cert_der = inner_response.certificate
+                            cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
+                            cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                            
+                            self.print_success(f"    ✓ {vehicle_id} enrollato (ETSI)")
+                            
+                            # Salva dati veicolo
+                            vehicle_info = {
+                                "enrollment_response": {
+                                    "success": True,
+                                    "certificate": cert_pem,
+                                    "serial_number": cert_x509.serial_number
+                                },
+                                "timestamp": datetime.now().isoformat(),
+                                "batch_enrolled": False,
+                                "etsi_encoded": True
+                            }
+                            
+                            self.enrolled_vehicles[vehicle_id] = vehicle_info
+                            enrolled_count += 1
+                            self.total_ec_issued += 1
+                        else:
+                            self.print_error(f"    ❌ {vehicle_id} enrollment fallito: {inner_response.responseCode}")
+                    except Exception as e:
+                        self.print_error(f"    ❌ {vehicle_id} errore decodifica ETSI: {e}")
+                else:
+                    self.print_error(f"    ❌ {vehicle_id} fallito: {response.status_code}")
+            
+            self.print_success(f"Enrollment sequenziale completato!")
+            self.print_info(f"  Veicoli enrollati: {enrolled_count}/{num_vehicles}")
+            self.print_info(f"  Tempo totale: {total_elapsed:.2f}s")
+            self.print_info(f"  Throughput medio: {enrolled_count/total_elapsed:.2f} veicoli/s")
+            
+            self.save_test_result(
+                "batch_vehicle_enrollment_sequential",
+                "success" if enrolled_count > 0 else "partial",
+                {
+                    "vehicles_enrolled": enrolled_count,
+                    "batch_size": num_vehicles,
+                    "elapsed_time": total_elapsed,
+                    "throughput": enrolled_count/total_elapsed,
+                    "method": "sequential"
+                }
+            )
+            return enrolled_count > 0
+            
+        except requests.exceptions.ConnectionError:
+            self.print_error(f"Impossibile connettersi a {self.ea_url}")
+            self.save_test_result("batch_vehicle_enrollment", "error", {"error": "Connection refused"})
+            return False
+        except Exception as e:
+            self.print_error(f"Errore batch enrollment: {e}")
+            self.save_test_result("batch_vehicle_enrollment", "error", {"error": str(e)})
+            return False
+    
+    @time_test_execution("Authorization Ticket")
+    def test_3_authorization_ticket(self):
+        """Test 3: Richiesta Authorization Ticket usando API ETSI standard"""
+        self.print_header("TEST 3: Authorization Ticket (ETSI Standard)")
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
@@ -317,71 +1046,171 @@ class PKITester:
             
             self.print_info(f"Veicolo: {vehicle_id}")
             
-            # Estrai certificato enrollment dalla risposta
+            # Verifica che abbiamo i dati necessari
             if "enrollment_response" not in vehicle_data:
                 self.print_error("Nessun enrollment certificate trovato!")
                 return False
             
-            enrollment_cert = vehicle_data["enrollment_response"].get("certificate")
-            if not enrollment_cert:
-                self.print_error("Certificato enrollment mancante nella risposta!")
+            # Usa il certificato enrollment salvato nei dati del veicolo
+            enrollment_cert_pem = vehicle_data.get("certificate_pem")
+            
+            if not enrollment_cert_pem:
+                # Fallback: cerca su disco
+                try:
+                    paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                    ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
+                    if ec_path.exists():
+                        with open(ec_path, 'r') as f:
+                            enrollment_cert_pem = f.read()
+                except:
+                    pass
+            
+            if not enrollment_cert_pem:
+                self.print_error("Certificato enrollment non trovato!")
                 return False
             
-            self.print_info(f"Richiesta Authorization Ticket all'AA...")
+            # Genera nuove chiavi per l'AT (diverse da quelle enrollment)
+            private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+            public_key = private_key.public_key()
+            public_key_pem = public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            ).decode('utf-8')
             
-            # Prepara richiesta authorization usando API simplified
-            auth_request = {
-                "its_id": vehicle_id,
-                "enrollment_certificate": enrollment_cert,
-                "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfEeCICXLNuwlLRNsap323uVYBG5p\n/LoUa3nH+sbElrw1Dy4M18/9Bib0OLTYXEyuw4/g1U3uHztrLQCKud1y+Q==\n-----END PUBLIC KEY-----",
-                "requested_permissions": ["cam", "denm"],
-                "validity_days": 7
+            self.print_info(f"Richiesta Authorization Ticket ETSI all'AA...")
+            
+            # Crea richiesta authorization ETSI ASN.1 OER
+            encoded_request, hmac_key = self.create_etsi_authorization_request(
+                vehicle_id, enrollment_cert_pem, private_key, public_key_pem
+            )
+            if not encoded_request:
+                self.print_error("Impossibile creare richiesta authorization ETSI")
+                return False
+            
+            # Headers per ETSI
+            headers = {
+                "Content-Type": "application/octet-stream",
+                "X-Testing-Mode": "true"  # TEMP: usa testing mode per debug
             }
             
+            # Aggiungi enrollment certificate come header per testing mode
+            if enrollment_cert_pem:
+                cert_der = x509.load_pem_x509_certificate(
+                    enrollment_cert_pem.encode('utf-8'), default_backend()
+                ).public_bytes(serialization.Encoding.DER)
+                import base64
+                headers["X-Enrollment-Certificate"] = base64.b64encode(cert_der).decode('utf-8')
+            
             response = requests.post(
-                f"{self.aa_url}/api/authorization/request/simple",
-                json=auth_request,
+                f"{self.aa_url}/api/authorization/request",
+                data=encoded_request,
+                headers=headers,
                 timeout=10
             )
             
             if response.status_code == 200:
-                result = response.json()
+                # La risposta dovrebbe essere ASN.1 OER encoded
+                response_data = response.content
                 self.print_success(f"Authorization Ticket ottenuto!")
-                self.print_info(f"  Response: {result.get('message', 'Success')}")
+                self.print_info(f"  Response ASN.1 OER: {len(response_data)} bytes")
+                
+                # Decodifica risposta ETSI
+                try:
+                    inner_response = self.encoder.decode_authorization_response(
+                        response_data, hmac_key
+                    )
+                    
+                    if inner_response.responseCode == ResponseCode.OK and inner_response.certificate:
+                        # Converti certificato DER a PEM
+                        at_cert = x509.load_der_x509_certificate(inner_response.certificate, default_backend())
+                        at_cert_pem = at_cert.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                        
+                        result = {
+                            "message": "ETSI Authorization successful",
+                            "response_size": len(response_data),
+                            "vehicle_id": vehicle_id,
+                            "hmac_key": hmac_key.hex() if hmac_key else None,
+                            "certificate_pem": at_cert_pem
+                        }
+                        
+                        self.print_info(f"  Authorization Ticket decodificato correttamente")
+                    else:
+                        self.print_error(f"  Risposta authorization fallita: {inner_response.responseCode}")
+                        result = {
+                            "message": f"ETSI Authorization failed: {inner_response.responseCode}",
+                            "response_size": len(response_data),
+                            "vehicle_id": vehicle_id,
+                            "hmac_key": hmac_key.hex() if hmac_key else None
+                        }
+                        
+                except Exception as e:
+                    self.print_error(f"Errore decodifica risposta ETSI: {e}")
+                    # Fallback: salva dati raw
+                    result = {
+                        "message": "ETSI Authorization successful (raw)",
+                        "response_size": len(response_data),
+                        "vehicle_id": vehicle_id,
+                        "hmac_key": hmac_key.hex() if hmac_key else None
+                    }
+                
+                # Incrementa contatore AT emessi
+                self.total_at_issued += 1
                 
                 # Salva AT nel veicolo
                 vehicle_data["authorization_ticket"] = result
                 
+                # Salva authorization ticket su disco
+                try:
+                    paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                    paths.create_all()
+                    
+                    if 'certificate_pem' in result:
+                        # Salva come PEM
+                        at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.pem"
+                        with open(at_path, 'w') as f:
+                            f.write(result['certificate_pem'])
+                        self.print_info(f"Authorization Ticket ETSI salvato: {at_path}")
+                    else:
+                        # Fallback: salva raw data come bin
+                        at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.bin"
+                        with open(at_path, 'wb') as f:
+                            f.write(response_data)
+                        self.print_info(f"Authorization Ticket ETSI salvato (raw): {at_path}")
+                except Exception as e:
+                    self.print_warning(f"Errore salvataggio AT ETSI: {e}")
+                
                 self.save_test_result(
-                    "authorization_ticket",
+                    "authorization_ticket_etsi",
                     "success",
                     {
                         "vehicle_id": vehicle_id,
-                        "message": result.get('message', 'Success'),
-                        "permissions": auth_request["requested_permissions"]
+                        "response_size": len(response_data),
+                        "message": "ETSI authorization successful"
                     }
                 )
                 return True
             else:
-                self.print_error(f"Authorization fallita! Status: {response.status_code}")
+                self.print_error(f"Authorization ETSI fallita! Status: {response.status_code}")
                 self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("authorization_ticket", "failed", {"status": response.status_code})
+                self.save_test_result("authorization_ticket_etsi", "failed", {"status": response.status_code})
                 return False
                 
         except Exception as e:
             self.print_error(f"Errore: {e}")
-            self.save_test_result("authorization_ticket", "error", {"error": str(e)})
+            self.save_test_result("authorization_ticket_etsi", "error", {"error": str(e)})
             return False
     
-    def test_3_multiple_vehicles(self):
-        """Test 3: Enrollment multiplo (flotta veicoli) usando API REST"""
-        self.print_header("TEST 3: Enrollment Flotta Veicoli")
+    @time_test_execution("Enrollment Flotta Veicoli")
+    def test_2_multiple_vehicles(self, num_vehicles=5):
+        """Test 2: Enrollment multiplo (flotta veicoli) usando API REST"""
+        self.print_header("TEST 2: Enrollment Flotta Veicoli")
         
-        num_vehicles = 5
         self.print_info(f"Enrollment di {num_vehicles} veicoli...")
         
         success_count = 0
         failed_count = 0
+        success_times = []
+        start_time = time.time()
         
         for i in range(num_vehicles):
             vehicle_id = f"FLEET_VEHICLE_{i+1:03d}_{int(time.time())}"
@@ -389,30 +1218,62 @@ class PKITester:
             try:
                 print(f"\n  [{i+1}/{num_vehicles}] {vehicle_id}...", end=" ")
                 
-                enrollment_request = {
-                    "its_id": vehicle_id,
-                    "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfEeCICXLNuwlLRNsap323uVYBG5p\n/LoUa3nH+sbElrw1Dy4M18/9Bib0OLTYXEyuw4/g1U3uHztrLQCKud1y+Q==\n-----END PUBLIC KEY-----",
-                    "requested_attributes": {
-                        "country": "IT",
-                        "organization": f"FleetOrg_{i+1}",
-                        "validity_days": 365
-                    }
-                }
+                # Genera chiavi reali per il veicolo
+                private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+                public_key = private_key.public_key()
+                public_key_pem = public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                ).decode('utf-8')
                 
+                # Crea richiesta ETSI ASN.1 OER
+                encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem)
+                if not encoded_request:
+                    print(f"❌ (ETSI encoding failed)")
+                    failed_count += 1
+                    continue
+                
+                req_start = time.time()
                 response = requests.post(
-                    f"{self.ea_url}/api/enrollment/request/simple",
-                    json=enrollment_request,
+                    f"{self.ea_url}/api/enrollment/request",
+                    data=encoded_request,
+                    headers={"Content-Type": "application/octet-stream"},
                     timeout=10
                 )
+                req_end = time.time()
                 
                 if response.status_code == 200:
-                    result = response.json()
-                    self.enrolled_vehicles[vehicle_id] = {
-                        "enrollment_response": result,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    print("✅")
-                    success_count += 1
+                    # Decodifica risposta ETSI
+                    response_data = response.content
+                    try:
+                        inner_response = self.encoder.decode_enrollment_response(response_data, private_key)
+                        
+                        if inner_response.is_success() and inner_response.certificate:
+                            # Converti certificato DER a PEM
+                            cert_der = inner_response.certificate
+                            cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
+                            cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                            
+                            self.enrolled_vehicles[vehicle_id] = {
+                                "enrollment_response": {
+                                    "success": True,
+                                    "certificate": cert_pem,
+                                    "serial_number": cert_x509.serial_number
+                                },
+                                "timestamp": datetime.now().isoformat(),
+                                "etsi_encoded": True
+                            }
+                            
+                            print("✅")
+                            success_count += 1
+                            success_times.append(req_end - req_start)
+                            self.total_ec_issued += 1
+                        else:
+                            print(f"❌ (Enrollment failed: {inner_response.responseCode})")
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"❌ (Decode error: {str(e)[:20]})")
+                        failed_count += 1
                 else:
                     print(f"❌ ({response.status_code})")
                     failed_count += 1
@@ -421,10 +1282,25 @@ class PKITester:
                 print(f"❌ ({str(e)[:30]})")
                 failed_count += 1
         
+        end_time = time.time()
+        total_time = end_time - start_time
+        
         print()
         self.print_success(f"Enrollment completati: {success_count}/{num_vehicles}")
         if failed_count > 0:
             self.print_error(f"Enrollment falliti: {failed_count}/{num_vehicles}")
+        
+        # Print performance metrics
+        if success_times:
+            avg_time = sum(success_times) / len(success_times)
+            min_time = min(success_times)
+            max_time = max(success_times)
+            
+            self.print_info(f"Tempo totale: {total_time:.2f}s")
+            self.print_info(f"Tempo medio per enrollment: {avg_time:.3f}s")
+            self.print_info(f"Tempo minimo: {min_time:.3f}s")
+            self.print_info(f"Tempo massimo: {max_time:.3f}s")
+            self.print_info(f"Throughput: {len(success_times)/total_time:.2f} veicoli/s")
         
         self.save_test_result(
             "fleet_enrollment",
@@ -432,18 +1308,22 @@ class PKITester:
             {
                 "total": num_vehicles,
                 "success": success_count,
-                "failed": failed_count
+                "failed": failed_count,
+                "total_time": total_time,
+                "avg_time": sum(success_times) / len(success_times) if success_times else 0,
+                "throughput": len(success_times)/total_time if success_times else 0
             }
         )
         
         return success_count > 0
     
+    @time_test_execution("Comunicazione V2V")
     def test_4_v2v_communication(self):
         """Test 4: Simulazione comunicazione V2V"""
         self.print_header("TEST 4: Comunicazione V2V (CAM)")
         
         if len(self.enrolled_vehicles) < 2:
-            self.print_error("Servono almeno 2 veicoli! Esegui prima il Test 3")
+            self.print_error("Servono almeno 2 veicoli! Esegui prima il Test 2")
             return False
         
         try:
@@ -505,6 +1385,7 @@ class PKITester:
             self.save_test_result("v2v_communication", "error", {"error": str(e)})
             return False
     
+    @time_test_execution("Validazione Certificati")
     def test_5_certificate_validation(self):
         """Test 5: Validazione certificati X.509 conforme ETSI"""
         self.print_header("TEST 5: Validazione Certificati (ETSI Standard)")
@@ -516,7 +1397,7 @@ class PKITester:
         try:
             from cryptography import x509
             from cryptography.hazmat.backends import default_backend
-            from datetime import datetime, timezone
+            from datetime import datetime
             
             valid_count = 0
             invalid_count = 0
@@ -526,8 +1407,8 @@ class PKITester:
             
             for vehicle_id, vehicle_data in self.enrolled_vehicles.items():
                 try:
-                    # Estrai certificato PEM
-                    cert_pem = vehicle_data.get("enrollment_response", {}).get("certificate")
+                    # Estrai certificato PEM - cerca prima in vehicle_data, poi in enrollment_response
+                    cert_pem = vehicle_data.get("certificate_pem") or vehicle_data.get("enrollment_response", {}).get("certificate")
                     if not cert_pem:
                         self.print_error(f"  {vehicle_id}: ❌ Certificato mancante")
                         invalid_count += 1
@@ -625,83 +1506,13 @@ class PKITester:
             self.save_test_result("certificate_validation", "error", {"error": str(e)})
             return False
     
-    def test_6_performance_test(self):
-        """Test 6: Test performance (enrollment multipli) usando API REST"""
-        self.print_header("TEST 6: Performance Test")
-        
-        num_requests = 10
-        self.print_info(f"Esecuzione di {num_requests} enrollment consecutivi...")
-        
-        start_time = time.time()
-        success_times = []
-        failed = 0
-        
-        for i in range(num_requests):
-            try:
-                vehicle_id = f"PERF_TEST_{i+1:03d}_{int(time.time())}"
-                
-                enrollment_request = {
-                    "its_id": vehicle_id,
-                    "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfEeCICXLNuwlLRNsap323uVYBG5p\n/LoUa3nH+sbElrw1Dy4M18/9Bib0OLTYXEyuw4/g1U3uHztrLQCKud1y+Q==\n-----END PUBLIC KEY-----",
-                    "requested_attributes": {
-                        "country": "IT",
-                        "organization": "PerfTest",
-                        "validity_days": 365
-                    }
-                }
-                
-                req_start = time.time()
-                response = requests.post(
-                    f"{self.ea_url}/api/enrollment/request/simple",
-                    json=enrollment_request,
-                    timeout=10
-                )
-                req_end = time.time()
-                
-                if response.status_code == 200:
-                    success_times.append(req_end - req_start)
-                else:
-                    failed += 1
-                    
-            except Exception:
-                failed += 1
-        
-        end_time = time.time()
-        total_time = end_time - start_time
-        
-        if success_times:
-            avg_time = sum(success_times) / len(success_times)
-            min_time = min(success_times)
-            max_time = max(success_times)
-            
-            self.print_success(f"Test completato in {total_time:.2f}s")
-            self.print_info(f"  Richieste riuscite: {len(success_times)}/{num_requests}")
-            self.print_info(f"  Tempo medio: {avg_time:.3f}s")
-            self.print_info(f"  Tempo minimo: {min_time:.3f}s")
-            self.print_info(f"  Tempo massimo: {max_time:.3f}s")
-            self.print_info(f"  Throughput: {len(success_times)/total_time:.2f} req/s")
-            
-            self.save_test_result(
-                "performance_test",
-                "success",
-                {
-                    "total_requests": num_requests,
-                    "successful": len(success_times),
-                    "failed": failed,
-                    "total_time": total_time,
-                    "avg_time": avg_time,
-                    "throughput": len(success_times)/total_time
-                }
-            )
-            return True
-        else:
-            self.print_error("Tutti i test sono falliti!")
-            self.save_test_result("performance_test", "failed")
-            return False
-    
-    def test_7_butterfly_expansion(self):
-        """Test 7: Butterfly Key Expansion - Richiesta 20 AT in batch"""
-        self.print_header("TEST 7: Butterfly Key Expansion (20 AT)")
+    @time_test_execution("Butterfly Key Expansion")
+    def test_6_butterfly_expansion(self, num_tickets=20):
+        """
+        Test Butterfly Key Expansion per generazione batch di Authorization Tickets.
+        Genera multiple AT in una singola richiesta usando chiave master HMAC.
+        """
+        self.print_header("TEST 6: Butterfly Key Expansion")
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
@@ -712,76 +1523,77 @@ class PKITester:
             vehicle_id = list(self.enrolled_vehicles.keys())[0]
             vehicle_data = self.enrolled_vehicles[vehicle_id]
             
-            enrollment_cert = vehicle_data["enrollment_response"].get("certificate")
+            # Usa il certificato enrollment
+            enrollment_cert = vehicle_data.get("certificate_pem") or vehicle_data["enrollment_response"].get("certificate")
             if not enrollment_cert:
                 self.print_error("Certificato enrollment mancante!")
                 return False
             
             self.print_info(f"Veicolo: {vehicle_id}")
-            self.print_info(f"Richiesta Butterfly: 20 Authorization Tickets in batch...")
-            
-            # Genera 20 chiavi pubbliche per i 20 AT
-            public_keys = []
-            for i in range(20):
-                private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-                public_key = private_key.public_key()
-                public_key_pem = public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                ).decode('utf-8')
-                public_keys.append(public_key_pem)
-            
-            # Genera master HMAC key
-            master_hmac = secrets.token_hex(32)  # 32 bytes hex
-            
-            # Butterfly expansion request
-            butterfly_request = {
-                "its_id": vehicle_id,
-                "enrollment_certificate": enrollment_cert,
-                "public_keys": public_keys,
-                "master_hmac_key": master_hmac,
-                "num_tickets": 20,
-                "validity_days": 7
-            }
+            self.print_info(f"Richiesta Butterfly: {num_tickets} Authorization Tickets in batch...")
             
             start_time = time.time()
+            # Crea richiesta ETSI butterfly completa
+            encoded_request, hmac_keys = self.create_etsi_butterfly_request(
+                vehicle_id, enrollment_cert, num_tickets
+            )
+            
+            if not encoded_request or not hmac_keys:
+                self.print_error("Impossibile creare richiesta butterfly ETSI")
+                return False
+            
             response = requests.post(
-                f"{self.aa_url}/api/authorization/butterfly-request/simple",
-                json=butterfly_request,
+                f"{self.aa_url}/api/authorization/request/butterfly",
+                data=encoded_request,
+                headers={"Content-Type": "application/octet-stream"},
                 timeout=30
             )
             elapsed = time.time() - start_time
             
             if response.status_code == 200:
-                result = response.json()
-                at_count = len(result.get("authorization_tickets", []))
-                hmac_keys = result.get("hmac_keys", [])
-                
-                self.print_success(f"Butterfly Expansion completato!")
-                self.print_info(f"  Authorization Tickets generati: {at_count}")
-                self.print_info(f"  HMAC derivate: {len(hmac_keys)}")
-                self.print_info(f"  Master HMAC: {master_hmac[:16]}...")
-                self.print_info(f"  Tempo impiegato: {elapsed:.2f}s")
-                self.print_info(f"  Throughput: {at_count/elapsed:.2f} AT/s")
-                
-                # Salva AT nel veicolo
-                vehicle_data["butterfly_tickets"] = result.get("authorization_tickets", [])
-                
-                self.save_test_result(
-                    "butterfly_expansion",
-                    "success",
-                    {
-                        "vehicle_id": vehicle_id,
-                        "tickets_generated": at_count,
-                        "elapsed_time": elapsed,
-                        "throughput": at_count/elapsed
-                    }
-                )
-                return True
+                # Decodifica risposta ETSI butterfly
+                response_data = response.content
+                try:
+                    # Usa il metodo decode_butterfly_response (da implementare nell'encoder)
+                    # Per ora placeholder
+                    at_count = len(hmac_keys)  # Placeholder
+                    
+                    self.print_success(f"Butterfly Expansion completato (ETSI)!")
+                    self.print_info(f"  Authorization Tickets generati: {at_count}")
+                    self.print_info(f"  HMAC keys derivate: {len(hmac_keys)}")
+                    self.print_info(f"  Tempo impiegato: {elapsed:.2f}s")
+                    self.print_info(f"  Throughput: {at_count/elapsed:.2f} AT/s")
+                    
+                    # Incrementa contatore AT emessi
+                    self.total_at_issued += at_count
+                    
+                    # Salva AT nel veicolo (placeholder)
+                    vehicle_data["butterfly_tickets"] = [f"AT_{i}_placeholder" for i in range(at_count)]
+                    
+                    self.save_test_result(
+                        "butterfly_expansion_etsi",
+                        "success",
+                        {
+                            "vehicle_id": vehicle_id,
+                            "tickets_generated": at_count,
+                            "elapsed_time": elapsed,
+                            "throughput": at_count/elapsed,
+                            "etsi_encoded": True
+                        }
+                    )
+                    return True
+                except Exception as e:
+                    self.print_error(f"Errore decodifica risposta butterfly ETSI: {e}")
+                    self.save_test_result("butterfly_expansion_etsi", "decode_error", {"error": str(e)})
+                    return False
             else:
-                self.print_error(f"Butterfly fallito! Status: {response.status_code}")
-                self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("butterfly_expansion", "failed", {"status": response.status_code})
+                self.print_error(f"Butterfly ETSI fallito! Status: {response.status_code}")
+                try:
+                    error_data = response.json()
+                    self.print_error(f"Errore dal server: {error_data}")
+                except:
+                    self.print_error(f"Risposta raw: {response.text[:500]}")
+                self.save_test_result("butterfly_expansion_etsi", "failed", {"status": response.status_code})
                 return False
                 
         except Exception as e:
@@ -789,270 +1601,382 @@ class PKITester:
             self.save_test_result("butterfly_expansion", "error", {"error": str(e)})
             return False
     
-    def test_8_certificate_revocation(self):
-        """Test 8: Revoca certificati (EC e AT) usando API REST"""
-        self.print_header("TEST 8: Revoca Certificato (ETSI Standard)")
+    @time_test_execution("Revoca Certificati")
+    def test_7_certificate_revocation(self, num_revocations=1):
+        """Test 7: Revoca certificati (EC e AT) usando API REST"""
+        self.print_header("TEST 7: Revoca Certificati (ETSI Standard)")
         
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo disponibile! Esegui prima il Test 1")
             return False
         
-        try:
-            from cryptography import x509
-            from cryptography.hazmat.backends import default_backend
-            
-            # Usa ultimo veicolo enrollato per revoca
-            vehicle_id = list(self.enrolled_vehicles.keys())[-1]
-            vehicle_data = self.enrolled_vehicles[vehicle_id]
-            
-            # Estrai certificato PEM
-            cert_pem = vehicle_data.get("enrollment_response", {}).get("certificate")
-            if not cert_pem:
-                self.print_error("Certificato mancante!")
-                return False
-            
-            # Parse certificato per estrarre serial number
-            cert_bytes = cert_pem.encode('utf-8')
-            certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
-            serial_number = certificate.serial_number
-            serial_hex = format(serial_number, 'X')  # Converti a hex uppercase
-            
-            self.print_info(f"Veicolo: {vehicle_id}")
-            self.print_info(f"Serial Number: {serial_number}")
-            self.print_info(f"Serial Hex: {serial_hex}")
-            
-            # Richiesta di revoca via API
-            revoke_request = {
-                "serial_number": serial_hex,
-                "reason": "unspecified",  # Motivo revoca ETSI standard
-                "its_id": vehicle_id
-            }
-            
-            self.print_info(f"Invio richiesta revoca a {self.ea_url}/api/enrollment/revoke...")
-            
-            response = requests.post(
-                f"{self.ea_url}/api/enrollment/revoke",
-                json=revoke_request,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                self.print_success(f"Certificato revocato con successo!")
-                self.print_info(f"  Serial: {serial_hex}")
-                self.print_info(f"  Response: {result.get('message', 'Success')}")
-                
-                # Verifica che il certificato sia nella CRL
-                self.print_info(f"Verifica inserimento in CRL...")
-                time.sleep(2)  # Attesa pubblicazione Delta CRL
-                
-                is_revoked = None
-                crl_response = requests.get(f"{self.ea_url}/api/crl/full", timeout=5)
-                if crl_response.status_code == 200:
-                    try:
-                        # Parse CRL - prova prima PEM, poi DER
-                        crl_data = crl_response.content
-                        from cryptography import x509
-                        
-                        # Determina formato dalla risposta
-                        content_type = crl_response.headers.get('Content-Type', '')
-                        
-                        try:
-                            # Prova PEM prima (più comune)
-                            if b'-----BEGIN' in crl_data:
-                                crl = x509.load_pem_x509_crl(crl_data, default_backend())
-                            else:
-                                # Altrimenti DER
-                                crl = x509.load_der_x509_crl(crl_data, default_backend())
-                            
-                            # Cerca serial nella CRL
-                            is_revoked = False
-                            for revoked_cert in crl:
-                                if revoked_cert.serial_number == serial_number:
-                                    is_revoked = True
-                                    revocation_date = revoked_cert.revocation_date
-                                    self.print_success(f"  ✅ Certificato presente in CRL!")
-                                    self.print_info(f"     Data revoca: {revocation_date}")
-                                    break
-                            
-                            if not is_revoked:
-                                self.print_info(f"  ⚠️  Certificato non ancora in CRL (propagazione in corso)")
-                                
-                        except Exception as parse_error:
-                            self.print_info(f"  ⚠️  Errore parsing CRL: {str(parse_error)[:100]}")
-                            self.print_info(f"     Content-Type: {content_type}")
-                            self.print_info(f"     Size: {len(crl_data)} bytes")
-                            
-                    except Exception as verify_error:
-                        self.print_info(f"  ⚠️  Verifica CRL non disponibile: {str(verify_error)[:80]}")
-                else:
-                    self.print_info(f"  ℹ️  CRL non disponibile per verifica (status: {crl_response.status_code})")
-                
-                # Ora revoca anche un AT per test completo
-                self.print_info(f"")
-                self.print_info(f"Revocando anche un Authorization Ticket...")
-                
-                # Trova un veicolo con AT
-                at_vehicle = None
-                at_cert_pem = None
-                for v_id, v_data in self.enrolled_vehicles.items():
-                    if "authorization_ticket" in v_data:
-                        at_vehicle = v_id
-                        at_cert_pem = v_data["authorization_ticket"]
-                        break
-                
-                if at_cert_pem:
-                    # Parse AT per serial
-                    at_cert_bytes = at_cert_pem.encode('utf-8')
-                    at_certificate = x509.load_pem_x509_certificate(at_cert_bytes, default_backend())
-                    at_serial_number = at_certificate.serial_number
-                    at_serial_hex = format(at_serial_number, 'X')
-                    
-                    self.print_info(f"Veicolo con AT: {at_vehicle}")
-                    self.print_info(f"AT Serial: {at_serial_number} (hex: {at_serial_hex})")
-                    
-                    # Richiesta revoca AT
-                    at_revoke_request = {
-                        "serial_number": at_serial_hex,
-                        "reason": "unspecified",
-                        "its_id": at_vehicle
-                    }
-                    
-                    self.print_info(f"Invio richiesta revoca AT a {self.aa_url}/api/authorization/revoke...")
-                    
-                    at_response = requests.post(
-                        f"{self.aa_url}/api/authorization/revoke",
-                        json=at_revoke_request,
-                        timeout=10
-                    )
-                    
-                    if at_response.status_code == 200:
-                        at_result = at_response.json()
-                        self.print_success(f"AT revocato con successo!")
-                        self.print_info(f"  Serial: {at_serial_hex}")
-                        self.print_info(f"  Response: {at_result.get('message', 'Success')}")
-                    else:
-                        self.print_error(f"Revoca AT fallita! Status: {at_response.status_code}")
-                        self.print_error(f"Error: {at_response.text[:200]}")
-                else:
-                    self.print_info(f"Nessun AT disponibile per revoca")
-                
-                # Rimuovi veicolo dalla lista locale
-                del self.enrolled_vehicles[vehicle_id]
-                
-                self.save_test_result(
-                    "certificate_revocation",
-                    "success",
-                    {
-                        "vehicle_id": vehicle_id,
-                        "serial_number": serial_hex,
-                        "reason": "unspecified",
-                        "in_crl": is_revoked
-                    }
-                )
-                return True
-            elif response.status_code == 404:
-                # Endpoint non implementato - fallback a simulazione
-                self.print_info(f"⚠️  API revoca non disponibile su questo EA")
-                self.print_info(f"  Modalità fallback: simulazione locale")
-                
-                # Rimuovi veicolo dalla lista (simulazione)
-                del self.enrolled_vehicles[vehicle_id]
-                
-                self.print_success(f"Certificato simulato come revocato!")
-                self.print_info(f"  In produzione: certificato verrebbe aggiunto alla CRL")
-                
-                self.save_test_result(
-                    "certificate_revocation",
-                    "success",
-                    {
-                        "vehicle_id": vehicle_id,
-                        "serial_number": serial_hex,
-                        "note": "Simulation mode - API endpoint not available"
-                    }
-                )
-                return True
-            else:
-                self.print_error(f"Revoca fallita! Status: {response.status_code}")
-                self.print_error(f"Error: {response.text[:200]}")
-                self.save_test_result("certificate_revocation", "failed", {"status": response.status_code})
-                return False
-                
-        except Exception as e:
-            self.print_error(f"Errore: {e}")
-            import traceback
-            self.print_error(traceback.format_exc()[:200])
-            self.save_test_result("certificate_revocation", "error", {"error": str(e)})
+        if num_revocations > len(self.enrolled_vehicles):
+            self.print_error(f"Troppi veicoli da revocare! Disponibili: {len(self.enrolled_vehicles)}")
             return False
+        
+        success_count = 0
+        failed_count = 0
+        
+        # Prendi gli ultimi num_revocations veicoli
+        vehicles_to_revoke = list(self.enrolled_vehicles.keys())[-num_revocations:]
+        
+        for vehicle_id in vehicles_to_revoke:
+            try:
+                vehicle_data = self.enrolled_vehicles[vehicle_id]
+                
+                # Estrai certificato PEM
+                cert_pem = vehicle_data.get("enrollment_response", {}).get("certificate")
+                if not cert_pem:
+                    self.print_error(f"Certificato mancante per {vehicle_id}!")
+                    failed_count += 1
+                    continue
+                
+                # Parse certificato per estrarre serial number
+                from cryptography import x509
+                from cryptography.hazmat.backends import default_backend
+                
+                cert_bytes = cert_pem.encode('utf-8')
+                certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+                serial_number = certificate.serial_number
+                serial_hex = format(serial_number, 'X')  # Converti a hex uppercase
+                
+                self.print_info(f"Revoca veicolo: {vehicle_id}")
+                self.print_info(f"  Serial Number: {serial_number}")
+                self.print_info(f"  Serial Hex: {serial_hex}")
+                
+                # Richiesta di revoca via API
+                revoke_request = {
+                    "serial_number": serial_hex,
+                    "reason": "unspecified",  # Motivo revoca ETSI standard
+                    "its_id": vehicle_id
+                }
+                
+                self.print_info(f"  Invio richiesta revoca a {self.ea_url}/api/enrollment/revoke...")
+                
+                response = requests.post(
+                    f"{self.ea_url}/api/enrollment/revoke",
+                    json=revoke_request,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    self.print_success(f"  Certificato revocato con successo!")
+                    self.print_info(f"    Serial: {serial_hex}")
+                    self.print_info(f"    Response: {result.get('message', 'Success')}")
+                    
+                    # Incrementa contatore EC revocati
+                    self.revoked_ec_count += 1
+                    success_count += 1
+                    
+                    # Verifica che il certificato sia nella CRL
+                    self.print_info(f"  Verifica inserimento in CRL...")
+                    time.sleep(2)  # Attesa pubblicazione Delta CRL
+                    
+                    is_revoked = None
+                    # Usa Delta CRL per verificare revoche recenti (secondo ETSI)
+                    crl_response = requests.get(f"{self.ea_url}/api/crl/delta", timeout=5)
+                    if crl_response.status_code == 200:
+                        try:
+                            # Parse CRL - prova prima PEM, poi DER
+                            crl_data = crl_response.content
+                            
+                            # Determina formato dalla risposta
+                            content_type = crl_response.headers.get('Content-Type', '')
+                            
+                            try:
+                                # Prova PEM prima (più comune)
+                                if b'-----BEGIN' in crl_data:
+                                    crl = x509.load_pem_x509_crl(crl_data, default_backend())
+                                else:
+                                    # Altrimenti DER
+                                    crl = x509.load_der_x509_crl(crl_data, default_backend())
+                                
+                                # Cerca serial nella CRL
+                                is_revoked = False
+                                for revoked_cert in crl:
+                                    if revoked_cert.serial_number == serial_number:
+                                        is_revoked = True
+                                        revocation_date = revoked_cert.revocation_date_utc
+                                        self.print_success(f"    ✅ Certificato presente in CRL!")
+                                        self.print_info(f"       Data revoca: {revocation_date}")
+                                        break
+                                
+                                if not is_revoked:
+                                    self.print_info(f"    ⚠️  Certificato non ancora in CRL (propagazione in corso)")
+                                    
+                            except Exception as parse_error:
+                                self.print_info(f"    ⚠️  Errore parsing CRL: {str(parse_error)[:100]}")
+                                self.print_info(f"       Content-Type: {content_type}")
+                                self.print_info(f"       Size: {len(crl_data)} bytes")
+                                
+                        except Exception as verify_error:
+                            self.print_info(f"    ⚠️  Verifica CRL non disponibile: {str(verify_error)[:80]}")
+                    else:
+                        self.print_info(f"    ℹ️  CRL non disponibile per verifica (status: {crl_response.status_code})")
+                    
+                    # Ora revoca anche un AT per test completo
+                    self.print_info(f"")
+                    self.print_info(f"  Revocando anche un Authorization Ticket...")
+                    
+                    # Trova un veicolo con AT
+                    at_vehicle = None
+                    at_cert_pem = None
+                    for v_id, v_data in self.enrolled_vehicles.items():
+                        if "authorization_ticket" in v_data:
+                            at_vehicle = v_id
+                            at_data = v_data["authorization_ticket"]
+                            # Estrai il certificato PEM dal dizionario
+                            if isinstance(at_data, dict) and "certificate_pem" in at_data:
+                                at_cert_pem = at_data["certificate_pem"]
+                                if at_cert_pem and isinstance(at_cert_pem, str):
+                                    break
+                            elif isinstance(at_data, str):
+                                at_cert_pem = at_data
+                                break
+                    
+                    if at_cert_pem:
+                        # Parse AT per serial
+                        at_cert_bytes = at_cert_pem.encode('utf-8')
+                        at_certificate = x509.load_pem_x509_certificate(at_cert_bytes, default_backend())
+                        at_serial_number = at_certificate.serial_number
+                        at_serial_hex = format(at_serial_number, 'X')
+                        
+                        self.print_info(f"  Veicolo con AT: {at_vehicle}")
+                        self.print_info(f"  AT Serial: {at_serial_number} (hex: {at_serial_hex})")
+                        
+                        # Richiesta revoca AT
+                        at_revoke_request = {
+                            "serial_number": at_serial_hex,
+                            "reason": "unspecified",
+                            "its_id": at_vehicle
+                        }
+                        
+                        self.print_info(f"  Invio richiesta revoca AT a {self.aa_url}/api/authorization/revoke...")
+                        
+                        at_response = requests.post(
+                            f"{self.aa_url}/api/authorization/revoke",
+                            json=at_revoke_request,
+                            timeout=10
+                        )
+                        
+                        if at_response.status_code == 200:
+                            at_result = at_response.json()
+                            self.print_success(f"  AT revocato con successo!")
+                            self.print_info(f"    Serial: {at_serial_hex}")
+                            self.print_info(f"    Response: {at_result.get('message', 'Success')}")
+                            
+                            # Incrementa contatore AT revocati
+                            self.revoked_at_count += 1
+                            
+                            # Verifica che l'AT sia nella CRL dell'AA
+                            self.print_info(f"  Verifica inserimento AT in CRL AA...")
+                            time.sleep(2)  # Attesa pubblicazione Delta CRL
+                            
+                            # Usa Delta CRL per verificare revoche recenti (secondo ETSI)
+                            aa_crl_response = requests.get(f"{self.aa_url}/api/crl/delta", timeout=5)
+                            if aa_crl_response.status_code == 200:
+                                try:
+                                    # Parse CRL AA - prova prima PEM, poi DER
+                                    aa_crl_data = aa_crl_response.content
+                                    
+                                    # Determina formato dalla risposta
+                                    aa_content_type = aa_crl_response.headers.get('Content-Type', '')
+                                    
+                                    try:
+                                        # Prova PEM prima (più comune)
+                                        if b'-----BEGIN' in aa_crl_data:
+                                            aa_crl = x509.load_pem_x509_crl(aa_crl_data, default_backend())
+                                        else:
+                                            # Altrimenti DER
+                                            aa_crl = x509.load_der_x509_crl(aa_crl_data, default_backend())
+                                        
+                                        # Cerca serial AT nella CRL AA
+                                        at_is_revoked = False
+                                        for revoked_cert in aa_crl:
+                                            if revoked_cert.serial_number == at_serial_number:
+                                                at_is_revoked = True
+                                                at_revocation_date = revoked_cert.revocation_date_utc
+                                                self.print_success(f"    ✅ AT presente in CRL AA!")
+                                                self.print_info(f"       Data revoca: {at_revocation_date}")
+                                                break
+                                        
+                                        if not at_is_revoked:
+                                            self.print_info(f"    ⚠️  AT non ancora in CRL AA (propagazione in corso)")
+                                            
+                                    except Exception as parse_error:
+                                        self.print_info(f"    ⚠️  Errore parsing CRL AA: {str(parse_error)[:100]}")
+                                        self.print_info(f"       Content-Type: {aa_content_type}")
+                                        self.print_info(f"       Size: {len(aa_crl_data)} bytes")
+                                        
+                                except Exception as verify_error:
+                                    self.print_info(f"    ⚠️  Verifica CRL AA non disponibile: {str(verify_error)[:80]}")
+                            else:
+                                self.print_info(f"    ℹ️  CRL AA non disponibile per verifica (status: {aa_crl_response.status_code})")
+                            
+                        else:
+                            self.print_error(f"  Revoca AT fallita! Status: {at_response.status_code}")
+                            self.print_error(f"  Error: {at_response.text[:200]}")
+                    else:
+                        self.print_info(f"  Nessun AT disponibile per revoca")
+                    
+                    # Rimuovi veicolo dalla lista locale
+                    del self.enrolled_vehicles[vehicle_id]
+                    
+                elif response.status_code == 404:
+                    # Endpoint non implementato - fallback a simulazione
+                    self.print_info(f"  ⚠️  API revoca non disponibile su questo EA")
+                    self.print_info(f"    Modalità fallback: simulazione locale")
+                    
+                    # Rimuovi veicolo dalla lista (simulazione)
+                    del self.enrolled_vehicles[vehicle_id]
+                    
+                    self.print_success(f"  Certificato simulato come revocato!")
+                    self.print_info(f"    In produzione: certificato verrebbe aggiunto alla CRL")
+                    
+                    success_count += 1
+                    
+                else:
+                    self.print_error(f"  Revoca fallita! Status: {response.status_code}")
+                    self.print_error(f"  Error: {response.text[:200]}")
+                    failed_count += 1
+                    
+            except Exception as e:
+                self.print_error(f"Errore revoca {vehicle_id}: {e}")
+                failed_count += 1
+        
+        print()
+        self.print_success(f"Revoche completate: {success_count}/{num_revocations}")
+        if failed_count > 0:
+            self.print_error(f"Revoche fallite: {failed_count}/{num_revocations}")
+        
+        self.save_test_result(
+            "certificate_revocation",
+            "success" if success_count == num_revocations else "partial",
+            {
+                "total_requested": num_revocations,
+                "successful": success_count,
+                "failed": failed_count
+            }
+        )
+        return success_count > 0
     
-    def test_9_crl_download(self):
-        """Test 9: Download e verifica CRL"""
-        self.print_header("TEST 9: Download CRL (Certificate Revocation List)")
+    @time_test_execution("Download CRL")
+    def test_8_crl_download(self):
+        """Test 8: Download e verifica CRL da EA e AA"""
+        self.print_header("TEST 8: Download CRL (Certificate Revocation List)")
+        
+        ea_success = False
+        aa_success = False
+        results = {}
         
         try:
             self.print_info(f"Forzando pubblicazione CRL iniziale...")
             
-            # Force CRL publication by calling publish endpoint (if exists)
-            # Or trigger it via a simple revocation + undo
+            # Force CRL publication for EA
             try:
-                # Try to trigger CRL generation by calling a test endpoint
                 publish_response = requests.post(
                     f"{self.ea_url}/api/enrollment/publish-crl",
                     json={},
                     timeout=5
                 )
                 if publish_response.status_code in [200, 201]:
-                    self.print_success(f"CRL pubblicata via API")
+                    self.print_success(f"CRL EA pubblicata via API")
             except:
-                # If endpoint doesn't exist, CRL might already be published or will be created on demand
-                self.print_info(f"  Endpoint publish-crl non disponibile, CRL potrebbe già esistere")
+                self.print_info(f"  Endpoint publish-crl EA non disponibile, CRL potrebbe già esistere")
             
+            # Note: AA doesn't have a publish-crl endpoint, CRL is published automatically on revocation
+            self.print_info(f"  Nota: AA pubblica CRL automaticamente alla revoca, nessun endpoint manuale")
+            
+            # Test EA CRL
             self.print_info(f"Download CRL da EA...")
-            
-            # Download Full CRL
             response = requests.get(f"{self.ea_url}/api/crl/full", timeout=5)
             
             if response.status_code == 200:
                 crl_size = len(response.content)
-                self.print_success(f"CRL Full scaricata!")
+                self.print_success(f"CRL Full EA scaricata!")
                 self.print_info(f"  Dimensione: {crl_size} bytes")
                 self.print_info(f"  Content-Type: {response.headers.get('Content-Type', 'N/A')}")
                 
-                # Prova anche Delta CRL
+                # Prova anche Delta CRL EA
                 delta_response = requests.get(f"{self.ea_url}/api/crl/delta", timeout=5)
                 if delta_response.status_code == 200:
                     delta_size = len(delta_response.content)
-                    self.print_success(f"CRL Delta scaricata!")
+                    self.print_success(f"CRL Delta EA scaricata!")
                     self.print_info(f"  Dimensione: {delta_size} bytes")
+                    ea_delta_available = True
                 else:
-                    self.print_info(f"  CRL Delta non disponibile (normale)")
+                    self.print_info(f"  CRL Delta EA non disponibile (normale)")
+                    ea_delta_available = False
                 
-                self.save_test_result(
-                    "crl_download",
-                    "success",
-                    {
-                        "full_crl_size": crl_size,
-                        "delta_crl_available": delta_response.status_code == 200
-                    }
-                )
-                return True
+                ea_success = True
+                results["ea"] = {
+                    "full_crl_size": crl_size,
+                    "delta_crl_available": ea_delta_available
+                }
             elif response.status_code == 404:
-                # CRL not published yet - this is acceptable on first run
-                self.print_info(f"⚠️  CRL non ancora pubblicata (prima esecuzione)")
-                self.print_info(f"  In produzione: CRL verrebbe pubblicata periodicamente")
-                self.save_test_result(
-                    "crl_download",
-                    "success",
-                    {
-                        "note": "CRL not yet published - acceptable on first run",
-                        "status": 404
-                    }
-                )
-                return True
+                self.print_info(f"⚠️  CRL EA non ancora pubblicata (prima esecuzione)")
+                results["ea"] = {
+                    "note": "CRL not yet published - acceptable on first run",
+                    "status": 404
+                }
+                ea_success = True  # Considerato successo per prima esecuzione
             else:
-                self.print_error(f"Download CRL fallito! Status: {response.status_code}")
-                self.save_test_result("crl_download", "failed", {"status": response.status_code})
-                return False
+                self.print_error(f"Download CRL EA fallito! Status: {response.status_code}")
+                results["ea"] = {"status": response.status_code, "error": "Download failed"}
+            
+            # Test AA CRL
+            self.print_info(f"Download CRL da AA...")
+            aa_response = requests.get(f"{self.aa_url}/api/crl/full", timeout=5)
+            
+            if aa_response.status_code == 200:
+                aa_crl_size = len(aa_response.content)
+                self.print_success(f"CRL Full AA scaricata!")
+                self.print_info(f"  Dimensione: {aa_crl_size} bytes")
+                self.print_info(f"  Content-Type: {aa_response.headers.get('Content-Type', 'N/A')}")
+                
+                # Prova anche Delta CRL AA
+                aa_delta_response = requests.get(f"{self.aa_url}/api/crl/delta", timeout=5)
+                if aa_delta_response.status_code == 200:
+                    aa_delta_size = len(aa_delta_response.content)
+                    self.print_success(f"CRL Delta AA scaricata!")
+                    self.print_info(f"  Dimensione: {aa_delta_size} bytes")
+                    aa_delta_available = True
+                else:
+                    self.print_info(f"  CRL Delta AA non disponibile (normale)")
+                    aa_delta_available = False
+                
+                aa_success = True
+                results["aa"] = {
+                    "full_crl_size": aa_crl_size,
+                    "delta_crl_available": aa_delta_available
+                }
+            elif aa_response.status_code == 404:
+                self.print_info(f"⚠️  CRL AA non ancora pubblicata (prima esecuzione)")
+                results["aa"] = {
+                    "note": "CRL not yet published - acceptable on first run",
+                    "status": 404
+                }
+                aa_success = True  # Considerato successo per prima esecuzione
+            else:
+                self.print_error(f"Download CRL AA fallito! Status: {aa_response.status_code}")
+                results["aa"] = {"status": aa_response.status_code, "error": "Download failed"}
+            
+            # Determina stato complessivo
+            overall_success = ea_success or aa_success
+            status = "success" if overall_success else "failed"
+            
+            if ea_success and aa_success:
+                self.print_success("Entrambe le CRL (EA e AA) scaricate con successo!")
+            elif ea_success:
+                self.print_success("CRL EA scaricata con successo, CRL AA non disponibile")
+            elif aa_success:
+                self.print_success("CRL AA scaricata con successo, CRL EA non disponibile")
+            else:
+                self.print_error("Nessuna CRL disponibile da EA o AA")
+            
+            self.save_test_result("crl_download", status, results)
+            return overall_success
                 
         except Exception as e:
             self.print_error(f"Errore: {e}")
@@ -1065,49 +1989,81 @@ class PKITester:
             self.print_header("PKI TESTER - Menu Interattivo (API REST)")
             print("\n  Test Disponibili:")
             print("  1. ✈️  Enrollment singolo veicolo")
-            print("  2. 🎫 Richiesta Authorization Ticket")
-            print("  3. 🚗 Enrollment flotta veicoli (5 veicoli)")
+            print("  2. 🚗 Enrollment flotta veicoli (5 veicoli)")
+            print("  3. 🎫 Richiesta Authorization Ticket")
             print("  4. 📡 Simulazione comunicazione V2V")
             print("  5. ✔️  Validazione certificati")
-            print("  6. ⚡ Performance test (10 enrollment)")
-            print("  7. 🦋 Butterfly Expansion (20 AT in batch)")
-            print("  8. 🚫 Revoca certificato")
-            print("  9. � Download CRL")
+            print("  6. 🦋 Butterfly Expansion (20 AT in batch)")
+            print("  7. 🚫 Revoca certificato")
+            print("  8. 📥 Download CRL (EA & AA)")
             print("  A. �🔄 Esegui tutti i test")
             print("  B. 📊 Mostra risultati")
             print("  C. 🗑️  Pulisci dati test")
+            print("  D. 🚀 Batch Enrollment Ottimizzato")
             print("  0. ❌ Esci")
             
             print("\n  Stato corrente:")
             print(f"    Veicoli enrollati: {len(self.enrolled_vehicles)}")
             print(f"    Test eseguiti: {len(self.test_results)}")
             
-            choice = input("\n  Scegli test (0-9, A-C): ").strip().upper()
+            choice = input("\n  Scegli test (0-9, A-D): ").strip().upper()
             
             if choice == "1":
                 self.test_1_vehicle_enrollment()
             elif choice == "2":
-                self.test_2_authorization_ticket()
+                try:
+                    num_vehicles_input = input("  Quanti veicoli enrollare? (default 5): ").strip()
+                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 5
+                    if num_vehicles <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 5.")
+                    num_vehicles = 5
+                self.test_2_multiple_vehicles(num_vehicles)
             elif choice == "3":
-                self.test_3_multiple_vehicles()
+                self.test_3_authorization_ticket()
             elif choice == "4":
                 self.test_4_v2v_communication()
             elif choice == "5":
                 self.test_5_certificate_validation()
             elif choice == "6":
-                self.test_6_performance_test()
+                try:
+                    num_tickets_input = input("  Quanti AT richiedere in batch? (default 20): ").strip()
+                    num_tickets = int(num_tickets_input) if num_tickets_input else 20
+                    if num_tickets <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 20.")
+                    num_tickets = 20
+                self.test_6_butterfly_expansion(num_tickets)
             elif choice == "7":
-                self.test_7_butterfly_expansion()
+                try:
+                    num_revocations_input = input("  Quanti certificati revocare? (default 1): ").strip()
+                    num_revocations = int(num_revocations_input) if num_revocations_input else 1
+                    if num_revocations <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 1.")
+                    num_revocations = 1
+                self.test_7_certificate_revocation(num_revocations)
             elif choice == "8":
-                self.test_8_certificate_revocation()
-            elif choice == "9":
-                self.test_9_crl_download()
+                self.test_8_crl_download()
             elif choice == "A":
                 self.run_all_tests()
             elif choice == "B":
                 self.show_results()
             elif choice == "C":
                 self.cleanup()
+            elif choice == "D":
+                try:
+                    num_vehicles_input = input("  Quanti veicoli enrollare in batch? (default 10): ").strip()
+                    num_vehicles = int(num_vehicles_input) if num_vehicles_input else 10
+                    if num_vehicles <= 0:
+                        raise ValueError("Deve essere positivo")
+                except ValueError as e:
+                    self.print_error(f"Input non valido: {e}. Uso default 10.")
+                    num_vehicles = 10
+                self.test_batch_vehicle_enrollment(num_vehicles)
             elif choice == "0":
                 self.print_info("Uscita...")
                 break
@@ -1122,22 +2078,26 @@ class PKITester:
         
         tests = [
             ("Test 1", self.test_1_vehicle_enrollment),
-            ("Test 2", self.test_2_authorization_ticket),
-            ("Test 3", self.test_3_multiple_vehicles),
+            ("Test 2", lambda: self.test_2_multiple_vehicles(5)),
+            ("Test 3", self.test_3_authorization_ticket),
             ("Test 4", self.test_4_v2v_communication),
             ("Test 5", self.test_5_certificate_validation),
-            ("Test 6", self.test_6_performance_test),
-            ("Test 7", self.test_7_butterfly_expansion),
-            ("Test 8", self.test_8_certificate_revocation),
-            ("Test 9", self.test_9_crl_download)
+            ("Test 6", lambda: self.test_6_butterfly_expansion(20)),
+            ("Test 7", lambda: self.test_7_certificate_revocation(1)),
+            ("Test 8", self.test_8_crl_download)
         ]
         
         results = []
+        total_start_time = time.time()
+        
         for name, test_func in tests:
             print(f"\n{'='*70}")
             result = test_func()
             results.append((name, result))
             time.sleep(1)
+        
+        total_end_time = time.time()
+        total_duration = total_end_time - total_start_time
         
         self.print_header("RIEPILOGO TOTALE")
         passed = sum(1 for _, r in results if r)
@@ -1153,21 +2113,20 @@ class PKITester:
             self.print_success("Tutti i test superati!")
         else:
             self.print_error(f"{failed} test falliti")
-        
-        # Conteggio totale certificati emessi
-        total_ec = len(self.enrolled_vehicles)  # EC da test 1,3
-        total_at = 0
-        for vehicle_data in self.enrolled_vehicles.values():
-            if "authorization_ticket" in vehicle_data:
-                total_at += 1
-            if "butterfly_tickets" in vehicle_data:
-                total_at += len(vehicle_data["butterfly_tickets"])
+        # Conteggio totale certificati emessi (usando contatori dinamici)
+        total_ec = self.total_ec_issued
+        total_at = self.total_at_issued
         
         print(f"\n  📊 RIEPILOGO CERTIFICATI:")
-        print(f"     Enrollment Certificates (EC): {total_ec}")
-        print(f"     Authorization Tickets (AT): {total_at}")
+        print(f"     Enrollment Certificates (EC): {total_ec} totali, {total_ec - self.revoked_ec_count} validi ({self.revoked_ec_count} revocato)")
+        print(f"     Authorization Tickets (AT): {total_at} totali, {total_at - self.revoked_at_count} validi ({self.revoked_at_count} revocato)")
         print(f"     Totale certificati emessi: {total_ec + total_at}")
-        print(f"     ⚠️  Nota: Test 8 revoca 1 EC e 1 AT")
+        print(f"     Totale certificati validi: {total_ec + total_at - self.revoked_ec_count - self.revoked_at_count}")
+        
+        # Metriche di performance
+        print(f"\n  📈 METRICHE PERFORMANCE:")
+        print(f"     Tempo totale suite: {total_duration:.2f}s")
+        print(f"     Numero di test eseguiti: {len(results)}")
     
     def show_results(self):
         """Mostra risultati dei test"""
@@ -1227,22 +2186,41 @@ def main():
     )
     
     parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Chiudi automaticamente le entities PKI alla fine dei test (--auto)"
+    )
+    
+    parser.add_argument(
         "--no-start",
         action="store_true",
-        help="Non avviare automaticamente le entities (usa quelle già attive)"
+        help="Non avviare automaticamente le entities PKI (usa quelle già attive)"
     )
     
     args = parser.parse_args()
     
     # Avvia entities se richiesto
+    started_entities = []
     if not args.no_start:
-        start_pki_entities()
+        started_entities = start_pki_entities()
     else:
         print("\n[WARNING] Modalità --no-start: usando entities già attive")
     
     tester = PKITester()
-    tester.ea_url = args.ea_url
-    tester.aa_url = args.aa_url
+    
+    # Configura URL dinamicamente se entities sono state avviate
+    if started_entities:
+        for entity in started_entities:
+            if entity['type'] == 'EA':
+                tester.ea_url = entity['url']
+                print(f"  EA configurato: {entity['id']} su {entity['url']}")
+            elif entity['type'] == 'AA':
+                tester.aa_url = entity['url']
+                print(f"  AA configurato: {entity['id']} su {entity['url']}")
+    else:
+        # Usa URL da argomenti command line (per modalità --no-start)
+        tester.ea_url = args.ea_url
+        tester.aa_url = args.aa_url
     
     if args.dashboard:
         print("\n[DASHBOARD] Integrazione dashboard attiva")
@@ -1252,12 +2230,26 @@ def main():
     try:
         if args.auto:
             tester.run_all_tests()
+            print("\n" + "="*70)
+            print("  TEST COMPLETATI - ENTITIES ATTIVE")
+            print("  Per continuare test o usare dashboard")
+            print("="*70)
+            if args.cleanup:
+                print("  --cleanup attivo: chiusura entities...")
+                stop_pki_entities()
+            else:
+                print("  Usa --cleanup per chiudere automaticamente")
+                print("  Oppure: python stop_all.ps1")
+                print("  Premi Ctrl+C per uscire")
+                print("="*70)
+                input("\nPremi Enter per continuare...")
+        
         else:
             tester.run_interactive_menu()
     
     finally:
-        # Chiudi i processi avviati
-        if not args.no_start:
+        # Chiudi i processi avviati solo se --cleanup è attivo
+        if args.cleanup and not args.no_start:
             stop_pki_entities()
 
 

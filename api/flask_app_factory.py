@@ -17,6 +17,8 @@ from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from flask_swagger_ui import get_swaggerui_blueprint
 
+from utils.metrics import get_metrics_collector
+
 
 def create_app(
     entity_type: str, entity_instance: Any, config: Optional[Dict[str, Any]] = None
@@ -157,6 +159,22 @@ def create_app(
     # Health check endpoint (no auth required)
     @app.route("/health")
     def health_check():
+        # Get uptime information
+        try:
+            metrics = get_metrics_collector()
+            uptime_seconds = metrics.get_uptime_seconds()
+            
+            # Format uptime as human-readable string
+            hours = int(uptime_seconds // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            seconds = int(uptime_seconds % 60)
+            uptime = f"{hours}h {minutes}m {seconds}s"
+            print(f"DEBUG: uptime_seconds={uptime_seconds}, uptime={uptime}")
+        except Exception as e:
+            print(f"DEBUG: Exception getting uptime: {e}")
+            uptime_seconds = 0
+            uptime = "0h 0m 0s"
+        
         return jsonify(
             {
                 "status": "ok",
@@ -164,6 +182,8 @@ def create_app(
                 "entity_id": app.config["ENTITY_ID"],
                 "protocol": "ETSI TS 102941 V2.1.1",
                 "encoding": "ASN.1 OER",
+                "uptime": uptime,
+                "uptime_seconds": uptime_seconds,
             }
         )
 

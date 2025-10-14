@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from protocols.etsi_message_types import (
     AuthorizationValidationRequest,
     AuthorizationValidationResponse,
+    ButterflyAuthorizationRequest,
     InnerAtRequest,
     InnerAtResponse,
     InnerEcRequest,
@@ -117,6 +118,45 @@ def asn1_to_inner_ec_request(asn1_dict: dict) -> InnerEcRequest:
         itsId=asn1_dict["itsId"],
         certificateFormat=asn1_dict["certificateFormat"],
         publicKeys=public_keys,
+        requestedSubjectAttributes=attrs,
+    )
+
+
+def shared_at_request_to_asn1(obj: SharedAtRequest) -> dict:
+    """Convert SharedAtRequest Python object to ASN.1 dict"""
+    result = {
+        "eaId": obj.eaId,
+        "keyTag": obj.keyTag,
+        "certificateFormat": obj.certificateFormat,
+    }
+
+    if obj.requestedSubjectAttributes:
+        attrs = {}
+        for key, value in obj.requestedSubjectAttributes.items():
+            if key in ["country", "organization", "appPermissions"]:
+                attrs[key] = value
+            elif key == "assuranceLevel":
+                attrs["assuranceLevel"] = int(value)
+            elif key == "geographicRegion":
+                attrs["geographicRegion"] = value if isinstance(value, bytes) else value.encode()
+        if attrs:
+            result["requestedSubjectAttributes"] = attrs
+
+    return result
+
+
+def asn1_to_shared_at_request(asn1_dict: dict) -> SharedAtRequest:
+    """Convert ASN.1 dict to SharedAtRequest Python object"""
+    attrs = None
+    if "requestedSubjectAttributes" in asn1_dict:
+        attrs = {}
+        for key, value in asn1_dict["requestedSubjectAttributes"].items():
+            attrs[key] = value
+
+    return SharedAtRequest(
+        eaId=asn1_dict["eaId"],
+        keyTag=asn1_dict["keyTag"],
+        certificateFormat=asn1_dict.get("certificateFormat", 1),
         requestedSubjectAttributes=attrs,
     )
 
@@ -329,6 +369,7 @@ class ETSIMessageEncoder:
         private_key: EllipticCurvePrivateKey,
         ea_public_key: EllipticCurvePublicKey,
         ea_certificate: x509.Certificate,
+        testing_mode: bool = False,
     ) -> bytes:
         """
         Encode EnrollmentRequest with encryption and PoP signature.
@@ -362,6 +403,10 @@ class ETSIMessageEncoder:
 
         # 4. Encode signed request
         plaintext = asn1_compiler.encode("InnerEcRequestSignedForPop", signed_request_asn1)
+
+        if testing_mode:
+            # In testing mode, return unencrypted signed request
+            return plaintext
 
         # 5. Encrypt with EA's public key
         encrypted_data = self.security.encrypt_message(plaintext, ea_public_key)
@@ -504,6 +549,7 @@ class ETSIMessageEncoder:
         enrollment_certificate: x509.Certificate,
         aa_public_key: EllipticCurvePublicKey,
         aa_certificate: x509.Certificate,
+        testing_mode: bool = False,
     ) -> bytes:
         """
         Encode AuthorizationRequest with encryption.
@@ -529,6 +575,10 @@ class ETSIMessageEncoder:
         inner_asn1 = inner_at_request_to_asn1(inner_request)
         plaintext = asn1_compiler.encode("InnerAtRequest", inner_asn1)
 
+        if testing_mode:
+            # In testing mode, return unencrypted inner request
+            return plaintext
+
         # 2. Encrypt with AA's public key
         encrypted_data = self.security.encrypt_message(plaintext, aa_public_key)
 
@@ -553,7 +603,7 @@ class ETSIMessageEncoder:
 
     def decode_authorization_request(
         self, request_bytes: bytes, aa_private_key: EllipticCurvePrivateKey
-    ) -> InnerAtRequest:
+    ) -> tuple:
         """
         Decode and decrypt AuthorizationRequest.
 
@@ -562,21 +612,76 @@ class ETSIMessageEncoder:
             aa_private_key: AA's private key for decryption
 
         Returns:
-            Decrypted InnerAtRequest
+            Tuple of (InnerAtRequest, enrollment_certificate)
         """
         # 1. Decode ASN.1 OER
         auth_request_asn1 = asn1_compiler.decode("AuthorizationRequest", request_bytes)
 
-        # 2. Decrypt
+        # 2. Extract enrollment certificate
+        ec_der = auth_request_asn1["enrollmentCertificate"]
+        enrollment_cert = x509.load_der_x509_certificate(ec_der, default_backend())
+
+        # 3. Decrypt
         plaintext = self.security.decrypt_message(
             auth_request_asn1["encryptedData"], aa_private_key
         )
 
-        # 3. Decode inner request
+        # 4. Decode inner request
         inner_request_asn1 = asn1_compiler.decode("InnerAtRequest", plaintext)
 
-        # 4. Convert to Python object
-        return asn1_to_inner_at_request(inner_request_asn1)
+        # 5. Convert to Python object
+        inner_request = asn1_to_inner_at_request(inner_request_asn1)
+
+        return inner_request, enrollment_cert
+
+    def decode_butterfly_authorization_request(
+        self, request_bytes: bytes, aa_private_key: EllipticCurvePrivateKey
+    ) -> tuple:
+        """
+        Decode ButterflyAuthorizationRequest (encrypted like regular authorization request).
+
+        Args:
+            request_bytes: ASN.1 OER encoded authorization request containing encrypted butterfly data
+            aa_private_key: AA's private key for decryption
+
+        Returns:
+            Tuple of (ButterflyAuthorizationRequest, enrollment_certificate)
+        """
+        # 1. Decode as regular AuthorizationRequest
+        auth_request_asn1 = asn1_compiler.decode("AuthorizationRequest", request_bytes)
+
+        # 2. Extract enrollment certificate
+        ec_der = auth_request_asn1["enrollmentCertificate"]
+        enrollment_cert = x509.load_der_x509_certificate(ec_der, default_backend())
+
+        # 3. Decrypt butterfly request
+        plaintext = self.security.decrypt_message(
+            auth_request_asn1["encryptedData"], aa_private_key
+        )
+
+        # 4. Decode butterfly request from plaintext
+        butterfly_request_asn1 = asn1_compiler.decode("ButterflyAuthorizationRequest", plaintext)
+
+        # 5. Convert sharedAtRequest
+        shared_at_request = asn1_to_shared_at_request(butterfly_request_asn1["sharedAtRequest"])
+
+        # 6. Convert innerAtRequests
+        inner_requests = []
+        for inner_asn1 in butterfly_request_asn1["innerAtRequests"]:
+            inner_request = asn1_to_inner_at_request(inner_asn1)
+            inner_requests.append(inner_request)
+
+        # 7. Create ButterflyAuthorizationRequest object
+        from protocols.etsi_message_types import ButterflyAuthorizationRequest
+        butterfly_request = ButterflyAuthorizationRequest(
+            sharedAtRequest=shared_at_request,
+            innerAtRequests=inner_requests,
+            batchSize=butterfly_request_asn1["batchSize"],
+            enrollmentCertificate=enrollment_cert.public_bytes(serialization.Encoding.DER),
+            timestamp=butterfly_request_asn1["timestamp"]
+        )
+
+        return butterfly_request, enrollment_cert
 
     def encode_authorization_response(
         self,
@@ -1027,6 +1132,113 @@ class ETSIMessageEncoder:
         print(f"[ENCODER]     Media per risposta: {len(response_data) // len(responses)} bytes")
 
         return butterfly_response_der
+
+    def encode_butterfly_authorization_request(
+        self,
+        butterfly_request: "ButterflyAuthorizationRequest",
+        enrollment_certificate: x509.Certificate,
+        aa_public_key: EllipticCurvePublicKey,
+        aa_certificate: x509.Certificate,
+    ) -> bytes:
+        """
+        Codifica ButterflyAuthorizationRequest per batch authorization.
+
+        STRUTTURA RICHIESTA BUTTERFLY:
+        ===============================
+        ButterflyAuthorizationRequest contiene:
+        - version: Versione protocollo ETSI
+        - timestamp: Timestamp generazione richiesta
+        - signer: Enrollment Certificate dell'ITS-S
+        - signature: Firma EC della richiesta
+        - encryptedData: InnerAtRequests cifrati con chiave AA
+
+        InnerAtRequests contiene N richieste:
+        - publicKeys: Chiavi pubbliche per AT (una per richiesta)
+        - hmacKey: Chiave HMAC univoca per ogni AT
+        - requestedSubjectAttributes: Permessi richiesti
+
+        CIFRATURA (ETSI TS 102941 Section 6.3.3):
+        =========================================
+        ✓ Richiesta cifrata con chiave pubblica AA
+        ✓ Enrollment Certificate allegato in chiaro
+        ✓ Firma EC per autenticazione
+
+        CONFORMITÀ ETSI:
+        ================
+        ✓ Section 6.3.3 - Butterfly Authorization Request
+        ✓ ASN.1 OER encoding
+        ✓ ECIES encryption
+        ✓ Unlinkability attraverso hmacKeys univoche
+
+        Args:
+            butterfly_request: ButterflyAuthorizationRequest con N InnerAtRequests
+            enrollment_certificate: Certificato enrollment ITS-S
+            aa_public_key: Chiave pubblica AA per cifratura
+            aa_certificate: Certificato AA per recipient ID
+
+        Returns:
+            ASN.1 OER encoded ButterflyAuthorizationRequest
+
+        Raises:
+            ValueError: Se butterfly_request non è valido
+        """
+        print(f"\n[ENCODER] Codificando Butterfly Authorization Request...")
+        print(f"[ENCODER]   Numero richieste AT: {len(butterfly_request.innerAtRequests)}")
+
+        # === 1. VALIDAZIONE ===
+        if not butterfly_request.innerAtRequests:
+            raise ValueError("Butterfly request deve contenere almeno una InnerAtRequest")
+
+        # === 2. COSTRUISCI SHARED AT REQUEST ===
+        shared_at_asn1 = shared_at_request_to_asn1(butterfly_request.sharedAtRequest)
+        
+        # === 3. COSTRUISCI INNER AT REQUESTS ===
+        inner_requests_asn1 = []
+        for idx, inner_request in enumerate(butterfly_request.innerAtRequests):
+            print(f"[ENCODER]   Preparando InnerAtRequest #{idx}...")
+
+            # Converti InnerAtRequest a ASN.1
+            inner_asn1 = inner_at_request_to_asn1(inner_request)
+            inner_requests_asn1.append(inner_asn1)
+
+        # === 4. COSTRUISCI RICHIESTA BUTTERFLY ASN.1 ===
+        butterfly_request_asn1 = {
+            "sharedAtRequest": shared_at_asn1,
+            "innerAtRequests": inner_requests_asn1,
+            "batchSize": butterfly_request.batchSize,
+            "version": version_to_uint8("1.3.1"),
+            "enrollmentCertificate": enrollment_certificate.public_bytes(serialization.Encoding.DER),
+            "timestamp": datetime_to_time32(datetime.now(timezone.utc)),
+        }
+
+        # === 5. COMPUTA RECIPIENT ID ===
+        aa_cert_der = aa_certificate.public_bytes(serialization.Encoding.DER)
+        recipient_id = compute_hashed_id8(aa_cert_der)
+        butterfly_request_asn1["recipientId"] = recipient_id
+
+        # === 6. CODIFICA E CIFRA COME RICHIESTA REGOLARE ===
+        # Codifica la ButterflyAuthorizationRequest
+        butterfly_plaintext = asn1_compiler.encode("ButterflyAuthorizationRequest", butterfly_request_asn1)
+        
+        # Cifra con chiave pubblica AA (come AuthorizationRequest regolare)
+        encrypted_data = self.security.encrypt_message(butterfly_plaintext, aa_public_key)
+        
+        # Costruisci struttura AuthorizationRequest esterna
+        request_asn1 = {
+            "version": version_to_uint8("1.3.1"),
+            "enrollmentCertificate": enrollment_certificate.public_bytes(serialization.Encoding.DER),
+            "encryptedData": encrypted_data,
+            "timestamp": datetime_to_time32(datetime.now(timezone.utc)),
+        }
+        
+        # Codifica finale
+        encoded_request = asn1_compiler.encode("AuthorizationRequest", request_asn1)
+
+        print(f"[ENCODER] ✓ ButterflyAuthorizationRequest codificata e cifrata")
+        print(f"[ENCODER]     Dimensione: {len(encoded_request)} bytes")
+        print(f"[ENCODER]     Richieste AT: {len(butterfly_request.innerAtRequests)}")
+
+        return encoded_request
 
     def _encrypt_with_hmac(self, plaintext: bytes, hmac_key: bytes) -> bytes:
         """

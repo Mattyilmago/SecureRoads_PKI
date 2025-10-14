@@ -153,6 +153,7 @@ def create_simple_enrollment_blueprint(ea_instance):
                 from utils.metrics import get_metrics_collector
                 metrics = get_metrics_collector()
                 metrics.increment_counter('enrollment_certificates_issued')
+                metrics.increment_counter('active_certificates')  # ETSI TS 102 941 compliant
                 
                 # 8. Return response
                 return jsonify({
@@ -337,6 +338,7 @@ def create_simple_enrollment_blueprint(ea_instance):
                 from utils.metrics import get_metrics_collector
                 metrics = get_metrics_collector()
                 metrics.increment_counter('certificates_revoked')
+                metrics.decrement_counter('active_certificates')
                 
                 return jsonify({
                     "success": True,

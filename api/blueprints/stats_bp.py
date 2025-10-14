@@ -5,6 +5,9 @@ Provides endpoints to retrieve statistics about PKI entities.
 """
 
 from flask import Blueprint, jsonify, current_app
+from pathlib import Path
+
+from utils.cert_utils import count_active_certificates
 
 
 def create_stats_blueprint(entity_instance, entity_type):
@@ -66,7 +69,8 @@ def create_stats_blueprint(entity_instance, entity_type):
                 
                 stats["certificates_issued"] = ec_issued
                 stats["revoked_certificates"] = ec_revoked
-                stats["active_certificates"] = ec_issued - ec_revoked
+                # Count truly active certificates (valid + not revoked) using ETSI-compliant logic
+                stats["active_certificates"] = count_active_certificates(ec_dir, getattr(bp.entity, 'crl_manager', None))
                 stats["certificate_type"] = "Enrollment Certificate (EC)"
                 
                 # Get CRL info if available
@@ -114,7 +118,8 @@ def create_stats_blueprint(entity_instance, entity_type):
                 
                 stats["certificates_issued"] = at_issued
                 stats["revoked_certificates"] = at_revoked
-                stats["active_certificates"] = at_issued - at_revoked
+                # Count truly active certificates (valid + not revoked) using ETSI-compliant logic
+                stats["active_certificates"] = count_active_certificates(at_dir, getattr(bp.entity, 'crl_manager', None))
                 stats["certificate_type"] = "Authorization Ticket (AT)"
                 
             elif bp.entity_type == "TLM":

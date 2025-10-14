@@ -191,6 +191,7 @@ def create_simple_authorization_blueprint(aa_instance):
                 from utils.metrics import get_metrics_collector
                 metrics = get_metrics_collector()
                 metrics.increment_counter('authorization_tickets_issued')
+                metrics.increment_counter('active_certificates')  # ETSI TS 102 941 compliant
                 
                 # 9. Return response
                 return jsonify({
@@ -376,6 +377,12 @@ def create_simple_authorization_blueprint(aa_instance):
                 
                 current_app.logger.info(f"✅ Issued {len(at_certificates)} ATs successfully!")
                 
+                # Increment metrics counter for issued authorization tickets
+                from utils.metrics import get_metrics_collector
+                metrics = get_metrics_collector()
+                metrics.increment_counter('authorization_tickets_issued', len(at_certificates))
+                metrics.increment_counter('active_certificates', len(at_certificates))  # ETSI TS 102 941 compliant
+                
                 # 8. Return response
                 return jsonify({
                     "success": True,
@@ -480,6 +487,12 @@ def create_simple_authorization_blueprint(aa_instance):
                 # Publish delta CRL
                 bp.aa.crl_manager.publish_delta_crl()
                 current_app.logger.info("Delta CRL published after AT revocation")
+                
+                # Update metrics
+                from utils.metrics import get_metrics_collector
+                metrics = get_metrics_collector()
+                metrics.increment_counter('certificates_revoked')
+                metrics.decrement_counter('active_certificates')
                 
                 return jsonify({
                     "success": True,

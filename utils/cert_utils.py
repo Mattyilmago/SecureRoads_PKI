@@ -17,7 +17,9 @@ Usa sempre get_cert_valid_from() e get_cert_valid_to() per ottenere datetime UTC
 
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
+from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 
@@ -193,3 +195,99 @@ def is_certificate_valid_at(
     not_after = get_certificate_expiry_time(certificate)
 
     return not_before <= timestamp <= not_after
+
+
+def count_active_certificates(cert_dir: Path, crl_manager=None, timestamp: Optional[datetime] = None) -> int:
+    """
+    Conta i certificati attivi in una directory secondo ETSI TS 102 941.
+
+    Un certificato è considerato attivo se:
+    - È presente nella directory
+    - È entro il periodo di validità (not_before <= timestamp <= not_valid_after)
+    - Non è revocato (non presente nella lista CRL dell'autorità competente)
+
+    ETSI TS 102 941 Section 6.4.1 - Certificate Validation
+    ETSI TS 102 941 Section 7.1 - Certificate Revocation
+
+    Args:
+        cert_dir: Directory contenente i certificati PEM
+        crl_manager: CRL manager per verificare le revoche (gestisce già Full + Delta CRL)
+        timestamp: Momento temporale per validità (default: ora corrente UTC)
+
+    Returns:
+        Numero di certificati attivi
+    """
+    if not cert_dir.exists():
+        return 0
+
+    active_count = 0
+
+    # Iterate through all PEM files in directory
+    for cert_file in cert_dir.glob("*.pem"):
+        try:
+            with open(cert_file, 'rb') as f:
+                cert_data = f.read()
+
+            cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+            if is_certificate_active(cert, crl_manager, timestamp):
+                active_count += 1
+
+        except Exception:
+            # Skip invalid certificate files
+            continue
+
+    return active_count
+
+
+def is_certificate_revoked(certificate: x509.Certificate, crl_manager=None) -> bool:
+    """
+    Checks if certificate is revoked according to CRL.
+
+    Args:
+        certificate: X.509 certificate
+        crl_manager: CRL manager instance (optional)
+
+    Returns:
+        True if revoked, False otherwise
+    """
+    if crl_manager is None:
+        return False
+
+    # Check if certificate serial is in revoked list
+    serial = certificate.serial_number
+
+    # revoked_certificates contains dicts with 'serial_number' key
+    for entry in crl_manager.revoked_certificates:
+        if isinstance(entry, dict) and entry.get('serial_number') == serial:
+            return True
+        elif entry == serial:  # Fallback for direct serial numbers
+            return True
+
+    return False
+
+
+def is_certificate_active(certificate: x509.Certificate, crl_manager=None, timestamp: Optional[datetime] = None) -> bool:
+    """
+    Checks if certificate is active (valid and not revoked).
+
+    ETSI TS 102 941 Section 6.4.1 - Certificate Validation
+    ETSI TS 102 941 Section 7.1 - Certificate Revocation
+
+    Args:
+        certificate: X.509 certificate
+        crl_manager: CRL manager instance (optional)
+        timestamp: Time to check validity (default: current UTC time)
+
+    Returns:
+        True if active, False otherwise
+    """
+    # Check temporal validity
+    if not is_certificate_valid_at(certificate, timestamp):
+        return False
+
+    # Check revocation status
+    if is_certificate_revoked(certificate, crl_manager):
+        return False
+
+    return True

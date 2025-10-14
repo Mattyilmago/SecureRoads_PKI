@@ -14,13 +14,14 @@ import hashlib
 import traceback
 
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from flask import Blueprint, current_app, jsonify, request
 
 from api.middleware import optional_auth, rate_limit
-from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import ResponseCode
+from protocols.etsi_message_encoder import ETSIMessageEncoder, asn1_compiler, asn1_to_inner_ec_request
+from protocols.etsi_message_types import ResponseCode, InnerEcRequestSignedForPop
+from utils.metrics import get_metrics_collector
 
 
 def compute_request_hash(data: bytes) -> bytes:
@@ -115,48 +116,111 @@ def create_enrollment_blueprint(ea_instance):
 
             current_app.logger.info(f"Received ASN.1 payload: {len(raw_data)} bytes")
 
-            # 3. Check if EA has private key (needed for decryption)
-            if not hasattr(bp.ea, "private_key"):
-                current_app.logger.error("EA private key not available")
-                return (
-                    jsonify(
-                        {
-                            "error": "EA private key not configured",
-                            "responseCode": ResponseCode.INTERNAL_SERVER_ERROR.value,
-                            "message": "Server configuration error",
-                        }
-                    ),
-                    500,
-                )
+            # Check for testing mode (bypass encryption)
+            testing_mode = request.headers.get("X-Testing-Mode") == "true"
+            if testing_mode:
+                current_app.logger.info("TESTING MODE: Bypassing encryption")
+                # In testing mode, assume the payload is InnerEcRequestSignedForPop encoded directly
+                try:
+                    signed_request_asn1 = asn1_compiler.decode("InnerEcRequestSignedForPop", raw_data)
+                    inner_request = asn1_to_inner_ec_request(signed_request_asn1["ecRequest"])
+                    signed_request = InnerEcRequestSignedForPop(
+                        ecRequest=inner_request,
+                        tbsData=signed_request_asn1["tbsData"],
+                        signature=signed_request_asn1["signature"],
+                    )
+                    current_app.logger.info("✓ Testing mode: decoded unencrypted request")
+                except Exception as e:
+                    current_app.logger.error(f"Testing mode decode error: {e}")
+                    return (
+                        jsonify(
+                            {
+                                "error": "Failed to decode testing request",
+                                "responseCode": ResponseCode.BAD_REQUEST.value,
+                                "details": str(e),
+                            }
+                        ),
+                        400,
+                    )
+            else:
+                # 3. Check if EA has private key (needed for decryption)
+                if not hasattr(bp.ea, "private_key"):
+                    current_app.logger.error("EA private key not available")
+                    return (
+                        jsonify(
+                            {
+                                "error": "EA private key not configured",
+                                "responseCode": ResponseCode.INTERNAL_SERVER_ERROR.value,
+                                "message": "Server configuration error",
+                            }
+                        ),
+                        500,
+                    )
 
-            # 4. Decode and decrypt ASN.1 OER message
-            try:
-                signed_request = bp.encoder.decode_enrollment_request(raw_data, bp.ea.private_key)
-                current_app.logger.info("✓ ASN.1 OER decoding and decryption successful")
-            except Exception as e:
-                current_app.logger.error(f"ASN.1 decoding/decryption error: {e}")
-                current_app.logger.debug(traceback.format_exc())
-                return (
-                    jsonify(
-                        {
-                            "error": "Failed to decode or decrypt request",
-                            "responseCode": ResponseCode.DECRYPTION_FAILED.value,
-                            "details": str(e),
-                        }
-                    ),
-                    400,
-                )
+                # 4. Decode and decrypt ASN.1 OER message
+                try:
+                    signed_request = bp.encoder.decode_enrollment_request(raw_data, bp.ea.private_key)
+                    current_app.logger.info("✓ ASN.1 OER decoding and decryption successful")
+                except Exception as e:
+                    current_app.logger.error(f"ASN.1 decoding/decryption error: {e}")
+                    current_app.logger.debug(traceback.format_exc())
+                    return (
+                        jsonify(
+                            {
+                                "error": "Failed to decode or decrypt request",
+                                "responseCode": ResponseCode.DECRYPTION_FAILED.value,
+                                "details": str(e),
+                            }
+                        ),
+                        400,
+                    )
+
+                # 4.5. Validate timestamp (ETSI TS 102941 Section 6.2.3)
+                # Allow 5 minute clock skew for timestamp validation
+                import time
+                current_time = int(time.time())
+                time_tolerance = 300  # 5 minutes
+                
+                if hasattr(signed_request, 'timestamp'):
+                    request_time = signed_request.timestamp
+                    time_diff = abs(current_time - request_time)
+                    
+                    if time_diff > time_tolerance:
+                        current_app.logger.warning(f"Timestamp validation failed: request_time={request_time}, current_time={current_time}, diff={time_diff}s")
+                        return (
+                            jsonify(
+                                {
+                                    "error": "Request timestamp outside acceptable range",
+                                    "responseCode": ResponseCode.BAD_REQUEST.value,
+                                    "details": f"Timestamp difference: {time_diff}s (max allowed: {time_tolerance}s)",
+                                }
+                            ),
+                            400,
+                        )
+                    current_app.logger.info(f"✓ Timestamp validated: {request_time}")
 
             # 5. Verify Proof of Possession (PoP)
             try:
+                # Get public key bytes and convert to key object
+                public_key_bytes = signed_request.ecRequest.publicKeys["verification"]
+                current_app.logger.info(f"DEBUG: about to call load_der_public_key")
+                try:
+                    public_key = serialization.load_der_public_key(public_key_bytes)
+                    current_app.logger.info(f"DEBUG: load_der_public_key succeeded, public_key type: {type(public_key)}")
+                except Exception as load_err:
+                    current_app.logger.error(f"Failed to load public key: {load_err}")
+                    current_app.logger.error(f"public_key_bytes type: {type(public_key_bytes)}, len: {len(public_key_bytes) if isinstance(public_key_bytes, bytes) else 'N/A'}")
+                    raise
+                current_app.logger.info(f"DEBUG: about to call verify on {type(public_key)}")
                 # Verify signature on tbsData
-                public_key = signed_request.ecRequest.publicKeys["verification"]
                 public_key.verify(
                     signed_request.signature, signed_request.tbsData, ec.ECDSA(hashes.SHA256())
                 )
                 current_app.logger.info("✓ Proof of Possession verified")
             except Exception as e:
                 current_app.logger.error(f"PoP verification failed: {e}")
+                current_app.logger.error(f"Exception type: {type(e)}")
+                current_app.logger.error(f"Traceback: {traceback.format_exc()}")
                 return (
                     jsonify(
                         {
@@ -170,7 +234,8 @@ def create_enrollment_blueprint(ea_instance):
             # 6. Extract ITS-S information
             inner_request = signed_request.ecRequest
             its_id = inner_request.itsId
-            verification_key = inner_request.publicKeys["verification"]
+            verification_key_bytes = inner_request.publicKeys["verification"]
+            verification_key = serialization.load_der_public_key(verification_key_bytes)
             requested_attrs = inner_request.requestedSubjectAttributes
 
             current_app.logger.info(f"ITS-S ID: {its_id}")
@@ -204,6 +269,11 @@ def create_enrollment_blueprint(ea_instance):
                     f"✓ Issued EC for {its_id}: serial={ec_certificate.serial_number}"
                 )
 
+                # Increment metrics counter for issued certificates
+                metrics = get_metrics_collector()
+                metrics.increment_counter('enrollment_certificates_issued')
+                metrics.increment_counter('active_certificates')  # ETSI TS 102 941 compliant
+
             except Exception as e:
                 current_app.logger.error(f"Certificate issuance failed: {e}")
                 current_app.logger.debug(traceback.format_exc())
@@ -225,7 +295,7 @@ def create_enrollment_blueprint(ea_instance):
                 request_hash = compute_request_hash(raw_data)
 
                 response_der = bp.encoder.encode_enrollment_response(
-                    response_code=ResponseCode.OK.value,
+                    response_code=ResponseCode.OK,
                     request_hash=request_hash,
                     certificate=ec_certificate,
                     itss_public_key=verification_key,
@@ -405,5 +475,28 @@ def create_enrollment_blueprint(ea_instance):
                 ),
                 500,
             )
+
+    @bp.route("/certificate", methods=["GET"])
+    @rate_limit
+    def get_certificate():
+        """
+        GET /enrollment/certificate
+
+        Returns the EA's public certificate in PEM format.
+
+        Returns:
+            str: PEM-encoded X.509 certificate
+        """
+        try:
+            if not hasattr(bp.ea, "certificate"):
+                current_app.logger.error("EA certificate not available")
+                return jsonify({"error": "Certificate not available"}), 404
+
+            cert_pem = bp.ea.certificate.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+            return cert_pem, 200, {"Content-Type": "application/x-pem-file"}
+
+        except Exception as e:
+            current_app.logger.error(f"Error retrieving certificate: {e}")
+            return jsonify({"error": "Internal server error"}), 500
 
     return bp

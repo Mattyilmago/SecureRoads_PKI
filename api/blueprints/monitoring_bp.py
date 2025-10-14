@@ -3,6 +3,10 @@ Monitoring Blueprint
 
 Endpoints for metrics, health checks, and system status.
 
+Questo blueprint fornisce metriche ETSI TS 102 941 compliant per il monitoraggio
+del sistema PKI, utilizzando il CRLManager per la gestione delle revoche
+(Full CRL + Delta CRL).
+
 Author: SecureRoad PKI Project
 Date: October 2025
 """
@@ -10,6 +14,9 @@ Date: October 2025
 import psutil
 from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify
+import os
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 
 from utils.metrics import get_metrics_collector
 
@@ -30,68 +37,7 @@ def get_metrics():
     stats_all = metrics.get_stats()
     stats_5min = metrics.get_stats(last_n_minutes=5)
     counters = metrics.get_counters()
-    
-    # Get active certificates from stats endpoint if entity has base_dir
-    active_certs = 0
-    try:
-        from pathlib import Path
-        import os
-        import json
-        
-        # Entity is stored in the blueprint instance
-        if hasattr(monitoring_bp, 'entity') and hasattr(monitoring_bp.entity, 'base_dir'):
-            entity = monitoring_bp.entity
-            entity_type = getattr(monitoring_bp, 'entity_type', None)
-            
-            if entity_type == 'EA':
-                # Count Enrollment Certificates
-                ec_dir = Path(entity.base_dir) / "enrollment_certificates"
-                if ec_dir.exists():
-                    ec_issued = len(list(ec_dir.glob("EC_*.pem")))
-                else:
-                    ec_issued = 0
-                
-                # Count revoked from CRL
-                ec_revoked = 0
-                if hasattr(entity, 'crl_manager'):
-                    try:
-                        metadata_path = entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
-                        if os.path.exists(metadata_path):
-                            with open(metadata_path, 'r') as f:
-                                metadata = json.load(f)
-                                ec_revoked = metadata.get('revoked_count', 0)
-                    except:
-                        pass
-                
-                active_certs = ec_issued - ec_revoked
-                
-            elif entity_type == 'AA':
-                # Count Authorization Tickets
-                at_dir = Path(entity.base_dir) / "tickets"
-                if at_dir.exists():
-                    at_issued = len(list(at_dir.glob("AT_*.pem")))
-                else:
-                    at_issued = 0
-                
-                # Count revoked from CRL
-                at_revoked = 0
-                if hasattr(entity, 'crl_manager'):
-                    try:
-                        metadata_path = entity.crl_manager.full_crl_path.replace(".pem", "_metadata.json")
-                        if os.path.exists(metadata_path):
-                            with open(metadata_path, 'r') as f:
-                                metadata = json.load(f)
-                                at_revoked = metadata.get('revoked_count', 0)
-                    except:
-                        pass
-                
-                active_certs = at_issued - at_revoked
-    except Exception as e:
-        # Silently fail if unable to count certificates
-        pass
-    
-    # Add active_certificates to counters
-    counters['active_certificates'] = active_certs
+    # active_certificates counter is now maintained in real-time (ETSI TS 102 941 compliant)
     
     return jsonify({
         'status': 'ok',

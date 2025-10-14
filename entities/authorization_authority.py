@@ -1,9 +1,11 @@
 ﻿import os
 import secrets
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
 
+import schedule
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
@@ -31,6 +33,7 @@ from utils.cert_utils import (
     get_certificate_ski,
     get_short_identifier,
 )
+from utils.metrics import get_metrics_collector
 
 
 class AuthorizationAuthority:
@@ -112,12 +115,30 @@ class AuthorizationAuthority:
             self.crl_manager.publish_full_crl()
             self.logger.info("✅ Full CRL iniziale pubblicata")
 
+        # Carica Full CRL in memoria per garantire consistenza (stessa logica EA)
+        try:
+            self.crl_manager.load_full_crl()
+            self.logger.info("Full CRL caricata in memoria con successo")
+        except Exception as e:
+            self.logger.warning(f"Impossibile caricare Full CRL esistente: {e}")
+            # Continua comunque - potrebbe essere il primo avvio
+
         # Inizializza ETSI Message Encoder per gestire messaggi conformi allo standard
         self.logger.info(f"Inizializzando ETSI Message Encoder (ASN.1 OER)...")
         self.message_encoder = ETSIMessageEncoder()
         self.logger.info(f"ETSI Message Encoder inizializzato!")
 
-        self.logger.info(f"Inizializzazione AA {aa_id} completata!")
+        # Inizializza scheduler automatico per CRL (ETSI TS 102 941)
+        self.logger.info("Inizializzando scheduler automatico CRL...")
+        self._init_crl_scheduler()
+        self.logger.info("Scheduler CRL inizializzato!")
+
+        # Inizializza scheduler per controllo certificati scaduti (ETSI TS 102 941)
+        self.logger.info("Inizializzando scheduler controllo certificati scaduti...")
+        self._init_expiry_scheduler()
+        self.logger.info("Scheduler certificati scaduti inizializzato!")
+
+        self.logger.info(f"Inizializzazione Authorization Authority {aa_id} completata!")
 
     # Carica chiave/certificate se esistono, altrimenti li genera
     def load_or_generate_aa(self):
@@ -383,6 +404,147 @@ class AuthorizationAuthority:
             return crl
         self.logger.info("CRL AA non trovata, restituisco None.")
         return None
+
+    # ========================================================================
+    # AUTOMATIC CRL SCHEDULER (ETSI TS 102 941 - Section 6.3.3)
+    # ========================================================================
+
+    def _init_crl_scheduler(self):
+        """
+        Inizializza scheduler automatico per pubblicazione CRL secondo ETSI standards.
+
+        ETSI TS 102 941 Raccomandazioni:
+        - Full CRL: Pubblicazione periodica (settimanale)
+        - Delta CRL: Pubblicazione frequente (oraria) per revoche recenti
+        """
+        # Cancella eventuali job precedenti
+        schedule.clear('aa-crl')
+
+        # Full CRL: ogni domenica alle 02:30 (settimanale, 30 min dopo EA)
+        schedule.every().sunday.at("02:30").do(self._scheduled_publish_full_crl).tag('aa-crl')
+
+        # Delta CRL: ogni ora (per revoche recenti)
+        schedule.every(1).hours.do(self._scheduled_publish_delta_crl).tag('aa-crl')
+
+        # Avvia thread di background per eseguire lo scheduler
+        self.scheduler_thread = threading.Thread(
+            target=self._run_scheduler,
+            daemon=True,
+            name=f"AA-{self.aa_id}-CRL-Scheduler"
+        )
+        self.scheduler_thread.start()
+
+        self.logger.info("Scheduler CRL configurato:")
+        self.logger.info("  - Full CRL: ogni domenica alle 02:30")
+        self.logger.info("  - Delta CRL: ogni ora")
+
+    def _run_scheduler(self):
+        """
+        Esegue il loop dello scheduler in background thread.
+        """
+        self.logger.info(f"Scheduler thread avviato per AA {self.aa_id}")
+
+        while True:
+            try:
+                schedule.run_pending()
+                # Sleep per 60 secondi tra controlli
+                threading.Event().wait(60)
+            except Exception as e:
+                self.logger.error(f"Errore nello scheduler CRL: {e}")
+                # Continua nonostante errori
+                threading.Event().wait(60)
+
+    def _scheduled_publish_full_crl(self):
+        """
+        Job schedulato per pubblicazione Full CRL settimanale.
+        """
+        try:
+            self.logger.info("=== SCHEDULER: Pubblicazione Full CRL settimanale ===")
+            self.publish_crl(validity_days=7)
+            self.logger.info("=== SCHEDULER: Full CRL pubblicata con successo ===")
+        except Exception as e:
+            self.logger.error(f"Errore pubblicazione Full CRL schedulata: {e}")
+
+    def _scheduled_publish_delta_crl(self):
+        """
+        Job schedulato per pubblicazione Delta CRL oraria.
+        """
+        try:
+            # Pubblica solo se ci sono nuove revoche
+            if self.crl_manager.delta_revocations:
+                self.logger.info("=== SCHEDULER: Pubblicazione Delta CRL oraria ===")
+                self.crl_manager.publish_delta_crl(validity_hours=24)
+                self.logger.info("=== SCHEDULER: Delta CRL pubblicata con successo ===")
+            else:
+                self.logger.debug("Scheduler: Nessuna nuova revoca, Delta CRL non necessaria")
+        except Exception as e:
+            self.logger.error(f"Errore pubblicazione Delta CRL schedulata: {e}")
+
+    # AUTOMATIC EXPIRY SCHEDULER (ETSI TS 102 941 - Section 6.3.3)
+    # ========================================================================
+
+    def _init_expiry_scheduler(self):
+        """
+        Inizializza scheduler automatico per controllo certificati scaduti secondo ETSI standards.
+
+        ETSI TS 102 941 Raccomandazioni:
+        - Controllo periodico certificati scaduti per decrementare contatore active_certificates
+        - Frequenza: ogni ora per garantire accuratezza real-time
+        """
+        # Cancella eventuali job precedenti
+        schedule.clear('aa-expiry')
+
+        # Controllo certificati scaduti: ogni ora
+        schedule.every(1).hours.do(self._scheduled_check_expired_certificates).tag('aa-expiry')
+
+        self.logger.info("Scheduler controllo certificati scaduti configurato:")
+        self.logger.info("  - Controllo ogni ora")
+
+    def _scheduled_check_expired_certificates(self):
+        """
+        Job schedulato per controllo certificati AT scaduti e decremento contatore.
+        """
+        try:
+            self.logger.debug("=== SCHEDULER: Controllo certificati AT scaduti ===")
+
+            # Conta certificati scaduti trovati
+            expired_count = 0
+
+            # Scansiona directory certificati per file AT_*.pem
+            certificates_dir = self.paths.certificates_dir
+            if not certificates_dir.exists():
+                self.logger.debug("Directory certificati non esiste")
+                return
+
+            for cert_file in certificates_dir.glob("AT_*.pem"):
+                try:
+                    # Carica certificato
+                    with open(cert_file, 'rb') as f:
+                        cert_data = f.read()
+                    certificate = x509.load_pem_x509_certificate(cert_data)
+
+                    # Controlla se è scaduto
+                    now = datetime.now(timezone.utc)
+                    if certificate.not_valid_after_utc <= now:
+                        # Certificato scaduto - decrementa contatore
+                        metrics = get_metrics_collector()
+                        metrics.decrement_counter('active_certificates')
+                        expired_count += 1
+
+                        # Log solo per debug, non rimuovere file (potrebbe servire per audit)
+                        self.logger.debug(f"Certificato AT scaduto trovato: {cert_file.name}")
+
+                except Exception as e:
+                    self.logger.warning(f"Errore lettura certificato {cert_file.name}: {e}")
+                    continue
+
+            if expired_count > 0:
+                self.logger.info(f"=== SCHEDULER: {expired_count} certificati AT scaduti trovati, contatore decrementato ===")
+            else:
+                self.logger.debug("=== SCHEDULER: Nessun certificato AT scaduto trovato ===")
+
+        except Exception as e:
+            self.logger.error(f"Errore controllo certificati scaduti schedulato: {e}")
 
     # ========================================================================
     # ETSI TS 102941 PROTOCOL METHODS (ASN.1 OER)

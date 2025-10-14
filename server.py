@@ -1,11 +1,12 @@
-"""
+﻿"""
 Production Server Launcher for SecureRoad PKI.
 
 ETSI TS 102941 compliant REST API server supporting EA, AA, TLM, and RootCA entities.
 
 Usage:
-    python server.py --entity EA --config config.json
-    python server.py --entity AA --id AA_001
+    python server.py --entity EA --config config.json  # Single entity
+    python server.py --ea 3 --aa 2 --tlm 2              # Multi-entity setup
+    python server.py --config dashboard_request.json   # Multi-entity from config
 """
 
 import sys
@@ -32,6 +33,7 @@ import json
 import re
 import secrets
 import socket
+import subprocess
 from pathlib import Path
 
 # Add project root to path
@@ -45,57 +47,570 @@ from managers.trust_list_manager import TrustListManager
 from utils.cert_utils import get_certificate_ski
 
 
-def generate_entity_name_with_suffix(desired_name, existing_entities):
-    """
-    Genera un nome entità con suffisso numerico se il nome base già esiste.
-    Supporta sia il nuovo formato con underscore che il vecchio con parentesi.
-    
-    Esempi:
-    - Se "EA_001" non esiste, restituisce "EA_001"
-    - Se "EA_001" esiste, cerca "EA_001_2", "EA_001_3", etc.
-    - Se esistono "EA_001" e "EA_001_2", restituisce "EA_001_3"
-    - Riconosce anche vecchi formati come "EA_001 (2)" per backward compatibility
-    
-    Args:
-        desired_name: Nome desiderato per l'entità
-        existing_entities: Lista delle entità esistenti
-        
-    Returns:
-        String: Nome con suffisso se necessario (sempre nuovo formato)
-    """
-    if desired_name not in existing_entities:
-        return desired_name
-    
-    # Trova tutti i nomi che iniziano con desired_name (supporta sia vecchio che nuovo formato)
-    base_pattern = re.escape(desired_name)
-    # Pattern per nuovo formato: EA_001_2, EA_001_3, etc.
-    new_suffix_pattern = re.compile(rf'^{base_pattern}_(\d+)$')
-    # Pattern per vecchio formato: EA_001 (2), EA_001 (3), etc.
-    old_suffix_pattern = re.compile(rf'^{base_pattern}\s*\((\d+)\)$')
-    
-    max_suffix = 1
-    for entity in existing_entities:
-        # Controlla nuovo formato
-        match = new_suffix_pattern.match(entity)
-        if match:
-            suffix_num = int(match.group(1))
-            max_suffix = max(max_suffix, suffix_num)
-        else:
-            # Controlla vecchio formato per backward compatibility
-            match = old_suffix_pattern.match(entity)
+class PKIEntityManager:
+    """Unified manager for PKI entities - handles both single launch and multi-entity setup."""
+
+    def __init__(self):
+        # Global RootCA instance (singleton pattern)
+        self._root_ca_instance = None
+        # Global TLM_MAIN instance (singleton pattern - shared across all AA)
+        self._tlm_main_instance = None
+
+    def get_or_create_root_ca(self, base_dir="./data/root_ca"):
+        """Get or create RootCA singleton instance."""
+        if self._root_ca_instance is None:
+            self._root_ca_instance = RootCA(base_dir=base_dir)
+        return self._root_ca_instance
+
+    def get_or_create_tlm_main(self, base_dir="./data/tlm"):
+        """Get or create TLM_MAIN singleton instance."""
+        if self._tlm_main_instance is None:
+            root_ca = self.get_or_create_root_ca()
+            self._tlm_main_instance = TrustListManager(root_ca, base_dir=base_dir)
+        return self._tlm_main_instance
+
+    def generate_entity_name_with_suffix(self, desired_name, existing_entities):
+        """
+        Genera un nome entità con suffisso numerico se il nome base già esiste.
+        Supporta sia il nuovo formato con underscore che il vecchio con parentesi.
+
+        Esempi:
+        - Se "EA_001" non esiste, restituisce "EA_001"
+        - Se "EA_001" esiste, cerca "EA_001_2", "EA_001_3", etc.
+        - Se esistono "EA_001" e "EA_001_2", restituisce "EA_001_3"
+        - Riconosce anche vecchi formati come "EA_001 (2)" per backward compatibility
+
+        Args:
+            desired_name: Nome desiderato per l'entità
+            existing_entities: Lista delle entità esistenti
+
+        Returns:
+            String: Nome con suffisso se necessario (sempre nuovo formato)
+        """
+        if desired_name not in existing_entities:
+            return desired_name
+
+        # Trova tutti i nomi che iniziano con desired_name (supporta sia vecchio che nuovo formato)
+        base_pattern = re.escape(desired_name)
+        # Pattern per nuovo formato: EA_001_2, EA_001_3, etc.
+        new_suffix_pattern = re.compile(rf'^{base_pattern}_(\d+)$')
+        # Pattern per vecchio formato: EA_001 (2), EA_001 (3), etc.
+        old_suffix_pattern = re.compile(rf'^{base_pattern}\s*\((\d+)\)$')
+
+        max_suffix = 1
+        for entity in existing_entities:
+            # Controlla nuovo formato
+            match = new_suffix_pattern.match(entity)
             if match:
                 suffix_num = int(match.group(1))
                 max_suffix = max(max_suffix, suffix_num)
-    
-    # Il prossimo suffisso è max_suffix + 1
-    return f"{desired_name}_{max_suffix + 1}"
+            else:
+                # Controlla vecchio formato per backward compatibility
+                match = old_suffix_pattern.match(entity)
+                if match:
+                    suffix_num = int(match.group(1))
+                    max_suffix = max(max_suffix, suffix_num)
 
+        # Il prossimo suffisso è max_suffix + 1
+        return f"{desired_name}_{max_suffix + 1}"
 
-# Global RootCA instance (singleton pattern)
-_root_ca_instance = None
+    def get_port_range_for_entity(self, entity_type):
+        """
+        Ottiene il range di porte per un tipo di entità dal file entity_configs.json.
 
-# Global TLM_MAIN instance (singleton pattern - shared across all AA)
-_tlm_main_instance = None
+        Args:
+            entity_type: 'EA', 'AA', 'TLM', 'RootCA'
+
+        Returns:
+            Tuple (start_port, end_port) o None se non trovato
+        """
+        try:
+            config_path = Path(__file__).parent / "entity_configs.json"
+            if config_path.exists():
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                    if "port_ranges" in config and entity_type in config["port_ranges"]:
+                        range_info = config["port_ranges"][entity_type]
+                        return (range_info["start"], range_info["end"])
+        except Exception as e:
+            print(f"  Errore nel leggere port_ranges da entity_configs.json: {e}")
+
+        # Fallback ai range di default
+        default_ranges = {
+            "EA": (5000, 5019),
+            "AA": (5020, 5039),
+            "TLM": (5050, 5059),  # Range più ampio per TLM se 5050 occupata
+            "RootCA": (5999, 6009)  # Range più ampio per RootCA se 5999 occupata
+        }
+        return default_ranges.get(entity_type, (5000, 5000))
+
+    def find_available_port_in_range(self, entity_type, host="0.0.0.0", used_ports=None):
+        """
+        Trova la prima porta disponibile nel range dedicato per il tipo di entità.
+
+        Args:
+            entity_type: 'EA', 'AA', 'TLM', 'RootCA'
+            host: Host su cui verificare
+            used_ports: Set di porte già usate (opzionale)
+
+        Returns:
+            Porta disponibile trovata, o None se nessuna porta disponibile
+        """
+        if used_ports is None:
+            used_ports = set()
+
+        start_port, end_port = self.get_port_range_for_entity(entity_type)
+
+        print(f"🔍 Cerco porta disponibile per {entity_type} nel range {start_port}-{end_port}...")
+
+        for port in range(start_port, end_port + 1):
+            if not self.is_port_in_use(host, port) and port not in used_ports:
+                print(f"✅ Porta {port} disponibile per {entity_type}")
+                return port
+
+        print(f"❌ ERRORE: Nessuna porta disponibile nel range {start_port}-{end_port} per {entity_type}!")
+        print(f"   Tutte le {end_port - start_port + 1} porte sono occupate.")
+        return None
+
+    def is_port_in_use(self, host, port):
+        """
+        Verifica se una porta è già in uso.
+
+        Args:
+            host: Host da testare
+            port: Porta da testare
+
+        Returns:
+            bool: True se in uso, False altrimenti
+        """
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+
+    def find_used_ports(self):
+        """
+        Controllo semplice delle porte con netstat.
+
+        Returns:
+            set: Insieme delle porte già in uso
+        """
+        used_ports = set()
+
+        try:
+            result = subprocess.run(['netstat', '-ano'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if 'LISTENING' in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            addr_part = parts[1]
+                            if ':' in addr_part:
+                                port_str = addr_part.split(':')[-1]
+                                try:
+                                    port = int(port_str)
+                                    if 5000 <= port <= 5999:  # Solo porte PKI
+                                        used_ports.add(port)
+                                except ValueError:
+                                    pass
+        except Exception as e:
+            print(f"  Errore controllo porte: {e}")
+
+        # Aggiungi anche le porte configurate in entity_configs.json
+        config_file = Path("entity_configs.json")
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+
+                # Estrai porte dai comandi di avvio
+                for cmd_entry in config.get('start_commands', []):
+                    command = cmd_entry.get('command', '')
+                    # Cerca pattern --port PORTA
+                    port_match = re.search(r'--port\s+(\d+)', command)
+                    if port_match:
+                        try:
+                            port = int(port_match.group(1))
+                            used_ports.add(port)
+                        except ValueError:
+                            pass
+            except Exception as e:
+                print(f"  Errore leggendo configurazione porte: {e}")
+
+        return used_ports
+
+    def check_entity_active(self, port, entity_type, timeout=3):
+        """
+        Controlla se un'entità è già attiva sulla porta specificata controllando se la porta è in uso.
+
+        Args:
+            port: Porta da controllare
+            entity_type: Tipo di entità ('RootCA', 'TLM', 'EA', 'AA')
+            timeout: Timeout in secondi (non usato per socket)
+
+        Returns:
+            bool: True se la porta è in uso (entità probabilmente attiva), False se libera
+        """
+        return self.is_port_in_use('localhost', port)
+
+    def find_existing_entities(self, entity_type, base_dir="./data"):
+        """
+        Trova entità esistenti di un tipo, controllando sia le directory che entity_configs.json.
+        Questo previene il riutilizzo di nomi di entità che sono state cancellate ma potrebbero
+        avere ancora configurazioni o dati residui.
+        """
+        existing = []
+
+        # 1. Controlla le directory esistenti in data/
+        entity_type_lower = entity_type.lower()
+        entity_dir = os.path.join(base_dir, entity_type_lower)
+
+        if os.path.exists(entity_dir):
+            for item in os.listdir(entity_dir):
+                item_path = os.path.join(entity_dir, item)
+                if os.path.isdir(item_path) and item.startswith(entity_type):
+                    existing.append(item)
+
+        # 2. Controlla entity_configs.json per entità già configurate,
+        #    ma solo se la directory corrispondente esiste ancora
+        config_file = Path("entity_configs.json")
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+
+                # Estrai nomi entità dai start_commands
+                for cmd_entry in config.get('start_commands', []):
+                    entity_name = cmd_entry.get('entity', '')
+                    if entity_name.startswith(f"{entity_type}_"):
+                        # Verifica se la directory esiste ancora
+                        entity_dir_path = os.path.join(base_dir, entity_type_lower, entity_name)
+                        if os.path.exists(entity_dir_path) and entity_name not in existing:
+                            existing.append(entity_name)
+            except Exception as e:
+                # Se non riusciamo a leggere il config, continua con le directory
+                pass
+
+        return existing
+
+    def load_config(self, config_path=None):
+        """Load configuration from JSON file"""
+        config = DEFAULT_CONFIG.copy()
+
+        if config_path and Path(config_path).exists():
+            with open(config_path, "r") as f:
+                user_config = json.load(f)
+                config.update(user_config)
+            print(f" Configuration loaded from: {config_path}")
+        else:
+            print("  No config file provided, using defaults")
+
+            # Generate API key if none provided
+            if not config["api_keys"]:
+                api_key = secrets.token_urlsafe(32)
+                config["api_keys"] = [api_key]
+                print(f"  Generated API key: {api_key}")
+                print("   Save this key! You'll need it for authentication.")
+
+        return config
+
+    def launch_single_entity(self, entity_type, entity_id=None, config_path=None, config=None):
+        """Launch a single PKI entity server (from server.py logic).
+
+        Accept either a path to a config (config_path) or a pre-built config dict
+        (config). If both are provided, the explicit `config` dict takes precedence.
+        This ensures callers that parse CLI args can pass overridden host/port values
+        and they will be respected when starting the server.
+        """
+        print(f" Launching single {entity_type} entity...")
+
+        # Prefer an explicit config dict if provided (caller may override port/host)
+        if config is None:
+            config = self.load_config(config_path)
+
+        # Determine entity ID
+        if entity_id:
+            entity_name = entity_id
+        else:
+            # Generate default name
+            existing = self.find_existing_entities(entity_type)
+            entity_name = self.generate_entity_name_with_suffix(f"{entity_type}_001", existing)
+
+        # If a port was explicitly provided in the config (CLI --port or caller), respect it
+        if not config.get("port"):
+            # Find available port only when no port provided
+            port = self.find_available_port_in_range(entity_type, config.get("host", "0.0.0.0"))
+            if port is None:
+                print(f" No available port for {entity_type}")
+                return False
+            config["port"] = port
+        else:
+            # If caller provided a port, verify it's free (warn/abort if already in use)
+            requested_port = int(config.get("port"))
+            if self.is_port_in_use(config.get("host", "localhost"), requested_port):
+                print(f" ERRORE: Porta richiesta {requested_port} già in uso!")
+                return False
+
+        print(f" Entity: {entity_name}")
+        print(f" Host: {config.get('host')}:{config.get('port')}")
+
+        # Create entity instance based on type
+        if entity_type == "RootCA":
+            entity = self.get_or_create_root_ca()
+        elif entity_type == "EA":
+            root_ca = self.get_or_create_root_ca()
+            entity = EnrollmentAuthority(root_ca, ea_id=entity_name)
+        elif entity_type == "AA":
+            root_ca = self.get_or_create_root_ca()
+            tlm = self.get_or_create_tlm_main()
+            entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_name)
+        elif entity_type == "TLM":
+            entity = self.get_or_create_tlm_main()
+        else:
+            print(f"❌ Unknown entity type: {entity_type}")
+            return False
+
+        # Create Flask app
+        app = create_app(entity_type, entity, config)
+
+        # Start server with TLS if configured
+        if config.get("tls_enabled"):
+            import ssl
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+            if not config.get("tls_cert") or not config.get("tls_key"):
+                print(" TLS enabled but cert/key not provided!")
+                return False
+
+            context.load_cert_chain(config["tls_cert"], config["tls_key"])
+
+            if config.get("tls_ca_cert"):
+                context.load_verify_locations(cafile=config["tls_ca_cert"])
+                context.verify_mode = ssl.CERT_REQUIRED
+                print(f" mTLS enabled with CA: {config['tls_ca_cert']}")
+            else:
+                context.verify_mode = ssl.CERT_NONE
+                print(" TLS enabled (server cert only)")
+
+            print(" Starting HTTPS server...")
+            app.run(host=config.get("host"), port=config.get("port"), debug=config.get("debug"), ssl_context=context)
+        else:
+            print(" Starting HTTP server...")
+            app.run(host=config.get("host"), port=config.get("port"), debug=config.get("debug"))
+
+        return True
+
+    def setup_multi_entities(self, num_ea=0, num_aa=0, config_file=None, ea_names=None, aa_names=None):
+        """Setup multiple entities with automatic TLM and RootCA creation if ports available"""
+        print(" Setting up multiple PKI entities...")
+
+        # Load from config file if provided
+        if config_file:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                request_config = json.load(f)
+            num_ea = request_config.get("num_ea", 0)
+            num_aa = request_config.get("num_aa", 0)
+            ea_names = request_config.get('ea_names', [])
+            aa_names = request_config.get('aa_names', [])
+
+        config = {
+            "start_commands": [],
+            "port_ranges": {
+                "EA": {"start": 5000, "end": 5019},
+                "AA": {"start": 5020, "end": 5039},
+                "TLM": {"start": 5050, "end": 5050},
+                "RootCA": {"start": 5999, "end": 5999}
+            }
+        }
+
+        used_ports = self.find_used_ports()
+
+        # Generate EA configs
+        for i in range(num_ea):
+            existing = self.find_existing_entities("EA")
+            name = ea_names[i] if ea_names and i < len(ea_names) else f"EA_{i+1:03d}"
+            name = self.generate_entity_name_with_suffix(name, existing)
+            port = self.find_available_port_in_range("EA", used_ports=used_ports)
+            if port and port not in used_ports:
+                config["start_commands"].append({
+                    "entity": name,
+                    "command": f"python server.py --entity EA --id {name} --port {port}"
+                })
+                used_ports.add(port)
+
+        # Generate AA configs
+        for i in range(num_aa):
+            existing = self.find_existing_entities("AA")
+            name = aa_names[i] if aa_names and i < len(aa_names) else f"AA_{i+1:03d}"
+            name = self.generate_entity_name_with_suffix(name, existing)
+            port = self.find_available_port_in_range("AA", used_ports=used_ports)
+            if port and port not in used_ports:
+                config["start_commands"].append({
+                    "entity": name,
+                    "command": f"python server.py --entity AA --id {name} --port {port}"
+                })
+                used_ports.add(port)
+
+        # Always try to create TLM (always include system entity)
+        port = 5050  # Fixed port for TLM
+        config["start_commands"].append({
+            "entity": "TLM_MAIN",
+            "command": f"python server.py --entity TLM --port {port}"
+        })
+        print("✅ TLM will be created (system entity)")
+
+        # Always try to create RootCA (always include critical entity)
+        port = 5999  # Fixed port for RootCA
+        config["start_commands"].append({
+            "entity": "ROOT_CA",
+            "command": f"python server.py --entity RootCA --id ROOT_CA --port {port}"
+        })
+        print("✅ RootCA will be created (critical entity)")
+
+        # Save config
+        with open("entity_configs.json", "w") as f:
+            json.dump(config, f, indent=2)
+
+        print("✅ Multi-entity config generated!")
+        print("\n🚀 Start commands:")
+        for cmd in config["start_commands"]:
+            print(f"  {cmd['command']}")
+
+        return config
+
+    def start_entities_in_vscode_terminals(self, config):
+        """
+        Avvia automaticamente ogni entità come processi background SENZA finestre.
+        Usa pythonw.exe (Python headless) per evitare completamente le finestre.
+        """
+        print("\n" + "="*70)
+        print("🚀 AVVIO AUTOMATICO ENTITÀ IN BACKGROUND (NO WINDOWS)")
+        print("="*70 + "\n")
+
+        import time
+        import sys
+        started_count = 0
+        failed_count = 0
+        processes = []
+
+        # Crea directory per i log
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+
+        # Determina l'eseguibile Python senza finestra
+        # pythonw.exe è la versione di Python senza console window
+        python_exe = sys.executable
+        if python_exe.endswith('python.exe'):
+            pythonw_exe = python_exe.replace('python.exe', 'pythonw.exe')
+            if not os.path.exists(pythonw_exe):
+                print("⚠️  pythonw.exe not found, using python.exe with hidden window flag")
+                pythonw_exe = python_exe
+        else:
+            pythonw_exe = python_exe
+
+        print(f"📌 Using: {pythonw_exe}")
+        print()
+
+        # Filtra le entità da avviare: salta RootCA e TLM se già attivi
+        entities_to_start = []
+
+        for cmd_info in config["start_commands"]:
+            entity_id = cmd_info["entity"]
+            command = cmd_info["command"]
+
+            # Estrai il tipo di entità dal nome
+            if entity_id.startswith("EA_"):
+                entity_type = "EA"
+            elif entity_id.startswith("AA_"):
+                entity_type = "AA"
+            elif entity_id == "TLM_MAIN":
+                entity_type = "TLM"
+            elif entity_id == "ROOT_CA":
+                entity_type = "RootCA"
+            else:
+                continue
+
+            # Controlla se l'entità è già attiva
+            port_match = re.search(r'--port\s+(\d+)', command)
+            if port_match:
+                port = int(port_match.group(1))
+                if not self.check_entity_active(port, entity_type):
+                    entities_to_start.append((entity_id, command, port))
+                else:
+                    print(f"⏭️  {entity_id} già attivo sulla porta {port}, saltato")
+
+        if not entities_to_start:
+            print("✅ Tutte le entità sono già attive!")
+            return
+
+        print(f"🚀 Avvio di {len(entities_to_start)} entità...")
+        print()
+
+        # Avvia ogni entità
+        for entity_id, command, port in entities_to_start:
+            try:
+                print(f"🔄 Avvio {entity_id} sulla porta {port}...")
+
+                # Crea file di log per l'entità
+                log_file = log_dir / f"{entity_id.lower()}.log"
+
+                # Avvia il processo in background
+                # Parse command string into arguments list
+                import shlex
+                cmd_parts = shlex.split(command)
+                # Replace 'python' with pythonw_exe path
+                if cmd_parts[0] == 'python':
+                    cmd_parts[0] = pythonw_exe
+
+                process = subprocess.Popen(
+                    cmd_parts,
+                    stdout=open(log_file, 'w'),
+                    stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+
+                processes.append((entity_id, process, port))
+                started_count += 1
+
+                # Aspetta un momento per evitare sovraccarico
+                time.sleep(1)
+
+            except Exception as e:
+                print(f"❌ Errore avvio {entity_id}: {e}")
+                failed_count += 1
+
+        print()
+        print("="*70)
+        print("📊 RISULTATI AVVIO:")
+        print(f"✅ Avviate: {started_count}")
+        print(f"❌ Fallite: {failed_count}")
+        print("="*70)
+
+        if started_count > 0:
+            print("\n🔍 Controllo stato entità...")
+            time.sleep(5)  # Aspetta che si avviino completamente
+
+            active_count = 0
+            for entity_id, process, port in processes:
+                if process.poll() is None:  # Processo ancora attivo
+                    if self.check_entity_active(port, "EA"):  # Controllo generico
+                        print(f"✅ {entity_id}: ATTIVO (porta {port})")
+                        active_count += 1
+                    else:
+                        print(f"⚠️  {entity_id}: PROCESSO ATTIVO ma porta {port} non risponde ancora")
+                        active_count += 1  # Considera attivo se il processo è vivo
+                else:
+                    print(f"❌ {entity_id}: PROCESSO TERMINATO")
+
+            print(f"\n🎯 Totale entità attive: {active_count}/{started_count}")
+
+        print("\n💡 Puoi monitorare i log in: logs/")
+        print("💡 Usa 'python stop_all.ps1' per fermare tutto")
 
 
 DEFAULT_CONFIG = {
@@ -112,497 +627,44 @@ DEFAULT_CONFIG = {
 }
 
 
-def load_config(config_path=None):
-    """Load configuration from JSON file"""
-    config = DEFAULT_CONFIG.copy()
-
-    if config_path and Path(config_path).exists():
-        with open(config_path, "r") as f:
-            user_config = json.load(f)
-            config.update(user_config)
-        print(f"✅ Configuration loaded from: {config_path}")
-    else:
-        print("⚠️  No config file provided, using defaults")
-
-        # Generate API key if none provided
-        if not config["api_keys"]:
-            api_key = secrets.token_urlsafe(32)
-            config["api_keys"] = [api_key]
-            print(f"⚠️  Generated API key: {api_key}")
-            print("   Save this key! You'll need it for authentication.")
-
-    return config
-
-
-def get_port_range_for_entity(entity_type):
-    """
-    Ottiene il range di porte per un tipo di entità dal file entity_configs.json.
-    
-    Args:
-        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
-        
-    Returns:
-        Tuple (start_port, end_port) o None se non trovato
-    """
-    try:
-        config_path = Path(__file__).parent / "entity_configs.json"
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                if "port_ranges" in config and entity_type in config["port_ranges"]:
-                    range_info = config["port_ranges"][entity_type]
-                    return (range_info["start"], range_info["end"])
-    except Exception as e:
-        print(f"⚠️  Errore nel leggere port_ranges da entity_configs.json: {e}")
-    
-    # Fallback ai range di default
-    default_ranges = {
-        "EA": (5000, 5019),
-        "AA": (5020, 5039),
-        "TLM": (5050, 5050),
-        "RootCA": (5999, 5999)
-    }
-    return default_ranges.get(entity_type, (5000, 5000))
-
-
-def find_available_port_in_range(entity_type, host="0.0.0.0"):
-    """
-    Trova la prima porta disponibile nel range dedicato per il tipo di entità.
-    
-    Args:
-        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
-        host: Host su cui verificare
-        
-    Returns:
-        Porta disponibile trovata, o None se nessuna porta disponibile
-    """
-    start_port, end_port = get_port_range_for_entity(entity_type)
-    
-    print(f"🔍 Cerco porta disponibile per {entity_type} nel range {start_port}-{end_port}...")
-    
-    for port in range(start_port, end_port + 1):
-        if not is_port_in_use(host, port):
-            print(f"✅ Porta {port} disponibile per {entity_type}")
-            return port
-    
-    print(f"❌ ERRORE: Nessuna porta disponibile nel range {start_port}-{end_port} per {entity_type}!")
-    print(f"   Tutte le {end_port - start_port + 1} porte sono occupate.")
-    return None
-
-
-def is_port_in_use(host, port):
-    """
-    Verifica se una porta è già in uso.
-    
-    Args:
-        host: Host da testare
-        port: Porta da testare
-        
-    Returns:
-        True se la porta è in uso, False altrimenti
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, port))
-            return False
-        except OSError:
-            return True
-
-
-def find_available_port(start_port, host="0.0.0.0", max_attempts=100):
-    """
-    Trova la prima porta disponibile a partire da start_port.
-    
-    Args:
-        start_port: Porta iniziale da cui partire
-        host: Host su cui verificare
-        max_attempts: Numero massimo di tentativi
-        
-    Returns:
-        Porta disponibile trovata, o None se non trovata
-    """
-    for port in range(start_port, start_port + max_attempts):
-        if not is_port_in_use(host, port):
-            return port
-    return None
-
-
-def check_port_conflicts(host, port, entity_type, entity_id):
-    """
-    Controlla se c'è un conflitto di porta e suggerisce alternative.
-    
-    Args:
-        host: Host da verificare
-        port: Porta richiesta
-        entity_type: Tipo di entità
-        entity_id: ID dell'entità
-        
-    Returns:
-        Tuple (is_available, suggested_port)
-    """
-    if is_port_in_use(host, port):
-        print(f"\n⚠️  ATTENZIONE: Porta {port} già in uso su {host}!")
-        print(f"   Impossibile avviare {entity_type} '{entity_id}' su questa porta.")
-        
-        # Cerca porta alternativa
-        alternative = find_available_port(port + 1, host)
-        if alternative:
-            print(f"   💡 Porta alternativa disponibile: {alternative}")
-            return False, alternative
-        else:
-            print(f"   ❌ Nessuna porta alternativa trovata!")
-            return False, None
-    
-    return True, port
-
-
-def find_existing_entities(entity_type, base_dir="./data"):
-    """
-    Trova tutte le entità esistenti di un determinato tipo scansionando la directory.
-    
-    Args:
-        entity_type: 'EA', 'AA', 'TLM', 'RootCA'
-        base_dir: Directory base dove cercare
-        
-    Returns:
-        List di ID esistenti (es. ['EA_001', 'EA_002', 'EA_FOR_AA_001'])
-    """
-    entity_type_lower = entity_type.lower()
-    entity_dir = os.path.join(base_dir, entity_type_lower)
-    
-    if not os.path.exists(entity_dir):
-        return []
-    
-    existing = []
-    for item in os.listdir(entity_dir):
-        item_path = os.path.join(entity_dir, item)
-        if os.path.isdir(item_path) and item.startswith(entity_type):
-            existing.append(item)
-    
-    return existing
-
-
-def find_next_available_id(entity_type, base_dir="./data"):
-    """
-    Trova il prossimo ID numerico disponibile per un'entità.
-    
-    Args:
-        entity_type: 'EA', 'AA', 'TLM'
-        base_dir: Directory base dove cercare
-        
-    Returns:
-        String con il prossimo ID disponibile (es. 'EA_003')
-    """
-    existing = find_existing_entities(entity_type, base_dir)
-    
-    # Estrai i numeri dalle entità esistenti (solo quelle con pattern TIPO_NNN)
-    numbers = []
-    pattern = re.compile(rf'^{entity_type}_(\d{{3}})$')
-    
-    for entity_id in existing:
-        match = pattern.match(entity_id)
-        if match:
-            numbers.append(int(match.group(1)))
-    
-    # Trova il prossimo numero disponibile
-    if not numbers:
-        next_num = 1
-    else:
-        # Trova il primo buco nella sequenza, o usa max+1
-        numbers.sort()
-        next_num = None
-        for i in range(1, numbers[-1] + 2):
-            if i not in numbers:
-                next_num = i
-                break
-    
-    return f"{entity_type}_{next_num:03d}"
-
-
-def get_or_create_root_ca():
-    """
-    Singleton pattern per RootCA - evita re-inizializzazioni multiple.
-    
-    Problema risolto: Ogni entità (EA, AA, TLM) creava la propria istanza RootCA,
-    causando log duplicati "Nessun metadata Full CRL esistente" e spreco risorse.
-    
-    Returns:
-        Istanza condivisa di RootCA
-    """
-    global _root_ca_instance
-    
-    if '_root_ca_instance' not in globals() or _root_ca_instance is None:
-        print("📦 Creating shared RootCA instance...")
-        _root_ca_instance = RootCA(base_dir="data/root_ca")
-        print("✅ RootCA instance created and cached")
-    else:
-        print("♻️  Reusing cached RootCA instance")
-    
-    return _root_ca_instance
-
-
-def get_or_create_tlm_main():
-    """
-    Singleton pattern per TLM_MAIN - evita re-inizializzazioni multiple.
-    
-    Tutte le AA condividono la stessa istanza TLM_MAIN per validare EC.
-    Questo è conforme allo standard ETSI TS 102941 che raccomanda un
-    Trust List Manager centralizzato.
-    
-    Returns:
-        Istanza condivisa di TLM_MAIN
-    """
-    global _tlm_main_instance
-    
-    if '_tlm_main_instance' not in globals() or _tlm_main_instance is None:
-        print("📦 Creating shared TLM_MAIN instance...")
-        root_ca = get_or_create_root_ca()
-        tlm_path = "./data/tlm/TLM_MAIN/"
-        _tlm_main_instance = TrustListManager(root_ca, tlm_id="TLM_MAIN", base_dir=tlm_path)
-        print("✅ TLM_MAIN instance created and cached")
-        print(f"   Trust anchors: {len(_tlm_main_instance.trust_anchors)}")
-    else:
-        print("♻️  Reusing cached TLM_MAIN instance")
-        print(f"   Trust anchors: {len(_tlm_main_instance.trust_anchors)}")
-    
-    return _tlm_main_instance
-
-
-def create_entity(entity_type, entity_id=None, ea_id=None):
-    """
-    Create PKI entity instance
-
-    Args:
-        entity_type: 'EA', 'AA', 'TLM', or 'RootCA'
-        entity_id: Optional entity identifier
-        ea_id: Optional EA identifier (only for AA type)
-
-    Returns:
-        Entity instance
-    """
-    print(f"\n{'='*70}")
-    print(f"  Initializing {entity_type}")
-    print(f"{'='*70}\n")
-
-    if entity_type == "RootCA":
-        entity_id = entity_id or "RootCA"
-        # Usa singleton invece di creare nuova istanza
-        entity = get_or_create_root_ca()
-
-    elif entity_type == "EA":
-        # Se non specificato, trova automaticamente il prossimo ID disponibile
-        if not entity_id:
-            entity_id = find_next_available_id("EA")
-            print(f"📝 Auto-assigned ID: {entity_id}")
-            existing = find_existing_entities("EA")
-            if existing:
-                print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
-        else:
-            # Controlla se l'ID specificato esiste già e aggiungi suffisso se necessario
-            existing = find_existing_entities("EA")
-            original_id = entity_id
-            entity_id = generate_entity_name_with_suffix(entity_id, existing)
-            if entity_id != original_id:
-                print(f"📝 ID '{original_id}' già esistente, assegnato: {entity_id}")
-            if existing:
-                print(f"ℹ️  Existing EA instances: {', '.join(sorted(existing))}")
-        
-        # Usa RootCA condivisa
-        root_ca = get_or_create_root_ca()
-        entity = EnrollmentAuthority(root_ca, ea_id=entity_id)
-        
-        # ===================================================================
-        # REGISTRAZIONE AUTOMATICA IN TLM_MAIN
-        # ===================================================================
-        # Ogni EA creata viene automaticamente registrata nel TLM_MAIN
-        # centralizzato in modo che tutte le AA possano validare i suoi EC
-        # ===================================================================
-        
-        print(f"\n🔗 Auto-registering EA in central TLM...")
-        tlm_main = get_or_create_tlm_main()
-        
-        # Verifica se EA è già registrata
-        ea_ski = get_certificate_ski(entity.certificate)
-        already_registered = any(anchor.get("ski") == ea_ski for anchor in tlm_main.trust_anchors)
-        
-        if already_registered:
-            print(f"   ℹ️  EA '{entity_id}' already registered in TLM_MAIN")
-        else:
-            # Registra EA come trust anchor
-            tlm_main.add_trust_anchor(entity.certificate, authority_type="EA")
-            print(f"   ✅ EA '{entity_id}' registered in TLM_MAIN")
-            
-            # Pubblica Full CTL
-            tlm_main.publish_full_ctl()
-            print(f"   ✅ Full CTL published")
-        
-        print(f"   📊 Total trust anchors in TLM: {len(tlm_main.trust_anchors)}")
-
-    elif entity_type == "AA":
-        # Se non specificato, trova automaticamente il prossimo ID disponibile
-        if not entity_id:
-            entity_id = find_next_available_id("AA")
-            print(f"📝 Auto-assigned ID: {entity_id}")
-            existing = find_existing_entities("AA")
-            if existing:
-                print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
-        else:
-            # Controlla se l'ID specificato esiste già e aggiungi suffisso se necessario
-            existing = find_existing_entities("AA")
-            original_id = entity_id
-            entity_id = generate_entity_name_with_suffix(entity_id, existing)
-            if entity_id != original_id:
-                print(f"📝 ID '{original_id}' già esistente, assegnato: {entity_id}")
-            if existing:
-                print(f"ℹ️  Existing AA instances: {', '.join(sorted(existing))}")
-        
-        # Usa RootCA condivisa
-        root_ca = get_or_create_root_ca()
-
-        # ===================================================================
-        # MODALITÀ TLM CENTRALIZZATA (ETSI-Compliant)
-        # ===================================================================
-        # Tutte le AA condividono lo stesso TLM_MAIN che contiene i trust
-        # anchors di TUTTE le EA attive nel sistema.
-        # Usa singleton per evitare re-inizializzazioni multiple.
-        # ===================================================================
-        
-        print(f"\n🔗 Connecting to central TLM (ETSI-Compliant mode)...")
-        tlm = get_or_create_tlm_main()
-        
-        # Mostra trust anchors disponibili
-        if tlm.trust_anchors:
-            print(f"\n✅ Central TLM has {len(tlm.trust_anchors)} trust anchor(s):")
-            for anchor in tlm.trust_anchors:
-                auth_type = anchor.get('authority_type', 'UNKNOWN')
-                subject = anchor.get('subject_name', 'Unknown')
-                print(f"   - {auth_type}: {subject}")
-        else:
-            print(f"\n⚠️  WARNING: TLM has no trust anchors!")
-            print(f"   AA will reject all EC validation requests until EA are added to TLM.")
-            print(f"   Add EA to TLM:")
-            print(f"   1. Start EA: python server.py --entity EA --id EA_001")
-            print(f"   2. Register: python scripts/register_ea_to_tlm.py EA_001")
-
-        entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_id)
-
-    elif entity_type == "TLM":
-        # Se non specificato, trova automaticamente il prossimo ID disponibile
-        if not entity_id:
-            entity_id = find_next_available_id("TLM")
-            print(f"📝 Auto-assigned ID: {entity_id}")
-            existing = find_existing_entities("TLM")
-            if existing:
-                print(f"ℹ️  Existing TLM instances: {', '.join(sorted(existing))}")
-        
-        # Usa RootCA condivisa
-        root_ca = get_or_create_root_ca()
-        entity = TrustListManager(root_ca, tlm_id=entity_id, base_dir=f"./data/tlm/{entity_id}/")
-
-    else:
-        raise ValueError(f"Unknown entity type: {entity_type}")
-
-    print(f"\n✅ {entity_type} initialized successfully!")
-    return entity
-
-
-def print_startup_info(entity_type, config, entity):
-    """Print server startup information"""
-    print(f"\n{'='*70}")
-    print(f"  SecureRoad PKI Server - {entity_type}")
-    print(f"{'='*70}")
-    print(f"  Entity ID: {getattr(entity, entity_type.lower() + '_id', 'N/A')}")
-    print(f"  Host: {config['host']}")
-    print(f"  Port: {config['port']}")
-    print(f"  TLS: {'Enabled' if config['tls_enabled'] else 'Disabled ⚠️'}")
-    print(f"  API Keys: {len(config['api_keys'])} configured")
-    print(
-        f"  Rate Limit: {config['rate_limit_per_second']} req/s (burst: {config['rate_limit_burst']})"
-    )
-    print(f"  Log Level: {config['log_level']}")
-    print(f"{'='*70}\n")
-
-    if entity_type == "EA":
-        print("📋 Available Endpoints:")
-        print("  POST   /enrollment/request     - Issue enrollment certificate")
-        print("  POST   /enrollment/validation  - Validate EC for AA")
-        print("  GET    /crl/full               - Full CRL")
-        print("  GET    /crl/delta              - Delta CRL")
-
-    elif entity_type == "AA":
-        print("📋 Available Endpoints:")
-        print("  POST   /authorization/request            - Issue authorization ticket")
-        print("  POST   /authorization/request/butterfly  - Batch AT issuance")
-        print("  GET    /crl/full                         - Full CRL")
-        print("  GET    /crl/delta                        - Delta CRL")
-
-    elif entity_type == "TLM":
-        print("📋 Available Endpoints:")
-        print("  GET    /ctl/full               - Full CTL")
-        print("  GET    /ctl/delta              - Delta CTL")
-        print("  POST   /ctl/update             - Update trust list")
-
-    print("\n📊 Common Endpoints:")
-    print("  GET    /                         - API information")
-    print("  GET    /health                   - Health check")
-
-    print(
-        f"\n🔗 Base URL: http{'s' if config['tls_enabled'] else ''}://{config['host']}:{config['port']}"
-    )
-
-    if not config["tls_enabled"]:
-        print("\n⚠️  WARNING: TLS is DISABLED!")
-        print("   ETSI TS 102941 requires TLS for production!")
-        print("   Enable TLS in config: 'tls_enabled': true")
-
-    print(f"\n{'='*70}\n")
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="SecureRoad PKI Production Server (ETSI TS 102941 Compliant)",
+        description="SecureRoad PKI Entity Manager - Single launch or Multi-entity setup",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start servers (ports auto-assigned from configured ranges)
-  python server.py --entity EA --id EA_001
-  python server.py --entity AA --id AA_001 --config prod.json
-  python server.py --entity TLM --id TLM_MAIN --host 0.0.0.0
-  
-  # Generate secure API key
+  # Single entity launch
+  python server.py --entity EA --config config.json
+  python server.py --entity AA --id AA_001 --port 5020
+
+  # Multi-entity setup (automatically creates TLM and RootCA if ports available)
+  python server.py --ea 3 --aa 2
+  python server.py --ea 1 --aa 1 --ea-names "EA_Prod,EA_Test"
+  python server.py --config entity_request.json
+
+  # Generate API key
   python server.py --generate-key
-        """,
+        """
     )
 
-    parser.add_argument(
-        "--entity",
-        choices=["EA", "AA", "TLM", "RootCA"],
-        help="Entity type to run (EA, AA, TLM, RootCA)",
-    )
-    
-    parser.add_argument(
-        "--generate-key",
-        action="store_true",
-        help="Generate a secure API key and exit",
-    )
+    # Single entity options
+    parser.add_argument("--entity", choices=["EA", "AA", "TLM", "RootCA"],
+                       help="Launch single entity of specified type")
+    parser.add_argument("--id", help="Entity ID (auto-generated if not provided)")
+    parser.add_argument("--port", type=int, help="Port to use (auto-assigned if not provided)")
+    parser.add_argument("--config", help="Config file path")
+    parser.add_argument("--host", help="Host to bind (overrides config)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
-    parser.add_argument("--id", type=str, help="Entity identifier (default: auto-generated)")
+    # Multi-entity setup options
+    parser.add_argument("--ea", type=int, default=0, help="Number of Enrollment Authorities to create")
+    parser.add_argument("--aa", type=int, default=0, help="Number of Authorization Authorities to create")
+    parser.add_argument("--ea-names", help="Comma-separated list of EA names")
+    parser.add_argument("--aa-names", help="Comma-separated list of AA names")
+    parser.add_argument("--output", default="entity_configs.json", help="Output config file")
 
-    parser.add_argument(
-        "--ea-id", 
-        type=str, 
-        help="EA identifier to use for AA initialization (default: creates dedicated EA_FOR_{AA_ID})"
-    )
-
-    parser.add_argument("--config", type=str, help="Path to JSON configuration file")
-
-    parser.add_argument("--host", type=str, help="Host to bind (overrides config)")
-
-    parser.add_argument("--port", type=int, help="Port to bind (overrides config)")
-
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode (NOT for production!)"
-    )
+    # Utility options
+    parser.add_argument("--generate-key", action="store_true", help="Generate a secure API key and exit")
 
     args = parser.parse_args()
 
@@ -610,123 +672,56 @@ Examples:
     if args.generate_key:
         generate_api_key()
         sys.exit(0)
-    
-    # Validate --entity is required if not generating key
-    if not args.entity:
-        parser.error("--entity is required unless using --generate-key")
 
-    # Load configuration
-    config = load_config(args.config)
+    # Create manager instance
+    manager = PKIEntityManager()
 
-    # Apply CLI overrides
-    if args.host:
-        config["host"] = args.host
-    
-    # AUTO-SELEZIONE PORTA se non specificata
-    if args.port:
-        # Porta esplicitamente specificata dall'utente
-        config["port"] = args.port
-        print(f"🎯 Porta specificata manualmente: {config['port']}")
-    else:
-        # Trova automaticamente una porta libera nel range per questo tipo di entità
-        auto_port = find_available_port_in_range(args.entity, config.get("host", "0.0.0.0"))
-        if auto_port:
-            config["port"] = auto_port
-            print(f"✅ Porta selezionata automaticamente: {config['port']}")
-        else:
-            print(f"❌ ERRORE: Impossibile trovare una porta disponibile per {args.entity}!")
-            sys.exit(1)
-    
-    if args.debug:
-        config["debug"] = True
-        print("⚠️  DEBUG MODE ENABLED - Not for production!")
+    # Determine mode
+    if args.entity:
+        # Single entity mode
+        config = manager.load_config(args.config)
 
-    # VERIFICA CONFLITTI DI PORTA (solo se specificata manualmente)
-    port_available = True
-    suggested_port = None
-    
-    if args.port:
-        print(f"\n🔍 Verifica disponibilità porta {config['port']} su {config['host']}...")
-        port_available, suggested_port = check_port_conflicts(
-            config["host"], 
-            config["port"], 
-            args.entity, 
-            args.id or "auto"
-        )
-        
-        if not port_available:
-            if suggested_port:
-                print(f"\n❓ Vuoi usare la porta alternativa {suggested_port}? (non implementato)")
-                print(f"   Riavvia con: --port {suggested_port}")
-            print(f"\n❌ ERRORE: Impossibile avviare il server sulla porta {config['port']}")
-            print(f"   La porta è già occupata da un altro processo.")
-            print(f"\n💡 SOLUZIONI:")
-            print(f"   1. Ferma il processo che sta usando la porta {config['port']}")
-            print(f"   2. Usa una porta diversa con --port {suggested_port or 'XXXX'}")
-            print(f"   3. Controlla i processi attivi con: netstat -ano | findstr :{config['port']}")
-            sys.exit(1)
-        
-        print(f"✅ Porta {config['port']} disponibile!\n")
-    else:
-        # Porta auto-assegnata, assumiamo sia disponibile (verrà verificata al bind)
-        print(f"✅ Porta {config['port']} auto-assegnata dal range!\n")
-
-    try:
-        # Create entity
-        entity = create_entity(args.entity, args.id, ea_id=args.ea_id)
-
-        # Create Flask app
-        app = create_app(args.entity, entity, config)
-
-        # Print startup information
-        print_startup_info(args.entity, config, entity)
-
-        # Start server
-        if config["tls_enabled"]:
-            if not config["tls_cert"] or not config["tls_key"]:
-                print("❌ TLS enabled but certificate/key not provided!")
-                print("   Set 'tls_cert' and 'tls_key' in config")
+        # Apply CLI overrides
+        if args.host:
+            config["host"] = args.host
+        if args.port:
+            config["port"] = args.port
+        elif not config.get("port"):
+            # Auto-assign port if not specified
+            auto_port = manager.find_available_port_in_range(args.entity, config.get("host", "0.0.0.0"))
+            if auto_port:
+                config["port"] = auto_port
+                print(f" Porta selezionata automaticamente: {config['port']}")
+            else:
+                print(f" ERRORE: Impossibile trovare una porta disponibile per {args.entity}!")
                 sys.exit(1)
 
-            import ssl
+        if args.debug:
+            config["debug"] = True
 
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.load_cert_chain(config["tls_cert"], config["tls_key"])
-            
-            # Configurazione mTLS (ETSI TS 102941 requirement)
-            if config.get("mtls_required", False):
-                print("🔐 mTLS enabled (client certificate required)")
-                context.verify_mode = ssl.CERT_REQUIRED
-                
-                # Carica CA per verificare certificati client
-                if config.get("tls_ca_cert"):
-                    context.load_verify_locations(cafile=config["tls_ca_cert"])
-                    print(f"   CA cert loaded: {config['tls_ca_cert']}")
-                else:
-                    print("⚠️  mTLS enabled but no CA cert provided!")
-                    print("   Set 'tls_ca_cert' in config")
-                    sys.exit(1)
-            else:
-                # TLS normale senza verifica client
-                context.verify_mode = ssl.CERT_NONE
+        # Pass the constructed config so CLI --port/--host override are respected
+        success = manager.launch_single_entity(args.entity, args.id, None, config)
+        if not success:
+            sys.exit(1)
 
-            print("🔒 Starting HTTPS server...")
-            app.run(
-                host=config["host"], port=config["port"], debug=config["debug"], ssl_context=context
-            )
-        else:
-            print("🚀 Starting HTTP server...")
-            app.run(host=config["host"], port=config["port"], debug=config["debug"])
+    elif args.ea > 0 or args.aa > 0:
+        # Multi-entity setup mode - always create TLM and RootCA if ports available
+        ea_names = [n.strip() for n in args.ea_names.split(',')] if args.ea_names else None
+        aa_names = [n.strip() for n in args.aa_names.split(',')] if args.aa_names else None
 
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Server stopped by user (Ctrl+C)")
-        sys.exit(0)
+        config = manager.setup_multi_entities(
+            num_ea=args.ea,
+            num_aa=args.aa,
+            ea_names=ea_names,
+            aa_names=aa_names
+        )
 
-    except Exception as e:
-        print(f"\n\n❌ Server error: {e}")
-        import traceback
+        # Always auto-start entities
+        print("\n🚀 Starting entities automatically...")
+        manager.start_entities_in_vscode_terminals(config)
 
-        traceback.print_exc()
+    else:
+        parser.print_help()
         sys.exit(1)
 
 
@@ -734,10 +729,10 @@ def generate_api_key():
     """Generate a secure API key and print it"""
     api_key = secrets.token_urlsafe(32)
     print("\n" + "="*70)
-    print("🔑 SECURE API KEY GENERATED")
+    print(" SECURE API KEY GENERATED")
     print("="*70)
     print(f"\n{api_key}\n")
-    print("⚠️  SAVE THIS KEY SECURELY!")
+    print("  SAVE THIS KEY SECURELY!")
     print("   Add it to your config.json:")
     print('   {"api_keys": ["' + api_key + '"]}\n')
     print("="*70 + "\n")

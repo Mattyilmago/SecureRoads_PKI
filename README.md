@@ -76,7 +76,11 @@ Non è necessario specificare manualmente le porte: `server.py` trova automatica
 
 ## 🎮 Avvio del Sistema
 
-### Opzione 1: Dashboard Completa (Consigliato)
+SecureRoad-PKI offre multiple opzioni di avvio a seconda delle tue esigenze:
+
+### Opzione 1: Dashboard Completa (Consigliato per Overview)
+
+Avvia RootCA, TLM e il server web della dashboard con un solo comando:
 
 Avvia RootCA, TLM e il server web della dashboard con un solo comando:
 
@@ -131,6 +135,38 @@ python examples/interactive_pki_tester.py
 
 # Oppure usa entità già avviate
 python examples/interactive_pki_tester.py --no-start
+```
+
+### Opzione 4: Creazione Automatica Multi-Entità (Raccomandato)
+
+Crea e avvia automaticamente più entità PKI con un singolo comando:
+
+```bash
+# Crea e avvia 1 EA + 1 AA + TLM + RootCA (se porte disponibili)
+python server.py --ea 1 --aa 1
+
+# Crea e avvia 3 EA + 2 AA + TLM + RootCA
+python server.py --ea 3 --aa 2
+
+# Crea solo EA senza AA
+python server.py --ea 5
+
+# Crea con nomi personalizzati
+python server.py --ea 2 --aa 1 --ea-names "EA_Prod,EA_Test"
+```
+
+**Cosa fa automaticamente:**
+- ✅ Genera configurazione in `entity_configs.json`
+- ✅ Assegna porte automaticamente senza conflitti
+- ✅ Crea TLM se porta 5050 libera
+- ✅ Crea RootCA se porta 5999 libera
+- ✅ Avvia tutte le entità in background
+- ✅ Salva log in `logs/` directory
+
+**Per fermare tutto:**
+```bash
+# Ferma tutte le entità
+python scripts/stop_all.ps1
 ```
 
 ---
@@ -353,8 +389,7 @@ SecureRoad-PKI/
 ├── examples/              # Script dimostrativi e tester
 ├── scripts/               # Script gestione (start, stop, check)
 ├── docs/                  # Documentazione dettagliata
-├── setup.py               # Generatore entità bulk
-├── server.py              # Launcher server produzione
+├── server.py              # Launcher server produzione + generatore entità
 ├── start_dashboard.ps1    # Avvio dashboard + RootCA + TLM
 └── pki_dashboard.html     # Dashboard web interattiva
 ```
@@ -646,7 +681,7 @@ http://localhost:8080/pki_dashboard.html
 - Statistiche operative
 
 ✅ **Gestione Entità**
-- Creazione bulk di EA/AA con `setup.py` (nomi personalizzati)
+- Creazione bulk di EA/AA con `server.py` (nomi personalizzati)
 - Eliminazione permanente di entità singole
 - Configurazione porte automatica
 - Avvio/Stop entities
@@ -672,16 +707,16 @@ Crea multiple entità EA e AA con nomi personalizzati direttamente dalla riga di
 
 ```bash
 # Esempio: 3 EA e 2 AA con nomi personalizzati
-python setup.py --ea 3 --aa 2 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL" --aa-names "AA_TOLL,AA_PARKING"
+python server.py --ea 3 --aa 2 --ea-names "EA_HIGHWAY,EA_CITY,EA_RURAL" --aa-names "AA_TOLL,AA_PARKING"
 
 # Esempio: Solo EA senza nomi personalizzati (usa nomi automatici)
-python setup.py --ea 5
+python server.py --ea 5
 
 # Esempio: Solo AA con nomi personalizzati
-python setup.py --aa 3 --aa-names "AA_001,AA_002,AA_003"
+python server.py --aa 3 --aa-names "AA_001,AA_002,AA_003"
 
 # Esempio: Combinazione mista
-python setup.py --ea 2 --aa 4 --ea-names "EA_MAIN,EA_BACKUP"
+python server.py --ea 2 --aa 4 --ea-names "EA_MAIN,EA_BACKUP"
 ```
 
 **Parametri disponibili:**

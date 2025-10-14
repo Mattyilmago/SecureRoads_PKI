@@ -3038,21 +3038,74 @@
         });
 
         // Update metrics
-        function updateMetrics() {
+        async function updateMetrics() {
             if (!systemActive) return;
-            
-            // Simulate metrics (in real implementation, fetch from monitoring API)
-            document.getElementById('metric-certs').textContent = Math.floor(Math.random() * 100);
-            document.getElementById('metric-active-certs').textContent = Math.floor(Math.random() * 80);
-            document.getElementById('metric-revoked').textContent = Math.floor(Math.random() * 10);
-            document.getElementById('metric-requests').textContent = Math.floor(Math.random() * 50);
-            document.getElementById('metric-response-time').textContent = Math.floor(Math.random() * 100) + 'ms';
-            
-            // Calculate uptime
-            const uptime = Math.floor((Date.now() / 1000) % 86400);
-            const hours = Math.floor(uptime / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-            document.getElementById('metric-uptime').textContent = `${hours}h ${minutes}m`;
+
+            try {
+                // Aggregate real metrics from all active entities
+                let totalCerts = 0;
+                let totalActiveCerts = 0;
+                let totalRevoked = 0;
+                let totalRequests = 0;
+                let avgResponseTime = 0;
+                let responseTimeCount = 0;
+
+                // Collect data from all active entities
+                for (const entityType of Object.keys(activeInstances)) {
+                    for (const instance of activeInstances[entityType]) {
+                        try {
+                            const response = await fetch(`http://localhost:${instance.port}/api/monitoring/metrics`);
+                            const data = await response.json();
+                            const counters = data.counters || {};
+
+                            if (entityType === 'EA') {
+                                totalCerts += counters.enrollment_certificates_issued || 0;
+                                totalActiveCerts += counters.active_certificates || 0;
+                                totalRevoked += (counters.enrollment_certificates_issued || 0) - (counters.active_certificates || 0);
+                            } else if (entityType === 'AA') {
+                                totalCerts += counters.authorization_tickets_issued || 0;
+                                totalActiveCerts += counters.active_certificates || 0;
+                                totalRevoked += (counters.authorization_tickets_issued || 0) - (counters.active_certificates || 0);
+                            }
+
+                            totalRequests += (counters.total_requests || 0) + (counters.health_checks || 0);
+
+                            // Collect response time data
+                            const overall = data.overall || {};
+                            if (overall.avg_latency_ms) {
+                                avgResponseTime += overall.avg_latency_ms;
+                                responseTimeCount++;
+                            }
+                        } catch (e) {
+                            console.warn(`Failed to fetch metrics from ${entityType} on port ${instance.port}:`, e);
+                        }
+                    }
+                }
+
+                // Update dashboard with real data
+                document.getElementById('metric-certs').textContent = totalCerts;
+                document.getElementById('metric-active-certs').textContent = totalActiveCerts;
+                document.getElementById('metric-revoked').textContent = totalRevoked;
+                document.getElementById('metric-requests').textContent = totalRequests;
+                document.getElementById('metric-response-time').textContent =
+                    responseTimeCount > 0 ? `${(avgResponseTime / responseTimeCount).toFixed(0)}ms` : 'N/A';
+
+                // Calculate uptime (from first entity or system start)
+                const uptime = Math.floor((Date.now() / 1000) % 86400);
+                const hours = Math.floor(uptime / 3600);
+                const minutes = Math.floor((uptime % 3600) / 60);
+                document.getElementById('metric-uptime').textContent = `${hours}h ${minutes}m`;
+
+            } catch (error) {
+                console.error('Error updating metrics:', error);
+                // Fallback to showing zeros
+                document.getElementById('metric-certs').textContent = '0';
+                document.getElementById('metric-active-certs').textContent = '0';
+                document.getElementById('metric-revoked').textContent = '0';
+                document.getElementById('metric-requests').textContent = '0';
+                document.getElementById('metric-response-time').textContent = 'N/A';
+                document.getElementById('metric-uptime').textContent = 'N/A';
+            }
         }
 
         // Track if user has manually scrolled the log viewer

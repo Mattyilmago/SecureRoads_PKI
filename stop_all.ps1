@@ -19,13 +19,42 @@ $ports += 5050        # TLM
 $ports += 5999        # RootCA
 $ports += 8080        # Dashboard
 
-foreach ($port in $ports) {
-    $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-    if ($conn) {
-        $processId = $conn.OwningProcess
-        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        Write-Host "  Killed process on port $port" -ForegroundColor Yellow
+# Dividi le porte in gruppi per parallelizzare
+$portGroups = @(
+    @(5000..5019),  # Gruppo EA
+    @(5020..5039),  # Gruppo AA
+    @(5050, 5999, 8080)  # Gruppo TLM, RootCA, Dashboard
+)
+
+# Avvia job per ogni gruppo di porte
+$jobs = @()
+foreach ($group in $portGroups) {
+    $job = Start-Job -ScriptBlock {
+        param($portsInGroup)
+        $messages = @()
+        foreach ($port in $portsInGroup) {
+            $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
+            if ($conn) {
+                $processId = $conn.OwningProcess
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                $messages += "Killed process on port $port"
+            }
+        }
+        $messages
+    } -ArgumentList $group
+    $jobs += $job
+}
+
+# Aspetta che tutti i job finiscano
+$jobs | Wait-Job
+
+# Raccogli output dai job e mostra messaggi
+foreach ($job in $jobs) {
+    $outputs = Receive-Job $job
+    foreach ($output in $outputs) {
+        Write-Host "  $output" -ForegroundColor Yellow
     }
+    Remove-Job $job
 }
 
 Start-Sleep -Seconds 2
