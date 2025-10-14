@@ -220,18 +220,24 @@
             padding: 20px;
             border-radius: 10px;
             color: white;
+            position: relative;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(16, 185, 129, 0.6) rgba(0,0,0,0.1); /* Green for EA */
         }
 
         .instance-card.aa {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            scrollbar-color: rgba(59, 130, 246, 0.6) rgba(0,0,0,0.1); /* Blue for AA */
         }
 
         .instance-card.tlm {
             background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            scrollbar-color: rgba(245, 158, 11, 0.6) rgba(0,0,0,0.1); /* Orange for TLM */
         }
 
         .instance-card.rootca {
             background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            scrollbar-color: rgba(139, 92, 246, 0.6) rgba(0,0,0,0.1); /* Purple for RootCA */
         }
 
         .instance-card h3 {
@@ -260,11 +266,12 @@
             max-height: 150px;
             overflow-y: auto;
             overflow-x: hidden; /* Prevent horizontal scrollbar */
+            padding-right: 5px; /* Space for scrollbar */
         }
 
         .instance-item {
             padding: 8px;
-            background: rgba(255,255,255,0.15);
+            background: rgba(0,0,0,0.2);
             border-radius: 5px;
             margin-bottom: 5px;
             display: flex;
@@ -276,7 +283,7 @@
         }
         
         .instance-item:hover {
-            background: rgba(255,255,255,0.25);
+            background: rgba(0,0,0,0.3);
             box-shadow: 0 2px 8px rgba(0,0,0,0.2);
         }
         
@@ -295,7 +302,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: rgba(255,255,255,0.1);
+            background: rgba(0,0,0,0.15);
             border-radius: 4px;
             margin-bottom: 4px;
             font-size: 0.85em;
@@ -309,6 +316,50 @@
         .stat-row span:last-child {
             font-weight: 600;
             text-align: right;
+        }
+        
+        /* Custom Scrollbar Styling for Authority Families */
+        /* Webkit browsers (Chrome, Safari, Edge) */
+        .instance-card::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .instance-card::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+            border-radius: 4px;
+        }
+        
+        .instance-card::-webkit-scrollbar-thumb {
+            background: rgba(16, 185, 129, 0.6); /* Green for EA */
+            border-radius: 4px;
+        }
+        
+        .instance-card::-webkit-scrollbar-thumb:hover {
+            background: rgba(16, 185, 129, 0.8);
+        }
+        
+        .instance-card.aa::-webkit-scrollbar-thumb {
+            background: rgba(59, 130, 246, 0.6); /* Blue for AA */
+        }
+        
+        .instance-card.aa::-webkit-scrollbar-thumb:hover {
+            background: rgba(59, 130, 246, 0.8);
+        }
+        
+        .instance-card.tlm::-webkit-scrollbar-thumb {
+            background: rgba(245, 158, 11, 0.6); /* Orange for TLM */
+        }
+        
+        .instance-card.tlm::-webkit-scrollbar-thumb:hover {
+            background: rgba(245, 158, 11, 0.8);
+        }
+        
+        .instance-card.rootca::-webkit-scrollbar-thumb {
+            background: rgba(139, 92, 246, 0.6); /* Purple for RootCA */
+        }
+        
+        .instance-card.rootca::-webkit-scrollbar-thumb:hover {
+            background: rgba(139, 92, 246, 0.8);
         }
         
         @keyframes pulse {
@@ -704,6 +755,71 @@
                 font-size: 1.2em;
             }
         }
+
+        /* Instance item hover effects for delete buttons */
+        .uptime-container .delete-btn {
+            position: absolute;
+            top: 50%;
+            right: 0;
+            transform: translateY(-50%);
+            opacity: 0;
+            background: transparent;
+            color: white;
+            border: none;
+            border-radius: 15px;
+            padding: 4px 8px;
+            font-size: 0.8em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 600;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+
+        .uptime-container .delete-btn:hover {
+            background: transparent;
+            transform: translateY(-50%) scale(1.05);
+        }
+
+        /* Only hide uptime on hover for EA and AA families */
+        .instance-card.ea .instance-item:hover .uptime-text,
+        .instance-card.aa .instance-item:hover .uptime-text {
+            opacity: 0;
+        }
+
+        .instance-item:hover .delete-btn {
+            opacity: 1;
+        }
+
+        /* Bulk delete buttons for entire families */
+        .bulk-delete-btn {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            opacity: 0;
+            transition: all 0.3s;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: none;
+            border-radius: 15px;
+            padding: 10px 14px;
+            font-size: 1em;
+            cursor: pointer;
+            transform: scale(1);
+            z-index: 10;
+        }
+
+        .instance-card:hover .bulk-delete-btn {
+            opacity: 1;
+        }
+
+        .bulk-delete-btn:hover {
+            transform: scale(1.15);
+        }
+
+        /* Hide bulk delete when hovering over individual instances */
+        .instance-card .instance-list:hover ~ .bulk-delete-btn {
+            opacity: 0;
+        }
     </style>
 </head>
 <body>
@@ -785,23 +901,29 @@
                     
                     <div class="instance-grid">
                         <!-- EA Instances -->
-                        <div class="instance-card">
-                            <h3>📝 Enrollment Authority</h3>
+                        <div class="instance-card ea">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h3>📝 Enrollment Authority</h3>
+                            </div>
                             <div class="instance-count" id="instanceCount-EA">0</div>
                             <div class="instance-label">Active Instances</div>
                             <div class="instance-list" id="instanceList-EA">
                                 <div class="instance-item" style="opacity: 0.7;">Scanning...</div>
                             </div>
+                            <button onclick="deleteAllEntities('EA')" class="bulk-delete-btn" title="Delete All EA"><img src="static/red_trashbin.png" alt="Delete" style="width: 24px; height: 24px;"></button>
                         </div>
 
                         <!-- AA Instances -->
                         <div class="instance-card aa">
-                            <h3>🎫 Authorization Authority</h3>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h3>🎫 Authorization Authority</h3>
+                            </div>
                             <div class="instance-count" id="instanceCount-AA">0</div>
                             <div class="instance-label">Active Instances</div>
                             <div class="instance-list" id="instanceList-AA">
                                 <div class="instance-item" style="opacity: 0.7;">Scanning...</div>
                             </div>
+                            <button onclick="deleteAllEntities('AA')" class="bulk-delete-btn" title="Delete All AA"><img src="static/red_trashbin.png" alt="Delete" style="width: 24px; height: 24px;"></button>
                         </div>
 
                         <!-- TLM Instances -->
@@ -856,80 +978,6 @@
                         <div style="margin-top: 18px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
                             <button onclick="showEntityGeneratorForm()" style="padding: 10px 18px; background: rgba(255,255,255,0.18); color: white; border: 2px solid rgba(255,255,255,0.25); border-radius: 8px; cursor: pointer; font-weight: 700;">⚙️ Configure</button>
                             <button onclick="executeSetupDirectly()" style="padding: 10px 18px; background: linear-gradient(135deg,#10b981 0%, #059669 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700;">▶️ Start Now</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Entity Management Panel (NEW) -->
-                <div class="panel full-width">
-                    <h2>🗑️ Entity Management</h2>
-                    <p style="color: #666; margin-bottom: 20px; font-size: 0.9em;">Manage configured EA and AA entities - Remove unused entities</p>
-                    
-                    <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 25px; border-radius: 10px; color: white;">
-                        <div style="font-size: 2.5em; margin-bottom: 15px;">⚠️</div>
-                        <h3 style="margin-bottom: 15px;">Delete Entity</h3>
-                        <p style="font-size: 0.95em; opacity: 0.95; margin-bottom: 20px; line-height: 1.6;">
-                            <strong>Warning:</strong> This will permanently delete the selected entity from <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">entity_configs.json</code> 
-                            and remove all its data (certificates, keys, CRL) from the <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">data/</code> directory, 
-                            including archived certificates in RootCA.
-                        </p>
-                        
-                        <div style="background: rgba(255,255,255,0.15); padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                            <label style="display: block; margin-bottom: 10px; font-weight: 600;">Select Entity to Delete:</label>
-                            <select id="entityToDelete" style="width: 100%; padding: 12px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.95); color: #333; font-weight: 500; cursor: pointer; font-size: 1em; margin-bottom: 15px;">
-                                <option value="">🔍 Loading entities...</option>
-                            </select>
-                            
-                            <div id="entityDeleteInfo" style="padding: 12px; background: rgba(255,255,255,0.1); border-radius: 6px; font-size: 0.9em; line-height: 1.6; margin-bottom: 15px; display: none;">
-                                <strong>⚠️ This will delete:</strong>
-                                <ul style="margin: 10px 0 0 20px; padding: 0;">
-                                    <li>Entry from <code>entity_configs.json</code></li>
-                                    <li>Data directory: <code id="entityDataPath">-</code></li>
-                                    <li>All certificates, keys, and CRL files</li>
-                                    <li>Archived certificates from RootCA subordinates</li>
-                                </ul>
-                            </div>
-                        </div>
-                        
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <button onclick="refreshEntityDeleteList()" 
-                                    style="flex: 1; min-width: 150px; padding: 12px 20px; background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.4); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1em;">
-                                🔄 Refresh List
-                            </button>
-                            <button onclick="confirmDeleteEntity()" 
-                                    style="flex: 2; min-width: 200px; padding: 12px 20px; background: rgba(220, 38, 38, 0.9); border: 2px solid rgba(255,255,255,0.6); color: white; border-radius: 8px; cursor: pointer; font-weight: 600; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1.1em;">
-                                🗑️ DELETE ENTITY (PERMANENT)
-                            </button>
-                        </div>
-                        
-                        <!-- DELETE ALL BUTTON (ENHANCED - Kills processes too!) -->
-                        <div style="margin-top: 20px; padding-top: 20px; border-top: 2px solid rgba(255,255,255,0.2);">
-                            <button onclick="deleteAllEaAa()" 
-                                    style="width: 100%; padding: 15px 20px; background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%); border: 3px solid rgba(255,255,255,0.5); color: white; border-radius: 8px; cursor: pointer; font-weight: 700; backdrop-filter: blur(10px); transition: all 0.3s; font-size: 1.2em; text-shadow: 0 2px 4px rgba(0,0,0,0.3); margin-bottom: 10px;">
-                                💥 DELETE ALL EA/AA (INSTANT)
-                            </button>
-                            <p style="margin: 0 0 15px; font-size: 0.85em; opacity: 0.9; text-align: center;">
-                                Removes config, deletes data, kills processes, and cleans RootCA archive
-                            </p>
-                            
-                            <div style="background: rgba(16, 185, 129, 0.2); padding: 15px; border-radius: 8px; border-left: 4px solid rgba(16, 185, 129, 0.8);">
-                                <p style="margin: 0; font-size: 0.95em; line-height: 1.5;">
-                                    ✅ <strong>This button now does everything:</strong>
-                                </p>
-                                <ul style="margin: 10px 0 0 20px; padding: 0; font-size: 0.9em; line-height: 1.8; opacity: 0.95;">
-                                    <li>Kills all EA/AA Python processes</li>
-                                    <li>Removes entities from entity_configs.json</li>
-                                    <li>Deletes data directories (certificates, keys, CRL)</li>
-                                    <li>Removes archived certificates from RootCA</li>
-                                    <li>Dashboard updates automatically after 3 seconds</li>
-                                </ul>
-                            </div>
-                        </div>
-                        
-                        <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; border-left: 4px solid rgba(251, 191, 36, 0.8);">
-                            <p style="margin: 0; font-size: 0.9em; line-height: 1.5;">
-                                💡 <strong>Note:</strong> ROOT_CA and TLM_MAIN are preserved as they are system entities required for PKI operation.
-                            </p>
                         </div>
                     </div>
                 </div>
@@ -2249,8 +2297,9 @@
                             <div style="font-weight: bold;">${inst.id}</div>
                             <div style="font-size: 0.85em; opacity: 0.8;">Port ${inst.port}</div>
                         </div>
-                        <div style="text-align: right; font-size: 0.85em;">
-                            ${inst.uptime || 'N/A'}
+                        <div class="uptime-container" style="position: relative; text-align: right; min-height: 20px;">
+                            <div class="uptime-text" style="font-size: 0.85em; transition: opacity 0.2s;">${inst.uptime || 'N/A'}</div>
+                            ${(entityType === 'EA' || entityType === 'AA') ? `<button class="delete-btn" onclick="event.stopPropagation(); deleteIndividualEntity('${inst.id}', '${entityType}')" title="Delete ${inst.id}"><img src="static/red_trashbin.png" alt="Delete" style="width: 20px; height: 20px;"></button>` : ''}
                         </div>
                     </div>
                 `).join('');
@@ -2688,6 +2737,173 @@
                             scanAllInstances();
                             loadEntityDeleteList();
                             addLog(`✅ Dashboard updated - all EA/AA removed!`, 'success');
+                        }, 3000);
+                        
+                        return;
+                    } else {
+                        addLog(`⚠️ ${data.message}`, 'warning');
+                        return;
+                    }
+                } catch (error) {
+                    continue;
+                }
+            }
+            
+            if (deletionAttempted) {
+                addLog('❌ Bulk deletion was attempted but failed. Check logs above.', 'error');
+            } else {
+                addLog('❌ Could not connect to management API on any port. Make sure at least one entity (EA, AA, TLM, or RootCA) is running.', 'error');
+            }
+        }
+        
+        
+        // Delete individual entity by ID and type
+        async function deleteIndividualEntity(entityId, entityType) {
+            // INSTANT DELETION - NO CONFIRMATION
+            addLog(`🗑️ Deleting ${entityId} (${entityType})...`, 'warning');
+            
+            // Try to delete from management ports (only RootCA and TLM have management API)
+            const portsToTry = [5999, 5050];
+            let deletionAttempted = false;
+            
+            for (const port of portsToTry) {
+                try {
+                    addLog(`  🔍 Trying management API on port ${port}...`, 'info');
+                    
+                    const response = await fetch(`http://localhost:${port}/api/management/entities/${entityId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        addLog(`  ⚠️ Port ${port} responded with status ${response.status}`, 'warning');
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    deletionAttempted = true;
+                    
+                    if (data.success) {
+                        addLog(`✅ Successfully deleted ${entityId}!`, 'success');
+                        
+                        if (data.process_killed) {
+                            addLog(`  ✓ Killed process (PID: ${data.killed_pid})`, 'success');
+                        }
+                        if (data.config_removed) {
+                            addLog(`  ✓ Removed from entity_configs.json`, 'success');
+                        }
+                        if (data.data_removed) {
+                            addLog(`  ✓ Deleted data directory: ${data.data_path}`, 'success');
+                        }
+                        if (data.rootca_cert_removed) {
+                            addLog(`  ✓ Removed ${data.rootca_certs.length} certificate(s) from RootCA archive`, 'success');
+                            data.rootca_certs.forEach(cert => addLog(`    • ${cert}`, 'success'));
+                        }
+                        if (data.errors && data.errors.length > 0) {
+                            data.errors.forEach(err => addLog(`  ⚠️ ${err}`, 'warning'));
+                        }
+                        
+                        // Refresh dashboard after 3 seconds (give time for process to die and data deletion)
+                        addLog(`🔄 Refreshing dashboard in 3 seconds...`, 'info');
+                        setTimeout(() => {
+                            scanAllInstances(); // This will auto-update the delete dropdown too
+                            loadEntityDeleteList(); // Explicitly refresh the delete list
+                        }, 3000);
+                        
+                        return;
+                    } else {
+                        addLog(`❌ Failed to delete: ${data.message}`, 'error');
+                        if (data.errors) {
+                            data.errors.forEach(err => addLog(`  • ${err}`, 'error'));
+                        }
+                        return;
+                    }
+                } catch (error) {
+                    // Try next port silently
+                    continue;
+                }
+            }
+            
+            if (deletionAttempted) {
+                addLog('❌ Entity deletion was attempted but failed. Check logs above.', 'error');
+            } else {
+                addLog('❌ Could not connect to management API on any port. Make sure at least one entity (EA, AA, TLM, or RootCA) is running.', 'error');
+            }
+        }
+        
+        
+        // Delete ALL entities of a specific type (EA or AA)
+        async function deleteAllEntities(entityType) {
+            addLog(`💥 Deleting ALL ${entityType} entities AND stopping processes...`, 'warning');
+            
+            // Try management ports (only RootCA and TLM have management API)
+            const portsToTry = [5999, 5050];
+            let deletionAttempted = false;
+            
+            for (const port of portsToTry) {
+                try {
+                    addLog(`  🔍 Trying management API on port ${port}...`, 'info');
+                    
+                    const response = await fetch(`http://localhost:${port}/api/management/entities/delete-all/${entityType}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        addLog(`  ⚠️ Port ${port} responded with status ${response.status}`, 'warning');
+                        continue;
+                    }
+                    
+                    const data = await response.json();
+                    deletionAttempted = true;
+                    
+                    if (data.success) {
+                        addLog(`✅ Successfully deleted ${data.total} ${entityType} entities and stopped processes!`, 'success');
+                        
+                        if (data.deleted && data.deleted.length > 0) {
+                            addLog(`  ✓ Removed from config: ${data.deleted.join(', ')}`, 'success');
+                        }
+                        
+                        if (data.data_dirs_deleted && data.data_dirs_deleted.length > 0) {
+                            addLog(`  ✓ Deleted ${data.data_dirs_deleted.length} data directories:`, 'success');
+                            data.data_dirs_deleted.forEach(dir => {
+                                const shortPath = dir.split(/[/\\]/).slice(-2).join('/');
+                                addLog(`    • ${shortPath}`, 'success');
+                            });
+                        }
+                        
+                        if (data.processes_killed && data.processes_killed.length > 0) {
+                            addLog(`  ✓ Killed ${data.processes_killed.length} Python processes`, 'success');
+                            data.processes_killed.forEach(proc => {
+                                addLog(`    • PID ${proc.pid}: ${proc.cmdline}`, 'success');
+                            });
+                        }
+                        
+                        if (data.rootca_certs_removed && data.rootca_certs_removed.length > 0) {
+                            addLog(`  ✓ Removed ${data.rootca_certs_removed.length} certificate(s) from RootCA archive`, 'success');
+                            data.rootca_certs_removed.forEach(cert => {
+                                addLog(`    • ${cert}`, 'success');
+                            });
+                        }
+                        
+                        if (data.failed && data.failed.length > 0) {
+                            addLog(`  ⚠️ Some data directories could not be deleted:`, 'warning');
+                            data.failed.forEach(fail => {
+                                addLog(`    • ${fail.entity_id}: ${fail.reason}`, 'warning');
+                            });
+                        }
+                        
+                        addLog(`🔄 Dashboard will update in 3 seconds...`, 'info');
+                        
+                        // Refresh entity list immediately
+                        setTimeout(() => {
+                            scanAllInstances();
+                            loadEntityDeleteList();
+                            addLog(`✅ Dashboard updated - all ${entityType} removed!`, 'success');
                         }, 3000);
                         
                         return;

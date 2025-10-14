@@ -278,22 +278,33 @@ def delete_all_ea_aa():
     Delete ALL EA and AA entities at once
     Keeps ROOT_CA and TLM_MAIN
     """
+    return delete_all_entities_by_type(['EA', 'AA'])
+
+
+def delete_all_entities_by_type(entity_types):
+    """
+    Delete ALL entities of specified types (EA and/or AA)
+    entity_types: list of strings like ['EA', 'AA']
+    """
     try:
         config_path = Path(__file__).parent.parent.parent / "entity_configs.json"
         data_path = Path(__file__).parent.parent.parent / "data"
         
-        # Find all EA and AA entities from config first
-        ea_aa_entities = []
+        # Build prefixes for filtering
+        prefixes = tuple(f"{et}_" for et in entity_types)
+        
+        # Find all entities of specified types from config first
+        target_entities = []
         if config_path.exists():
             with open(config_path, 'r') as f:
                 config = json.load(f)
-            ea_aa_entities = [
+            target_entities = [
                 cmd.get('entity') for cmd in config.get('start_commands', [])
-                if cmd.get('entity', '').startswith(('EA_', 'AA_'))
+                if cmd.get('entity', '').startswith(prefixes)
             ]
         
-        # If no entities found in config, search for running EA/AA processes dynamically
-        if not ea_aa_entities:
+        # If no entities found in config, search for running processes dynamically
+        if not target_entities:
             try:
                 import re
                 for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -305,8 +316,8 @@ def delete_all_ea_aa():
                             entity_match = re.search(r'--entity\s+(EA|AA)\s+--id\s+((EA|AA)_[^\s]+)', cmdline_str, re.IGNORECASE)
                             if entity_match:
                                 entity_id = entity_match.group(2)  # The full entity ID like EA_001
-                                if entity_id not in ea_aa_entities:
-                                    ea_aa_entities.append(entity_id)
+                                if entity_id.startswith(prefixes) and entity_id not in target_entities:
+                                    target_entities.append(entity_id)
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
             except Exception as e:
@@ -319,7 +330,7 @@ def delete_all_ea_aa():
         processes_killed = []
         rootca_certs_removed = []
         
-        # Step 1: Kill ALL EA/AA Python processes FIRST (before deleting directories)
+        # Step 1: Kill target Python processes FIRST (before deleting directories)
         try:
             import re
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -327,8 +338,9 @@ def delete_all_ea_aa():
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and 'python' in proc.info['name'].lower():
                         cmdline_str = ' '.join(cmdline)
-                        # Check if this is an EA or AA process
-                        if re.search(r'\bEA_\w+\b', cmdline_str, re.IGNORECASE) or re.search(r'\bAA_\w+\b', cmdline_str, re.IGNORECASE):
+                        # Check if this is a target entity process
+                        should_kill = any(re.search(r'\b' + re.escape(prefix) + r'\w+\b', cmdline_str, re.IGNORECASE) for prefix in prefixes)
+                        if should_kill:
                             proc.kill()
                             processes_killed.append({
                                 "pid": proc.info['pid'],
@@ -340,7 +352,7 @@ def delete_all_ea_aa():
             # Continue even if process killing fails
             pass
         
-        # Step 2: Remove all EA/AA certificates from RootCA archive
+        # Step 2: Remove certificates from RootCA archive
         try:
             rootca_subordinates_dir = data_path / 'root_ca' / 'subordinates'
             if rootca_subordinates_dir.exists():
@@ -359,21 +371,19 @@ def delete_all_ea_aa():
                         cn = cn_attrs[0].value if cn_attrs else ""
                         org = org_attrs[0].value if org_attrs else ""
                         
-                        # Check if certificate belongs to any EA/AA entity (check for EA_ or AA_ in CN or Org)
-                        # If we have specific entities, use exact match; otherwise remove all EA/AA certs
+                        # Check if certificate belongs to any target entity
                         should_remove = False
-                        if ea_aa_entities:
+                        if target_entities:
                             # Exact match for known entities
                             import re
-                            for entity_id in ea_aa_entities:
+                            for entity_id in target_entities:
                                 pattern = r'(?:^|_)' + re.escape(entity_id) + r'(?:$|_)'
                                 if re.search(pattern, cn) or re.search(pattern, org):
                                     should_remove = True
                                     break
                         else:
-                            # Remove all EA/AA certificates if no specific entities found
-                            if 'EA_' in cn or 'AA_' in cn or 'EA_' in org or 'AA_' in org:
-                                should_remove = True
+                            # Remove all certificates matching the prefixes
+                            should_remove = any(prefix in cn or prefix in org for prefix in prefixes)
                         
                         if should_remove:
                             cert_file.unlink()
@@ -384,15 +394,15 @@ def delete_all_ea_aa():
             # Continue even if RootCA cert removal fails
             pass
         
-        # Step 3: Remove all EA and AA from config
+        # Step 3: Remove entities from config
         config['start_commands'] = [
             cmd for cmd in config.get('start_commands', [])
-            if not cmd.get('entity', '').startswith(('EA_', 'AA_'))
+            if not cmd.get('entity', '').startswith(prefixes)
         ]
         
         # Step 4: Delete data directories for found entities
         data_dirs_deleted = []
-        for entity_id in ea_aa_entities:
+        for entity_id in target_entities:
             try:
                 if entity_id.startswith('EA_'):
                     data_dir = data_path / 'ea' / entity_id
@@ -402,63 +412,45 @@ def delete_all_ea_aa():
                     continue
                 
                 if data_dir.exists():
-                    print(f"[DELETE_ALL_EA_AA] Deleting directory: {data_dir}")
+                    print(f"[DELETE_ALL_{'_'.join(entity_types)}] Deleting directory: {data_dir}")
                     shutil.rmtree(data_dir)
                     data_dirs_deleted.append(str(data_dir))
-                    print(f"[DELETE_ALL_EA_AA] Successfully deleted: {data_dir}")
+                    print(f"[DELETE_ALL_{'_'.join(entity_types)}] Successfully deleted: {data_dir}")
                 else:
-                    print(f"[DELETE_ALL_EA_AA] Directory does not exist: {data_dir}")
+                    print(f"[DELETE_ALL_{'_'.join(entity_types)}] Directory does not exist: {data_dir}")
                 
                 deleted.append(entity_id)
             except Exception as e:
-                print(f"[DELETE_ALL_EA_AA] ERROR deleting {entity_id}: {str(e)}")
+                print(f"[DELETE_ALL_{'_'.join(entity_types)}] ERROR deleting {entity_id}: {str(e)}")
                 failed.append({
                     "entity_id": entity_id,
                     "reason": str(e),
                     "data_dir": str(data_dir) if 'data_dir' in locals() else "unknown"
                 })
         
-        # Step 5: Delete ALL remaining EA/AA data directories (cleanup orphaned directories)
+        # Step 5: Delete ALL remaining data directories (cleanup orphaned directories)
         try:
-            # Delete all EA_* directories
-            ea_dir = data_path / 'ea'
-            if ea_dir.exists():
-                for subdir in ea_dir.iterdir():
-                    if subdir.is_dir() and subdir.name.startswith('EA_'):
-                        try:
-                            print(f"[DELETE_ALL_EA_AA] Cleaning up orphaned EA directory: {subdir}")
-                            shutil.rmtree(subdir)
-                            data_dirs_deleted.append(str(subdir))
-                            deleted.append(subdir.name)
-                            print(f"[DELETE_ALL_EA_AA] Successfully cleaned up: {subdir}")
-                        except Exception as e:
-                            print(f"[DELETE_ALL_EA_AA] ERROR cleaning up {subdir.name}: {str(e)}")
-                            failed.append({
-                                "entity_id": subdir.name,
-                                "reason": str(e),
-                                "data_dir": str(subdir)
-                            })
-            
-            # Delete all AA_* directories  
-            aa_dir = data_path / 'aa'
-            if aa_dir.exists():
-                for subdir in aa_dir.iterdir():
-                    if subdir.is_dir() and subdir.name.startswith('AA_'):
-                        try:
-                            print(f"[DELETE_ALL_EA_AA] Cleaning up orphaned AA directory: {subdir}")
-                            shutil.rmtree(subdir)
-                            data_dirs_deleted.append(str(subdir))
-                            deleted.append(subdir.name)
-                            print(f"[DELETE_ALL_EA_AA] Successfully cleaned up: {subdir}")
-                        except Exception as e:
-                            print(f"[DELETE_ALL_EA_AA] ERROR cleaning up {subdir.name}: {str(e)}")
-                            failed.append({
-                                "entity_id": subdir.name,
-                                "reason": str(e),
-                                "data_dir": str(subdir)
-                            })
+            for et in entity_types:
+                et_lower = et.lower()
+                et_dir = data_path / et_lower
+                if et_dir.exists():
+                    for subdir in et_dir.iterdir():
+                        if subdir.is_dir() and subdir.name.startswith(f"{et}_"):
+                            try:
+                                print(f"[DELETE_ALL_{'_'.join(entity_types)}] Cleaning up orphaned {et} directory: {subdir}")
+                                shutil.rmtree(subdir)
+                                data_dirs_deleted.append(str(subdir))
+                                deleted.append(subdir.name)
+                                print(f"[DELETE_ALL_{'_'.join(entity_types)}] Successfully cleaned up: {subdir}")
+                            except Exception as e:
+                                print(f"[DELETE_ALL_{'_'.join(entity_types)}] ERROR cleaning up {subdir.name}: {str(e)}")
+                                failed.append({
+                                    "entity_id": subdir.name,
+                                    "reason": str(e),
+                                    "data_dir": str(subdir)
+                                })
         except Exception as e:
-            print(f"[DELETE_ALL_EA_AA] ERROR in cleanup phase: {str(e)}")
+            print(f"[DELETE_ALL_{'_'.join(entity_types)}] ERROR in cleanup phase: {str(e)}")
             # Continue even if cleanup fails
             pass
         
@@ -474,7 +466,7 @@ def delete_all_ea_aa():
         
         return jsonify({
             "success": True,
-            "message": f"Deleted {len(deleted)} entities and killed {len(processes_killed)} processes",
+            "message": f"Deleted {len(deleted)} {', '.join(entity_types)} entities and killed {len(processes_killed)} processes",
             "deleted": deleted,
             "failed": failed,
             "processes_killed": processes_killed,
@@ -486,8 +478,22 @@ def delete_all_ea_aa():
     except Exception as e:
         return jsonify({
             "success": False,
-            "message": f"Failed to delete all EA/AA: {str(e)}"
+            "message": f"Failed to delete {', '.join(entity_types)} entities: {str(e)}"
         }), 500
+
+
+@management_bp.route('/entities/delete-all/<entity_type>', methods=['DELETE'])
+def delete_all_entities_type(entity_type):
+    """
+    Delete ALL entities of a specific type (EA or AA)
+    """
+    if entity_type.upper() not in ['EA', 'AA']:
+        return jsonify({
+            "success": False,
+            "message": f"Invalid entity type: {entity_type}. Must be 'EA' or 'AA'"
+        }), 400
+    
+    return delete_all_entities_by_type([entity_type.upper()])
 
 
 @management_bp.route('/setup', methods=['POST'])
