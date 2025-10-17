@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Dict, Union
 
 import asn1tools
-from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -46,6 +45,16 @@ asn1_compiler = asn1tools.compile_files([str(ASN1_SCHEMA_PATH)], codec="oer")
 
 
 # Utility functions for ASN.1 conversions
+
+
+def enum_to_camel_case(enum_name: str) -> str:
+    """
+    Convert Python enum name (UPPER_SNAKE_CASE) to ASN.1 camelCase.
+    
+    Example: INTERNAL_SERVER_ERROR -> internalServerError
+    """
+    words = enum_name.lower().split('_')
+    return words[0] + ''.join(word.capitalize() for word in words[1:])
 
 
 def datetime_to_time32(dt: datetime) -> int:
@@ -368,7 +377,7 @@ class ETSIMessageEncoder:
         inner_request: InnerEcRequest,
         private_key: EllipticCurvePrivateKey,
         ea_public_key: EllipticCurvePublicKey,
-        ea_certificate: x509.Certificate,
+        ea_certificate_asn1: bytes,
         testing_mode: bool = False,
     ) -> bytes:
         """
@@ -386,7 +395,7 @@ class ETSIMessageEncoder:
             inner_request: Inner EC request with ITS-S info
             private_key: ITS-S private key for PoP signature
             ea_public_key: EA's public key for encryption
-            ea_certificate: EA's certificate for recipient ID
+            ea_certificate_asn1: EA's certificate ASN.1 OER bytes for recipient ID
 
         Returns:
             ASN.1 OER encoded EnrollmentRequest bytes
@@ -411,9 +420,8 @@ class ETSIMessageEncoder:
         # 5. Encrypt with EA's public key
         encrypted_data = self.security.encrypt_message(plaintext, ea_public_key)
 
-        # 6. Compute EA certificate HashedId8
-        ea_cert_der = ea_certificate.public_bytes(serialization.Encoding.DER)
-        recipient_id = compute_hashed_id8(ea_cert_der)
+        # 6. Compute EA certificate HashedId8 from ASN.1 OER bytes
+        recipient_id = compute_hashed_id8(ea_certificate_asn1)
 
         # 7. Create final request
         enrollment_request_asn1 = {
@@ -463,7 +471,7 @@ class ETSIMessageEncoder:
         self,
         response_code: ResponseCode,
         request_hash: bytes,
-        certificate: Union[x509.Certificate, None],
+        certificate_asn1: Union[bytes, None],
         itss_public_key: EllipticCurvePublicKey,
     ) -> bytes:
         """
@@ -472,23 +480,19 @@ class ETSIMessageEncoder:
         Args:
             response_code: Response status
             request_hash: Hash of original request
-            certificate: Issued enrollment certificate (if successful)
+            certificate_asn1: Issued enrollment certificate ASN.1 OER bytes (if successful)
             itss_public_key: ITS-S public key for encryption
 
         Returns:
             ASN.1 OER encoded EnrollmentResponse bytes
         """
         # 1. Create inner response
-        cert_bytes = None
-        if certificate:
-            cert_bytes = certificate.public_bytes(serialization.Encoding.DER)
-
         inner_response_asn1 = {
             "requestHash": request_hash,
-            "responseCode": response_code.name.lower(),  # Convert to lowercase for ASN.1 ENUMERATED
+            "responseCode": enum_to_camel_case(response_code.name),  # Convert to camelCase for ASN.1
         }
-        if cert_bytes:
-            inner_response_asn1["certificate"] = cert_bytes
+        if certificate_asn1:
+            inner_response_asn1["certificate"] = certificate_asn1
 
         # 2. Encode inner response
         plaintext = asn1_compiler.encode("InnerEcResponse", inner_response_asn1)
@@ -546,9 +550,9 @@ class ETSIMessageEncoder:
     def encode_authorization_request(
         self,
         inner_request: InnerAtRequest,
-        enrollment_certificate: x509.Certificate,
+        enrollment_certificate_asn1: bytes,
         aa_public_key: EllipticCurvePublicKey,
-        aa_certificate: x509.Certificate,
+        aa_certificate_asn1: bytes,
         testing_mode: bool = False,
     ) -> bytes:
         """
@@ -558,15 +562,15 @@ class ETSIMessageEncoder:
         ==================================================
         1. ITS-S serializza InnerAtRequest con ASN.1 OER
         2. ITS-S cripta InnerAtRequest con chiave pubblica AA (ECIES)
-        3. ITS-S allega Enrollment Certificate IN CHIARO
+        3. ITS-S allega Enrollment Certificate IN CHIARO (ASN.1 OER)
         4. ITS-S calcola HashedId8 del certificato AA
         5. ITS-S crea AuthorizationRequest completo con ASN.1 OER
 
         Args:
             inner_request: Inner AT request (MUST include unique hmacKey!)
-            enrollment_certificate: ITS-S enrollment certificate
+            enrollment_certificate_asn1: ITS-S enrollment certificate ASN.1 OER bytes
             aa_public_key: AA's public key for encryption
-            aa_certificate: AA's certificate for recipient ID
+            aa_certificate_asn1: AA's certificate ASN.1 OER bytes for recipient ID
 
         Returns:
             ASN.1 OER encoded AuthorizationRequest bytes
@@ -582,18 +586,14 @@ class ETSIMessageEncoder:
         # 2. Encrypt with AA's public key
         encrypted_data = self.security.encrypt_message(plaintext, aa_public_key)
 
-        # 3. Compute AA certificate HashedId8
-        aa_cert_der = aa_certificate.public_bytes(serialization.Encoding.DER)
-        recipient_id = compute_hashed_id8(aa_cert_der)
-
-        # 4. Get enrollment certificate DER
-        ec_der = enrollment_certificate.public_bytes(serialization.Encoding.DER)
+        # 3. Compute AA certificate HashedId8 from ASN.1 OER bytes
+        recipient_id = compute_hashed_id8(aa_certificate_asn1)
 
         # 5. Create final request
         auth_request_asn1 = {
             "version": 2,
             "encryptedData": encrypted_data,
-            "enrollmentCertificate": ec_der,
+            "enrollmentCertificate": enrollment_certificate_asn1,
             "recipientId": recipient_id,
             "timestamp": datetime_to_time32(datetime.now(timezone.utc)),
         }
@@ -612,14 +612,14 @@ class ETSIMessageEncoder:
             aa_private_key: AA's private key for decryption
 
         Returns:
-            Tuple of (InnerAtRequest, enrollment_certificate)
+            Tuple of (InnerAtRequest, enrollment_certificate_bytes)
+            - enrollment_certificate_bytes: EC in formato ASN.1 OER (bytes)
         """
         # 1. Decode ASN.1 OER
         auth_request_asn1 = asn1_compiler.decode("AuthorizationRequest", request_bytes)
 
-        # 2. Extract enrollment certificate
-        ec_der = auth_request_asn1["enrollmentCertificate"]
-        enrollment_cert = x509.load_der_x509_certificate(ec_der, default_backend())
+        # 2. Extract enrollment certificate (already in ASN.1 OER bytes)
+        enrollment_cert_bytes = auth_request_asn1["enrollmentCertificate"]
 
         # 3. Decrypt
         plaintext = self.security.decrypt_message(
@@ -632,7 +632,7 @@ class ETSIMessageEncoder:
         # 5. Convert to Python object
         inner_request = asn1_to_inner_at_request(inner_request_asn1)
 
-        return inner_request, enrollment_cert
+        return inner_request, enrollment_cert_bytes
 
     def decode_butterfly_authorization_request(
         self, request_bytes: bytes, aa_private_key: EllipticCurvePrivateKey
@@ -645,14 +645,14 @@ class ETSIMessageEncoder:
             aa_private_key: AA's private key for decryption
 
         Returns:
-            Tuple of (ButterflyAuthorizationRequest, enrollment_certificate)
+            Tuple of (ButterflyAuthorizationRequest, enrollment_certificate_bytes)
+            - enrollment_certificate_bytes: EC in formato ASN.1 OER (bytes)
         """
         # 1. Decode as regular AuthorizationRequest
         auth_request_asn1 = asn1_compiler.decode("AuthorizationRequest", request_bytes)
 
-        # 2. Extract enrollment certificate
-        ec_der = auth_request_asn1["enrollmentCertificate"]
-        enrollment_cert = x509.load_der_x509_certificate(ec_der, default_backend())
+        # 2. Extract enrollment certificate (already in ASN.1 OER bytes)
+        enrollment_cert_bytes = auth_request_asn1["enrollmentCertificate"]
 
         # 3. Decrypt butterfly request
         plaintext = self.security.decrypt_message(
@@ -677,17 +677,17 @@ class ETSIMessageEncoder:
             sharedAtRequest=shared_at_request,
             innerAtRequests=inner_requests,
             batchSize=butterfly_request_asn1["batchSize"],
-            enrollmentCertificate=enrollment_cert.public_bytes(serialization.Encoding.DER),
+            enrollmentCertificate=enrollment_cert_bytes,  # Già bytes ASN.1 OER
             timestamp=butterfly_request_asn1["timestamp"]
         )
 
-        return butterfly_request, enrollment_cert
+        return butterfly_request, enrollment_cert_bytes
 
     def encode_authorization_response(
         self,
         response_code: ResponseCode,
         request_hash: bytes,
-        certificate: Union[x509.Certificate, None],
+        certificate_asn1: Union[bytes, None],
         hmac_key: bytes,
     ) -> bytes:
         """
@@ -696,23 +696,19 @@ class ETSIMessageEncoder:
         Args:
             response_code: Response status
             request_hash: Hash of original request
-            certificate: Issued authorization ticket (if successful)
+            certificate_asn1: Issued authorization ticket ASN.1 OER bytes (if successful)
             hmac_key: HMAC key from request for encryption
 
         Returns:
             ASN.1 OER encoded AuthorizationResponse bytes
         """
         # 1. Create inner response
-        cert_bytes = None
-        if certificate:
-            cert_bytes = certificate.public_bytes(serialization.Encoding.DER)
-
         inner_response_asn1 = {
             "requestHash": request_hash,
-            "responseCode": response_code.name.lower(),  # Convert to lowercase for ASN.1 ENUMERATED
+            "responseCode": enum_to_camel_case(response_code.name),  # Convert to camelCase for ASN.1
         }
-        if cert_bytes:
-            inner_response_asn1["certificate"] = cert_bytes
+        if certificate_asn1:
+            inner_response_asn1["certificate"] = certificate_asn1
 
         # 2. Encode inner response
         plaintext = asn1_compiler.encode("InnerAtResponse", inner_response_asn1)
@@ -1040,17 +1036,15 @@ class ETSIMessageEncoder:
             print(f"[ENCODER]   Processando risposta #{idx+1}/{len(responses)}...", end=" ")
 
             # Estrai dati dalla response
-            at_cert = response_dict.get("authorization_ticket")
+            at_cert_asn1 = response_dict.get("authorization_ticket")  # Already ASN.1 OER bytes
             hmac_key = response_dict.get("hmac_key")
             response_code = response_dict.get("response_code", ResponseCode.OK)
 
             # Crea InnerAtResponse
-            if at_cert:
-                # Serializza certificato AT
-                at_der = at_cert.public_bytes(serialization.Encoding.DER)
-
+            if at_cert_asn1:
+                # Certificato AT già in formato ASN.1 OER
                 inner_response = InnerAtResponse(
-                    requestHash=request_hash, responseCode=response_code, certificate=at_der
+                    requestHash=request_hash, responseCode=response_code, certificate=at_cert_asn1
                 )
             else:
                 # Risposta di errore (senza certificato)
@@ -1136,9 +1130,9 @@ class ETSIMessageEncoder:
     def encode_butterfly_authorization_request(
         self,
         butterfly_request: "ButterflyAuthorizationRequest",
-        enrollment_certificate: x509.Certificate,
+        enrollment_certificate_asn1: bytes,
         aa_public_key: EllipticCurvePublicKey,
-        aa_certificate: x509.Certificate,
+        aa_certificate_asn1: bytes,
     ) -> bytes:
         """
         Codifica ButterflyAuthorizationRequest per batch authorization.
@@ -1207,13 +1201,12 @@ class ETSIMessageEncoder:
             "innerAtRequests": inner_requests_asn1,
             "batchSize": butterfly_request.batchSize,
             "version": version_to_uint8("1.3.1"),
-            "enrollmentCertificate": enrollment_certificate.public_bytes(serialization.Encoding.DER),
+            "enrollmentCertificate": enrollment_certificate_asn1,  # Already ASN.1 OER bytes
             "timestamp": datetime_to_time32(datetime.now(timezone.utc)),
         }
 
         # === 5. COMPUTA RECIPIENT ID ===
-        aa_cert_der = aa_certificate.public_bytes(serialization.Encoding.DER)
-        recipient_id = compute_hashed_id8(aa_cert_der)
+        recipient_id = compute_hashed_id8(aa_certificate_asn1)  # Already ASN.1 OER bytes
         butterfly_request_asn1["recipientId"] = recipient_id
 
         # === 6. CODIFICA E CIFRA COME RICHIESTA REGOLARE ===
@@ -1226,7 +1219,7 @@ class ETSIMessageEncoder:
         # Costruisci struttura AuthorizationRequest esterna
         request_asn1 = {
             "version": version_to_uint8("1.3.1"),
-            "enrollmentCertificate": enrollment_certificate.public_bytes(serialization.Encoding.DER),
+            "enrollmentCertificate": enrollment_certificate_asn1,  # Already ASN.1 OER bytes
             "encryptedData": encrypted_data,
             "timestamp": datetime_to_time32(datetime.now(timezone.utc)),
         }

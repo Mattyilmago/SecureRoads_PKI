@@ -10,7 +10,6 @@ Author: SecureRoad PKI Project
 Date: October 2025
 """
 
-import hashlib
 import traceback
 
 from cryptography import x509
@@ -21,12 +20,8 @@ from flask import Blueprint, current_app, jsonify, request
 from api.middleware import optional_auth, rate_limit, require_mtls
 from protocols.etsi_message_encoder import ETSIMessageEncoder, asn1_compiler, asn1_to_inner_ec_request
 from protocols.etsi_message_types import ResponseCode, InnerEcRequestSignedForPop
+from utils.cert_utils import compute_request_hash
 from utils.metrics import get_metrics_collector
-
-
-def compute_request_hash(data: bytes) -> bytes:
-    """Compute SHA-256 hash of request data"""
-    return hashlib.sha256(data).digest()
 
 
 def response_code_value(code: ResponseCode) -> int:
@@ -484,18 +479,18 @@ def create_enrollment_blueprint(ea_instance):
         """
         GET /enrollment/certificate
 
-        Returns the EA's public certificate in PEM format.
+        Returns the EA's public certificate in ASN.1 OER format.
 
         Returns:
-            str: PEM-encoded X.509 certificate
+            bytes: ASN.1 OER encoded certificate (ETSI TS 103097)
         """
         try:
-            if not hasattr(bp.ea, "certificate"):
+            if not hasattr(bp.ea, "certificate_asn1") or bp.ea.certificate_asn1 is None:
                 current_app.logger.error("EA certificate not available")
                 return jsonify({"error": "Certificate not available"}), 404
 
-            cert_pem = bp.ea.certificate.public_bytes(serialization.Encoding.PEM).decode('utf-8')
-            return cert_pem, 200, {"Content-Type": "application/x-pem-file"}
+            # Return ASN.1 OER certificate directly
+            return bp.ea.certificate_asn1, 200, {"Content-Type": "application/octet-stream"}
 
         except Exception as e:
             current_app.logger.error(f"Error retrieving certificate: {e}")

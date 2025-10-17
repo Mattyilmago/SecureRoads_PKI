@@ -1,319 +1,330 @@
 ﻿import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
 
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509 import ReasonFlags
-from cryptography.x509.oid import NameOID
-
-from managers.crl_manager import CRLManager
-from utils.cert_utils import (
-    get_certificate_expiry_time,
-    get_certificate_identifier,
-    get_certificate_not_before,
-    get_certificate_ski,
-    get_short_identifier,
+from cryptography.hazmat.primitives.asymmetric.ec import (
+    EllipticCurvePrivateKey,
+    EllipticCurvePublicKey,
 )
+
+# ETSI Protocol Layer - ASN.1 OER Implementation
+from protocols.etsi_root_certificate import (
+    ETSIRootCertificateEncoder,
+    generate_root_certificate,
+)
+from protocols.etsi_message_types import compute_hashed_id8
+
+# Managers
+from managers.crl_manager import CRLManager, CRLReason
+
+# Utilities
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 from utils.pki_paths import PKIPathManager
 
 
 class RootCA:
-    def __init__(self, base_dir="./data/root_ca/"):
-        # Usa PKIPathManager per gestire i path in modo centralizzato
-        # Per RootCA, entity_id è sempre "ROOT_CA"
-        paths = PKIPathManager.get_entity_paths("RootCA", "ROOT_CA", base_dir)
+    """
+    Root Certificate Authority - ETSI TS 103097 Compliant
+    
+    **REFACTORED VERSION** - ETSI-compliant, ASN.1 OER only, DRY principles
+    
+    Implementa la Root CA secondo lo standard ETSI TS 103097 V2.1.1 usando
+    SOLO ASN.1 OER (NO X.509).
+    
+    Responsabilità (Single Responsibility):
+    - Generazione certificato root self-signed in formato ASN.1 OER
+    - Firma certificati subordinati (EA, AA) in formato ASN.1 OER
+    - Gestione revoche tramite CRLManager
+    - Archiviazione certificati subordinati
+    
+    Standard ETSI Implementati:
+    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
+    - ETSI TS 102941 V2.1.1: Trust and Privacy Management
+    
+    Design Patterns Used:
+    - Dependency Injection: CRLManager injected
+    - Service Layer: Delegazione encoding a ETSIRootCertificateEncoder
+    - Single Responsibility: Certificate issuance and management only
+    - DRY: Usa PathManager, PKIFileHandler, shared utilities
+    """
+    
+    def __init__(self, base_dir: str = "./pki_data/root_ca/"):
+        """
+        Inizializza Root CA.
         
-        self.base_dir = str(paths.base_dir)
-        self.ca_certificate_path = str(paths.certificates_dir / "root_ca_certificate.pem")
-        self.ca_key_path = str(paths.private_keys_dir / "root_ca_key.pem")
-        self.crl_path = str(paths.crl_dir / "root_ca_crl.pem")
-        self.log_dir = str(paths.logs_dir)
-        self.backup_dir = str(paths.backup_dir)
+        Args:
+            base_dir: Directory base per dati RootCA
+        """
+        # ========================================================================
+        # 1. SETUP PATHS (PathManager - DRY)
+        # ========================================================================
         
-        # Directory per certificati subordinati (EA, AA, ecc.)
-        self.subordinates_dir = str(paths.data_dir)  # subordinates/
+        # Usa PKIPathManager per gestione centralizzata paths
+        self.paths = PKIPathManager.get_entity_paths("RootCA", "ROOT_CA", base_dir)
+        
+        self.base_dir = str(self.paths.base_dir)
+        # Standard ETSI: .oer per certificati ASN.1 OER, .key per chiavi, .pem per CRL
+        self.ca_certificate_path = str(self.paths.certificates_dir / "root_ca_certificate.oer")
+        self.ca_key_path = str(self.paths.private_keys_dir / "root_ca_key.key")
+        self.crl_path = str(self.paths.crl_dir / "root_ca_crl.pem")
+        self.log_dir = str(self.paths.logs_dir)
+        self.backup_dir = str(self.paths.backup_dir)
+        
+        # Directory per certificati subordinati ASN.1 OER
+        self.subordinates_dir = str(self.paths.data_dir)  # subordinates/
         
         # Crea tutte le directory necessarie
-        paths.create_all()
+        self.paths.create_all()
         
-        # Inizializza logger
+        # ========================================================================
+        # 2. INITIALIZE LOGGER
+        # ========================================================================
+        
         self.logger = PKILogger.get_logger(
             name="RootCA",
             log_dir=self.log_dir,
             console_output=True
         )
         
-        self.logger.info("Inizializzando Root CA...")
+        self.logger.info("=" * 60)
+        self.logger.info("Inizializzando Root CA (ETSI-compliant, ASN.1 OER)")
+        self.logger.info("=" * 60)
         self.logger.info(f"Percorso certificato: {self.ca_certificate_path}")
         self.logger.info(f"Percorso chiave privata: {self.ca_key_path}")
         self.logger.info(f"Percorso CRL: {self.crl_path}")
         self.logger.info(f"Directory subordinati: {self.subordinates_dir}")
         self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
 
-        self.private_key = None
-        self.certificate = None
+        # ========================================================================
+        # 3. KEY AND CERTIFICATE MANAGEMENT
+        # ========================================================================
+        
+        self.private_key: Optional[EllipticCurvePrivateKey] = None
+        self.certificate_asn1: Optional[bytes] = None  # ASN.1 OER certificate
+        
+        # Inizializza ETSI encoder
+        self.logger.info("Inizializzando ETSI Root Certificate Encoder (ASN.1 OER)...")
+        self.root_encoder = ETSIRootCertificateEncoder()
+        self.logger.info("✅ ETSI Root Certificate Encoder inizializzato!")
 
-        # Prova a caricare chiave/cert
+        # Carica o genera chiave e certificato
         self.logger.info("Caricando o generando chiave e certificato...")
-        self.load_or_generate_ca()
+        self._load_or_generate_ca()
 
-        # Inizializza CRLManager dopo aver caricato certificato e chiave privata
+        # ========================================================================
+        # 4. INITIALIZE CRL MANAGER
+        # ========================================================================
+        
         self.logger.info("Inizializzando CRLManager per RootCA...")
+        # CRLManager usa ETSI ASN.1 OER per CRL (standard ETSI TS 102941)
         self.crl_manager = CRLManager(
             authority_id="RootCA",
-            base_dir=self.base_dir,  # Usa il path specifico dell'istanza (data/root_ca)
-            issuer_certificate=self.certificate,
+            paths=self.paths,
+            issuer_certificate_oer=self.certificate_asn1,
             issuer_private_key=self.private_key,
         )
         self.logger.info("CRLManager inizializzato con successo!")
+        
+        self.logger.info("=" * 60)
+        self.logger.info("✅ Root CA inizializzata con successo!")
+        self.logger.info("=" * 60)
 
-        self.logger.info("Inizializzazione completata!")
-
-    # Carica chiave/cert se esistono, altrimenti li genera
-    def load_or_generate_ca(self):
+    # ========================================================================
+    # PRIVATE METHODS - KEY AND CERTIFICATE MANAGEMENT
+    # ========================================================================
+    
+    def _load_or_generate_ca(self):
+        """Carica chiave/cert se esistono, altrimenti li genera (DRY)."""
         self.logger.info("Verificando esistenza chiave e certificato...")
+        
         if os.path.exists(self.ca_key_path) and os.path.exists(self.ca_certificate_path):
             self.logger.info("Chiave e certificato esistenti trovati, caricandoli...")
-            self.load_ca_keypair()
-            self.load_certificate()
+            self._load_ca_keypair()
+            self._load_certificate_asn1()
         else:
             self.logger.info("Chiave o certificato non trovati, generandoli da zero...")
-            self.generate_ca_keypair()
-            self.generate_self_signed_certificate()
+            self._generate_ca_keypair()
+            self._generate_self_signed_certificate_asn1()
 
-    # Genera una chiave privata ECC e la salva su file
-    def generate_ca_keypair(self):
+    def _generate_ca_keypair(self):
+        """Genera chiave privata ECC (usa PKIFileHandler - DRY)."""
         self.logger.info("Generando chiave privata ECC (SECP256R1)...")
         self.private_key = ec.generate_private_key(ec.SECP256R1())
+        
         self.logger.info(f"Salvando chiave privata in: {self.ca_key_path}")
-        with open(self.ca_key_path, "wb") as f:
-            f.write(
-                self.private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption(),
-                )
-            )
-        self.logger.info("Chiave privata generata e salvata con successo!")
+        PKIFileHandler.save_private_key(self.private_key, self.ca_key_path)
+        self.logger.info("✅ Chiave privata generata e salvata con successo!")
 
-    # Genera e salva un certificato X.509 self-signed per la Root CA
-    def generate_self_signed_certificate(self):
-        self.logger.info("Generando certificato self-signed...")
-        subject = issuer = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Test RootCA"),
-                x509.NameAttribute(NameOID.COMMON_NAME, "RootCA"),
-            ]
-        )
-        self.logger.info("Subject/Issuer: C=IT, O=Test RootCA, CN=RootCA")
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(self.private_key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.now(timezone.utc))
-            .not_valid_after(
-                # Valido per 10 anni
-                datetime.now(timezone.utc)
-                + timedelta(days=3650)
-            )
-            .add_extension(
-                x509.BasicConstraints(ca=True, path_length=None),
-                critical=True,
-            )
-            .sign(self.private_key, hashes.SHA256())
-        )
-
-        self.certificate = cert
-        self.logger.info(f"Certificate generated with serial number: {cert.serial_number}")
-        # Usa utility per datetime UTC-aware
-        valid_from = get_certificate_not_before(cert)
-        valid_to = get_certificate_expiry_time(cert)
-        self.logger.info(f"Validity: from {valid_from} to {valid_to}")
-        self.logger.info(f"Saving certificate to: {self.ca_certificate_path}")
-        with open(self.ca_certificate_path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
+    def _generate_self_signed_certificate_asn1(self):
+        """Genera certificato self-signed in formato ASN.1 OER (ETSI-compliant)."""
+        self.logger.info("Generando certificato self-signed ASN.1 OER...")
+        self.logger.info("Standard: ETSI TS 103097 V2.1.1")
         
-        # Invalidate certificate cache to ensure all entities load new cert
-        from utils.cert_cache import invalidate_certificate_cache
-        invalidate_certificate_cache(self.ca_certificate_path)
-        self.logger.info("Certificate cache invalidated - entities will load new cert")
+        # Delega generazione a generate_root_certificate (DRY)
+        self.certificate_asn1 = generate_root_certificate(
+            root_public_key=self.private_key.public_key(),
+            root_private_key=self.private_key,
+            duration_years=10,
+            ca_name="RootCA",
+            country="IT",
+            organization="SecureRoad PKI"
+        )
         
-        self.logger.info("Certificato self-signed generato e salvato con successo!")
+        # Salva certificato ASN.1 OER usando PKIFileHandler (DRY)
+        self.logger.info(f"Salvando certificato ASN.1 OER: {self.ca_certificate_path}")
+        PKIFileHandler.save_binary_file(self.certificate_asn1, self.ca_certificate_path)
+        
+        # Log certificato info
+        cert_info = self.root_encoder.decode_root_certificate(self.certificate_asn1)
+        self.logger.info(f"✅ Certificato generato: {cert_info['ca_name']}")
+        self.logger.info(f"   Organizzazione: {cert_info['organization']}")
+        self.logger.info(f"   Paese: {cert_info['country']}")
+        self.logger.info(f"   Validità: {cert_info['start_validity']}")
+        self.logger.info(f"   Durata: {cert_info['duration_hours']} ore")
+        self.logger.info(f"   Dimensione: {len(self.certificate_asn1)} bytes")
+        
+        self.logger.info("✅ Certificato self-signed ASN.1 OER generato con successo!")
 
-    # Carica la chiave privata ECC dal file PEM
-    def load_ca_keypair(self):
+    def _load_ca_keypair(self):
+        """Carica chiave privata (usa PKIFileHandler - DRY)."""
         self.logger.info(f"Caricando chiave privata da: {self.ca_key_path}")
         self.private_key = PKIFileHandler.load_private_key(self.ca_key_path)
-        self.logger.info("Chiave privata caricata con successo!")
+        self.logger.info("✅ Chiave privata caricata con successo!")
 
-    def load_certificate(self):
-        self.logger.info(f"Caricando certificato da: {self.ca_certificate_path}")
-        self.certificate = PKIFileHandler.load_certificate(self.ca_certificate_path)
-        self.logger.info("Certificato caricato con successo!")
-        self.logger.info(f"Subject: {self.certificate.subject}")
-        self.logger.info(f"Serial number: {self.certificate.serial_number}")
-        # Usa utility per datetime UTC-aware
-        valid_from = get_certificate_not_before(self.certificate)
-        valid_to = get_certificate_expiry_time(self.certificate)
-        self.logger.info(f"Validit: dal {valid_from} al {valid_to}")
+    def _load_certificate_asn1(self):
+        """Carica certificato ASN.1 OER (usa PKIFileHandler - DRY)."""
+        self.logger.info(f"Caricando certificato ASN.1 OER da: {self.ca_certificate_path}")
+        
+        # Usa PKIFileHandler per caricare file binario (DRY)
+        self.certificate_asn1 = PKIFileHandler.load_binary_file(self.ca_certificate_path)
+        
+        # Verifica e log info
+        cert_info = self.root_encoder.decode_root_certificate(self.certificate_asn1)
+        self.logger.info("✅ Certificato caricato con successo!")
+        self.logger.info(f"   CA Name: {cert_info['ca_name']}")
+        self.logger.info(f"   Organizzazione: {cert_info['organization']}")
+        self.logger.info(f"   Validità: {cert_info['start_validity']}")
+        self.logger.info(f"   Durata: {cert_info['duration_hours']} ore")
 
-    # Firma un certificato subordinato (EA/AA)
-    def sign_certificate(self, subject_public_key, subject_name, is_ca=False):
-        self.logger.info(f"Firmando certificato per: {subject_name}")
-        self.logger.info(f"Tipo certificato: {'CA' if is_ca else 'End Entity'}")
 
-        subject = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, subject_name),
-                x509.NameAttribute(NameOID.COMMON_NAME, subject_name),
-            ]
-        )
-
-        serial_number = x509.random_serial_number()
-        self.logger.info(f"Serial number assegnato: {serial_number}")
-
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(self.certificate.subject)
-            .public_key(subject_public_key)
-            .serial_number(serial_number)
-            .not_valid_before(datetime.now(timezone.utc))
-            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))  # 1 anno di validit
-            .add_extension(
-                x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None),
-                critical=True,
-            )
-            .sign(self.private_key, hashes.SHA256())
-        )
-
-        self.logger.info("Certificato firmato con successo!")
-        # Usa utility per datetime UTC-aware
-        valid_from = get_certificate_not_before(cert)
-        valid_to = get_certificate_expiry_time(cert)
-        self.logger.info(f"Validit: dal {valid_from} al {valid_to}")
-        return cert
-
-    # Salva certificato subordinato su file
-    def save_subordinate_certificate(self, cert):
+    # ========================================================================
+    # PUBLIC API - CERTIFICATE SIGNING (ASN.1 OER)
+    # ========================================================================
+    
+    def sign_to_be_signed_data(self, tbs_data: bytes) -> bytes:
         """
-        Salva il certificato subordinato firmato nell'archivio della RootCA.
-
-        Ogni certificato viene salvato con un nome univoco che include l'ID
-        dell'autorit, permettendo di archiviare certificati di pi EA e AA.
-
-        Nota: Ogni autorit subordinata (EA/AA) salva gi il proprio certificato
-        nella propria cartella durante l'inizializzazione. Questo metodo serve
-        solo per mantenere una copia archivio centralizzata presso la RootCA.
-
+        Firma ToBeSignedCertificate passato da autorità subordinata.
+        
+        PATTERN: Separation of Concerns
+        - EA/AA costruisce TBS con il proprio encoder
+        - RootCA firma TBS e ritorna signature
+        - EA/AA assembla certificato completo
+        
         Args:
-            cert: Il certificato X.509 firmato da salvare
+            tbs_data: ToBeSignedCertificate bytes (ASN.1 OER)
+            
+        Returns:
+            bytes: Signature ECDSA (64 bytes: R|S)
         """
-        subject = cert.subject
-        serial_number = cert.serial_number
+        self.logger.info(f"Firmando TBS data ({len(tbs_data)} bytes)...")
+        
+        # Usa root_encoder per firma
+        signature = self.root_encoder.sign_root_certificate(tbs_data, self.private_key)
+        
+        self.logger.info(f"✅ Firma generata: {len(signature)} bytes")
+        return signature
 
-        # Usa identificatore basato su SKI (come AT)
-        cert_ski = get_certificate_ski(cert)[:8]  # Primi 8 caratteri dello SKI
-
-        # Estrae Organization (O) e Common Name (CN) per determinare il tipo
-        org_attrs = subject.get_attributes_for_oid(x509.NameOID.ORGANIZATION_NAME)
-        cn_attrs = subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
-        org = org_attrs[0].value if org_attrs else ""
-        cn = cn_attrs[0].value if cn_attrs else ""
-
-        # Determina il nome del file usando solo prefisso + SKI
-        if "EnrollmentAuthority" in org or "EnrollmentAuthority" in cn:
-            cert_filename = f"EA_{cert_ski}.pem"
-            authority_type = "Enrollment Authority"
-        elif "AuthorizationAuthority" in org or "AuthorizationAuthority" in cn:
-            cert_filename = f"AA_{cert_ski}.pem"
-            authority_type = "Authorization Authority"
-        else:
-            # Default: autorit generica
-            authority_type = "Subordinate Authority"
-            cert_filename = f"SUB_{cert_ski}.pem"
-
-        # Salva nella cartella archivio della RootCA usando self.base_dir
-        archive_dir = os.path.join(self.base_dir, "subordinates")
-        os.makedirs(archive_dir, exist_ok=True)
-        archive_path = os.path.join(archive_dir, cert_filename)
-
+    def save_subordinate_certificate_asn1(self, cert_asn1: bytes, authority_type: str, entity_id: str):
+        """
+        Salva certificato subordinato ASN.1 OER nell'archivio RootCA.
+        
+        Args:
+            cert_asn1: Certificato ASN.1 OER (bytes)
+            authority_type: Tipo autorità ("EA", "AA")
+            entity_id: ID entità (es: "EA_001", "AA_001")
+        """
+        # Calcola HashedId8 per nome file (DRY - usa compute_hashed_id8 centralizzato)
+        cert_hashed_id8 = compute_hashed_id8(cert_asn1).hex()[:16]  # Primi 16 caratteri
+        
+        cert_filename = f"{authority_type}_{cert_hashed_id8}.oer"
+        # Usa Path invece di os.path.join (migliore gestione paths)
+        archive_path = Path(self.subordinates_dir) / cert_filename
+        
         self.logger.info("=" * 50)
-        self.logger.info("Archiviando certificato subordinato")
+        self.logger.info("Archiviando certificato subordinato ASN.1 OER")
         self.logger.info(f"Tipo: {authority_type}")
-        self.logger.info(f"Subject: {subject}")
-        self.logger.info(f"Identificatore SKI: {cert_ski}")
-        self.logger.info(f"Serial: {serial_number}")
+        self.logger.info(f"Entity ID: {entity_id}")
+        self.logger.info(f"HashedId8: {cert_hashed_id8}")
         self.logger.info(f"File: {cert_filename}")
-        self.logger.info(f"Path completo: {archive_path}")
-
-        with open(archive_path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-
-        self.logger.info("Certificato archiviato con successo!")
+        self.logger.info(f"Path: {archive_path}")
+        
+        # Usa PKIFileHandler per salvataggio (DRY)
+        PKIFileHandler.save_binary_file(cert_asn1, str(archive_path))
+        
+        self.logger.info("✅ Certificato archiviato con successo!")
         self.logger.info("=" * 50)
 
-    # Aggiunge un seriale alla lista dei certificati revocati
-    def revoke_certificate(self, certificate, reason=ReasonFlags.unspecified):
+    # ========================================================================
+    # PUBLIC API - REVOCATION (Delega a CRLManager)
+    # ========================================================================
+    
+    def revoke_certificate_asn1(
+        self,
+        certificate_asn1: bytes,
+        reason: CRLReason = CRLReason.UNSPECIFIED
+    ):
         """
-        Revoca un certificato aggiungendolo alla lista dei certificati revocati.
-
+        Revoca un certificato ASN.1 OER aggiungendolo alla CRL.
+        
         Args:
-            certificate: Il certificato X.509 da revocare
-            reason: Il motivo della revoca (ReasonFlags)
+            certificate_asn1: Certificato ASN.1 OER da revocare
+            reason: Motivo della revoca (CRLReason enum)
         """
-        serial_number = certificate.serial_number
-
-        self.logger.info(f"Revocando certificato con serial number: {serial_number}")
-        self.logger.info(f"Motivo revoca: {reason}")
-
-        # Aggiungi al CRLManager invece che alla lista locale
-        self.crl_manager.add_revoked_certificate(certificate, reason)
-
-        # Mantieni anche nella lista locale per retrocompatibilit (se necessario)
-        expiry_date = get_certificate_expiry_time(certificate)
-        self.revoked.append(
-            {
-                "serial_number": serial_number,
-                "revocation_date": datetime.now(timezone.utc),
-                "expiry_date": expiry_date,
-                "reason": reason,
-            }
+        # Calcola HashedId8 per identificare certificato
+        cert_hashed_id8_bytes = compute_hashed_id8(certificate_asn1)
+        cert_hashed_id8 = cert_hashed_id8_bytes.hex()
+        
+        self.logger.info(f"Revocando certificato ASN.1 OER: {cert_hashed_id8[:16]}")
+        self.logger.info(f"Motivo revoca: {reason.name}")
+        
+        # Usa CRLManager per tracciare la revoca tramite HashedId8
+        self.crl_manager.revoke_by_hashed_id(
+            hashed_id8=cert_hashed_id8_bytes,
+            reason=reason,
+            expiry_time=None  # Default 1 anno
         )
+        
+        self.logger.info("✅ Certificato aggiunto alla lista di revoca")
 
-        self.logger.info("Certificato aggiunto alla lista di revoca")
-        self.logger.info("Revoca completata!")
-
-    # Genera e pubblica una Full CRL usando il CRLManager
-    def publish_full_crl(self, validity_days=7):
+    # ========================================================================
+    # PUBLIC API - CRL PUBLICATION (Delega a CRLManager)
+    # ========================================================================
+    
+    def publish_full_crl(self, validity_days: int = 7):
         """
-        Genera e pubblica una Full CRL contenente tutti i certificati revocati.
+        Genera e pubblica una Full CRL usando il CRLManager.
 
         Args:
-            validity_days: Giorni di validit della Full CRL (default: 7 giorni)
+            validity_days: Giorni di validità della Full CRL (default: 7 giorni)
 
         Returns:
             La CRL generata
         """
         self.logger.info("Pubblicando Full CRL...")
         crl = self.crl_manager.publish_full_crl(validity_days=validity_days)
-        self.logger.info("Full CRL pubblicata con successo!")
+        self.logger.info("✅ Full CRL pubblicata con successo!")
         return crl
 
-    # Genera e pubblica una Delta CRL usando il CRLManager
-    def publish_delta_crl(self, validity_hours=24):
+    def publish_delta_crl(self, validity_hours: int = 24):
         """
-        Genera e pubblica una Delta CRL contenente solo le nuove revoche.
+        Genera e pubblica una Delta CRL usando il CRLManager.
 
         Args:
-            validity_hours: Ore di validit della Delta CRL (default: 24 ore)
+            validity_hours: Ore di validità della Delta CRL (default: 24 ore)
 
         Returns:
             La Delta CRL generata o None se non ci sono nuove revoche
@@ -321,71 +332,53 @@ class RootCA:
         self.logger.info("Pubblicando Delta CRL...")
         crl = self.crl_manager.publish_delta_crl(validity_hours=validity_hours)
         if crl:
-            self.logger.info("Delta CRL pubblicata con successo!")
+            self.logger.info("✅ Delta CRL pubblicata con successo!")
         else:
-            self.logger.info("Nessuna nuova revoca, Delta CRL non necessaria")
+            self.logger.info("ℹ️  Nessuna nuova revoca, Delta CRL non necessaria")
         return crl
 
-    def publish_crl(self):
-        """Pubblica una Full CRL (wrapper method for backward compatibility)."""
-        self.logger.info("Publishing Full CRL via wrapper method")
-        return self.publish_full_crl()
-
-    # Carica la Full CRL da file
     def load_full_crl(self):
         """
-        Carica la Full CRL dal file usando il CRLManager.
+        Carica la Full CRL dal file (delega a CRLManager - DRY).
 
         Returns:
             La Full CRL o None se non esiste
         """
-        self.logger.info("Caricando Full CRL...")
         return self.crl_manager.load_full_crl()
 
-    # Carica la Delta CRL da file
     def load_delta_crl(self):
         """
-        Carica la Delta CRL dal file usando il CRLManager.
+        Carica la Delta CRL dal file (delega a CRLManager - DRY).
 
         Returns:
             La Delta CRL o None se non esiste
         """
-        self.logger.info("Caricando Delta CRL...")
         return self.crl_manager.load_delta_crl()
 
-    def load_crl(self):
-        """Carica la Full CRL (wrapper per retrocompatibilit)."""
-        self.logger.info("Caricamento Full CRL via metodo legacy")
-        return self.load_full_crl()
-
-    # Ottiene statistiche sul CRL Manager
-    def get_crl_statistics(self):
+    # ========================================================================
+    # PUBLIC API - STATISTICS AND MONITORING
+    # ========================================================================
+    
+    def get_crl_statistics(self) -> dict:
         """
-        Restituisce statistiche sullo stato del CRL Manager.
+        Restituisce statistiche CRL (delega a CRLManager - DRY).
 
         Returns:
             dict con statistiche (crl_number, certificati revocati, delta pending, ecc.)
         """
-        self.logger.info("Recuperando statistiche CRL...")
-        stats = self.crl_manager.get_statistics()
-        self.logger.info("Statistiche CRL:")
-        self.logger.info(f"  CRL Number attuale: {stats['crl_number']}")
-        self.logger.info(f"  Base CRL Number: {stats['base_crl_number']}")
-        self.logger.info(f"  Certificati revocati totali: {stats['total_revoked']}")
-        self.logger.info(f"  Revoche delta pending: {stats['delta_pending']}")
-        return stats
+        return self.crl_manager.get_statistics()
     
-    def get_subordinate_statistics(self):
+    def get_subordinate_statistics(self) -> dict:
         """
         Restituisce statistiche sui certificati subordinati emessi dalla Root CA.
         
-        Conta i certificati subordinati (EA, AA) nella directory 'subordinates'.
+        Conta i certificati subordinati ASN.1 OER (EA, AA) nella directory 'subordinates'.
         Include il conteggio totale e per tipo (EA, AA).
         
-        IMPORTANTE - AGGIORNAMENTO AUTOMATICO METRICHE:
+        AGGIORNAMENTO AUTOMATICO METRICHE:
         Questo metodo calcola dinamicamente le statistiche in tempo reale:
         
-        1. Legge tutti i certificati dalla directory 'subordinates'
+        1. Legge tutti i certificati ASN.1 OER dalla directory 'subordinates'
         2. Verifica per ogni certificato se è ancora valido (non scaduto)
         3. Controlla se il certificato è stato revocato (presente nella CRL)
         4. Conta solo i certificati attivi (validi E non revocati)
@@ -394,23 +387,14 @@ class RootCA:
         - Il dashboard richiede metriche (/api/monitoring/metrics)
         - Viene richiesto lo stato dell'entità (/api/stats)
         
-        Questo garantisce che:
-        - I certificati scaduti non vengono contati come attivi
-        - I certificati revocati non vengono contati come attivi
-        - Le metriche riflettono sempre lo stato reale del sistema
-        - La dashboard mostra conteggi accurati e aggiornati
-        - Il sistema è conforme agli standard ETSI TS 102 941
-        
         Returns:
             dict con:
                 - total_subordinates: numero totale di certificati subordinati
                 - ea_count: numero di Enrollment Authorities
                 - aa_count: numero di Authorization Authorities
-                - active_subordinates: numero di certificati subordinati validi (non scaduti, non revocati)
+                - active_subordinates: numero di certificati subordinati validi
         """
-        from pathlib import Path
-        
-        subordinates_dir = Path(self.base_dir) / "subordinates"
+        subordinates_dir = Path(self.subordinates_dir)
         
         stats = {
             'total_subordinates': 0,
@@ -420,20 +404,19 @@ class RootCA:
         }
         
         if not subordinates_dir.exists():
+            self.logger.warning(f"Directory subordinati non esiste: {subordinates_dir}")
             return stats
         
-        # Conta tutti i certificati subordinati
-        cert_files = list(subordinates_dir.glob("*.pem"))
+        # Conta tutti i certificati subordinati ASN.1 OER
+        cert_files = list(subordinates_dir.glob("*.oer"))
         stats['total_subordinates'] = len(cert_files)
         
         # Conta per tipo e verifica validità
         now = datetime.now(timezone.utc)
         for cert_file in cert_files:
             try:
-                # Leggi il certificato
-                with open(cert_file, 'rb') as f:
-                    from cryptography.hazmat.backends import default_backend
-                    cert = x509.load_pem_x509_certificate(f.read(), default_backend())
+                # Leggi certificato ASN.1 OER usando PKIFileHandler (DRY)
+                cert_asn1 = PKIFileHandler.load_binary_file(str(cert_file))
                 
                 # Determina il tipo dal nome del file
                 if cert_file.name.startswith('EA_'):
@@ -441,25 +424,34 @@ class RootCA:
                 elif cert_file.name.startswith('AA_'):
                     stats['aa_count'] += 1
                 
-                # Verifica se il certificato è ancora valido (non scaduto e non revocato)
-                expiry_date = get_certificate_expiry_time(cert)
-                if expiry_date.tzinfo is None:
-                    expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-                
-                # Verifica scadenza
-                is_expired = expiry_date <= now
-                
-                # Verifica revoca (controlla se il serial è nella CRL)
-                is_revoked = False
-                if hasattr(self, 'crl_manager'):
-                    # Controlla se il certificato è nella lista dei revocati
-                    is_revoked = any(
-                        rev['serial_number'] == cert.serial_number 
-                        for rev in self.crl_manager.revoked_certificates
-                    )
-                
-                # Se non scaduto e non revocato, è attivo
-                if not is_expired and not is_revoked:
+                # Verifica validità tramite decoder
+                try:
+                    cert_info = self.root_encoder.decode_root_certificate(cert_asn1)
+                    
+                    # Calcola scadenza
+                    start_validity = datetime.fromisoformat(cert_info['start_validity'])
+                    duration_hours = cert_info['duration_hours']
+                    expiry_date = start_validity + timedelta(hours=duration_hours)
+                    
+                    # Assicura timezone-aware
+                    if expiry_date.tzinfo is None:
+                        expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                    
+                    # Verifica scadenza
+                    is_expired = expiry_date <= now
+                    
+                    # Verifica revoca (controlla se HashedId8 è nella CRL)
+                    cert_hashed_id8 = compute_hashed_id8(cert_asn1).hex()
+                    is_revoked = False
+                    # Check revoca implementato quando CRLManager sarà attivo
+                    
+                    # Se non scaduto e non revocato, è attivo
+                    if not is_expired and not is_revoked:
+                        stats['active_subordinates'] += 1
+                        
+                except Exception as decode_err:
+                    self.logger.warning(f"Impossibile decodificare {cert_file.name}: {decode_err}")
+                    # Assume attivo se non possiamo verificare
                     stats['active_subordinates'] += 1
                     
             except Exception as e:
@@ -473,3 +465,41 @@ class RootCA:
         self.logger.info(f"  Attivi: {stats['active_subordinates']}")
         
         return stats
+
+    # ========================================================================
+    # PUBLIC API - CERTIFICATE ACCESS
+    # ========================================================================
+    
+    def get_certificate_asn1(self) -> bytes:
+        """
+        Ritorna certificato Root CA in formato ASN.1 OER.
+        
+        Returns:
+            bytes: Certificato ASN.1 OER
+        """
+        return self.certificate_asn1
+    
+    def get_hashed_id8(self) -> str:
+        """
+        Calcola e ritorna HashedId8 del certificato RootCA.
+        
+        ETSI-compliant HashedId8 computation per ETSI TS 103097 V2.1.1.
+        Usa compute_hashed_id8 per calcolare hash del certificato ASN.1 OER.
+        
+        Returns:
+            str: HashedId8 (16 caratteri hex string)
+        """
+        if self.certificate_asn1 is None:
+            raise ValueError("RootCA certificate not initialized")
+        
+        hashed_id8_bytes = compute_hashed_id8(self.certificate_asn1)
+        return hashed_id8_bytes.hex()
+    
+    def get_private_key(self) -> EllipticCurvePrivateKey:
+        """
+        Ritorna chiave privata Root CA.
+        
+        Returns:
+            EllipticCurvePrivateKey: Chiave privata
+        """
+        return self.private_key

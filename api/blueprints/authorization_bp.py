@@ -9,7 +9,6 @@ Author: SecureRoad PKI Project
 Date: October 2025
 """
 
-import hashlib
 import secrets
 import traceback
 from datetime import datetime, timezone
@@ -28,12 +27,8 @@ from protocols.etsi_message_encoder import (
     asn1_to_shared_at_request
 )
 from protocols.etsi_message_types import ResponseCode
+from utils.cert_utils import compute_request_hash
 from utils.metrics import get_metrics_collector
-
-
-def compute_request_hash(data: bytes) -> bytes:
-    """Compute SHA-256 hash of request data"""
-    return hashlib.sha256(data).digest()
 
 
 def create_authorization_blueprint(aa_instance):
@@ -228,7 +223,9 @@ def create_authorization_blueprint(aa_instance):
                     current_app.logger.info(f"Found {len(ea_anchors)} EA trust anchors in TLM:")
                     for anchor in ea_anchors:
                         anchor_subject = anchor["certificate"].subject.rfc4514_string()
-                        current_app.logger.info(f"  - {anchor_subject}")
+                        current_app.logger.info(f"  - TLM EA Subject: {anchor_subject}")
+                        current_app.logger.info(f"  - Comparing with EC Issuer: {ea_issuer_name}")
+                        current_app.logger.info(f"  - Match: {anchor_subject == ea_issuer_name}")
                         if anchor_subject == ea_issuer_name:
                             is_trusted = True
                             current_app.logger.info("✓ EA is trusted by TLM")
@@ -237,6 +234,21 @@ def create_authorization_blueprint(aa_instance):
                     if not is_trusted:
                         current_app.logger.warning(f"✗ EA '{ea_issuer_name}' not found in TLM trust list")
                         current_app.logger.warning(f"   Available EA count: {len(ea_anchors)}")
+                        # Prova con un confronto più flessibile basato sul CN
+                        try:
+                            from cryptography.x509.oid import NameOID
+                            ec_issuer_cn = enrollment_cert.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)
+                            if ec_issuer_cn:
+                                ec_cn_value = ec_issuer_cn[0].value
+                                current_app.logger.info(f"Tentativo match per CN: {ec_cn_value}")
+                                for anchor in ea_anchors:
+                                    anchor_cn = anchor["certificate"].subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                                    if anchor_cn and anchor_cn[0].value == ec_cn_value:
+                                        is_trusted = True
+                                        current_app.logger.info(f"✓ EA trusted by CN match: {ec_cn_value}")
+                                        break
+                        except Exception as cn_error:
+                            current_app.logger.warning(f"CN match fallback failed: {cn_error}")
                 except Exception as e:
                     current_app.logger.error(f"TLM validation error: {e}")
                     import traceback
@@ -416,18 +428,16 @@ def create_authorization_blueprint(aa_instance):
         Utilizzato dai client per cifrare le richieste di autorizzazione.
         
         Returns:
-            str: Certificato AA in formato PEM
+            bytes: Certificato AA in formato ASN.1 OER (ETSI TS 103097)
         """
         try:
-            # Ottieni certificato AA dall'istanza
-            aa_cert = bp.aa.certificate
-            if not aa_cert:
+            # Ottieni certificato AA dall'istanza (ora è ASN.1 OER)
+            aa_cert_asn1 = bp.aa.certificate_asn1
+            if not aa_cert_asn1:
                 return jsonify({"error": "AA certificate not available"}), 500
             
-            # Converti a PEM
-            cert_pem = aa_cert.public_bytes(serialization.Encoding.PEM).decode('utf-8')
-            
-            return cert_pem, 200, {"Content-Type": "text/plain"}
+            # Return ASN.1 OER certificate directly
+            return aa_cert_asn1, 200, {"Content-Type": "application/octet-stream"}
             
         except Exception as e:
             current_app.logger.error(f"Error retrieving AA certificate: {e}")
@@ -529,7 +539,7 @@ def create_authorization_blueprint(aa_instance):
                         sharedAtRequest=shared_at_request,
                         innerAtRequests=inner_requests,
                         batchSize=butterfly_request_asn1["batchSize"],
-                        enrollmentCertificate=enrollment_cert.public_bytes(serialization.Encoding.DER),
+                        enrollmentCertificate=enrollment_cert,  # Already ASN.1 OER bytes from decoder
                         timestamp=butterfly_request_asn1["timestamp"]
                     )
                     current_app.logger.info("✓ Decoded as ButterflyAuthorizationRequest")
@@ -552,7 +562,7 @@ def create_authorization_blueprint(aa_instance):
                         ),
                         innerAtRequests=[inner_request],
                         batchSize=1,
-                        enrollmentCertificate=enrollment_cert.public_bytes(serialization.Encoding.DER),
+                        enrollmentCertificate=enrollment_cert,  # Already ASN.1 OER bytes from decoder
                         timestamp=datetime.now(timezone.utc)
                     )
                 

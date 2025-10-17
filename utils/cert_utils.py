@@ -15,12 +15,28 @@ Tutte le funzioni di questa utility normalizzano automaticamente in UTC-aware.
 Usa sempre get_cert_valid_from() e get_cert_valid_to() per ottenere datetime UTC-aware.
 """
 
+import hashlib
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
 from cryptography.hazmat.backends import default_backend
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+def compute_request_hash(data: bytes) -> bytes:
+    """
+    Compute SHA-256 hash of request data.
+    
+    Used for request deduplication and replay protection in ETSI TS 102941.
+    
+    Args:
+        data: Raw request bytes
+        
+    Returns:
+        SHA-256 digest (32 bytes)
+    """
+    return hashlib.sha256(data).digest()
 
 
 def get_certificate_ski(certificate: x509.Certificate) -> str:

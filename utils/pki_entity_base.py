@@ -3,6 +3,17 @@ PKI Entity Base Class with Template Method Pattern.
 
 Provides common functionality for RootCA, EnrollmentAuthority, and AuthorizationAuthority
 including directory management, logging, file I/O, and certificate validation.
+
+IMPORTANT: ETSI TS 102941 Certificate Encoding
+----------------------------------------------
+This base class supports BOTH X.509 (for infrastructure certificates) and ASN.1 OER 
+(for end-entity certificates):
+
+- Root CA, EA, AA certificates: X.509 format (RFC 5280)
+- Enrollment Certificates (EC), Authorization Tickets (AT): ASN.1 OER (ETSI TS 103097)
+
+The X.509 support is maintained for backward compatibility with traditional PKI infrastructure.
+All V2X end-entity certificates use ASN.1 OER encoding as per ETSI standards.
 """
 
 from abc import ABC, abstractmethod

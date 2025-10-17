@@ -150,7 +150,7 @@ def delete_entity(entity_id):
                 prefix = f"{entity_type}_"
                 removed_certs = []
                 
-                for cert_file in rootca_subordinates_dir.glob(f"{prefix}*.pem"):
+                for cert_file in rootca_subordinates_dir.glob(f"{prefix}*.oer"):
                     # Read certificate to verify it belongs to this entity
                     try:
                         from cryptography import x509
@@ -364,7 +364,7 @@ def delete_all_entities_by_type(entity_types):
                 from cryptography import x509
                 from cryptography.hazmat.backends import default_backend
                 
-                for cert_file in rootca_subordinates_dir.glob('*.pem'):
+                for cert_file in rootca_subordinates_dir.glob('*.oer'):
                     try:
                         with open(cert_file, 'rb') as f:
                             cert = x509.load_pem_x509_certificate(f.read(), default_backend())

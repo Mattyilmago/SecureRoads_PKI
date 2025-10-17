@@ -26,7 +26,6 @@ Author: SecureRoad PKI Project
 Date: October 2025
 """
 
-import hashlib
 import json
 import struct
 from datetime import datetime, timezone
@@ -34,6 +33,9 @@ from typing import Dict, Optional, Tuple
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
+# Import centralized ETSI utilities from etsi_message_types (DRY compliance)
+from protocols.etsi_message_types import compute_hashed_id8, time32_decode, time32_encode
 
 
 class ETSILinkCertificateEncoder:
@@ -45,73 +47,18 @@ class ETSILinkCertificateEncoder:
     - Firma ECDSA con curve NIST P-256
     - HashedId8 computation
     - Time32 encoding (Unix timestamp 32-bit)
+    
+    Uses centralized ETSI utilities from etsi_message_types module (DRY compliance).
     """
 
     # ETSI TS 102941 constants
     LINK_CERTIFICATE_VERSION = 1
     SIGNATURE_ALGORITHM_ECDSA_SHA256 = 0
 
-    @staticmethod
-    def compute_hashed_id8(certificate_der: bytes) -> bytes:
-        """
-        Calcola HashedId8 secondo ETSI TS 103097.
-
-        HashedId8 = primi 8 byte di SHA-256(certificate)
-
-        Args:
-            certificate_der: Certificato in formato DER
-
-        Returns:
-            bytes: 8 byte dell'hash
-        """
-        full_hash = hashlib.sha256(certificate_der).digest()
-        return full_hash[:8]
-
-    @staticmethod
-    def time32_encode(dt: datetime) -> int:
-        """
-        Codifica timestamp in Time32 (ETSI TS 103097).
-
-        Time32 = secondi Unix dal 1 gennaio 2004, 00:00:00 UTC
-        Range: 0 to 2^32-1 (circa fino al 2040)
-
-        Args:
-            dt: Datetime da codificare
-
-        Returns:
-            int: Timestamp Time32 (32-bit unsigned)
-        """
-        # Epoch ETSI = 2004-01-01 00:00:00 UTC
-        etsi_epoch = datetime(2004, 1, 1, tzinfo=timezone.utc)
-
-        # Assicura timezone-aware
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        delta = dt - etsi_epoch
-        time32 = int(delta.total_seconds())
-
-        # Verifica range valido
-        if time32 < 0 or time32 > 0xFFFFFFFF:
-            raise ValueError(f"Time32 out of range: {time32}")
-
-        return time32
-
-    @staticmethod
-    def time32_decode(time32: int) -> datetime:
-        """
-        Decodifica Time32 in datetime.
-
-        Args:
-            time32: Timestamp Time32 (32-bit unsigned)
-
-        Returns:
-            datetime: Datetime corrispondente
-        """
-        from datetime import timedelta
-
-        etsi_epoch = datetime(2004, 1, 1, tzinfo=timezone.utc)
-        return etsi_epoch + timedelta(seconds=time32)
+    # Delegate to centralized utilities from etsi_message_types (DRY compliance)
+    compute_hashed_id8 = staticmethod(compute_hashed_id8)
+    time32_encode = staticmethod(time32_encode)
+    time32_decode = staticmethod(time32_decode)
 
     def encode_to_be_signed_link_certificate(
         self,

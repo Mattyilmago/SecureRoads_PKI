@@ -158,11 +158,11 @@ class MTLSAuthenticator:
             
             while chain_depth < max_chain_depth:
                 # Verifica validità temporale del certificato corrente
-                now = datetime.utcnow()
-                if current_cert.not_valid_before > now:
-                    return False, f"Certificato non ancora valido (valido da {current_cert.not_valid_before})"
-                if current_cert.not_valid_after < now:
-                    return False, f"Certificato scaduto (scaduto il {current_cert.not_valid_after})"
+                now = datetime.now(timezone.utc)
+                if current_cert.not_valid_before_utc > now:
+                    return False, f"Certificato non ancora valido (valido da {current_cert.not_valid_before_utc})"
+                if current_cert.not_valid_after_utc < now:
+                    return False, f"Certificato scaduto (scaduto il {current_cert.not_valid_after_utc})"
                 
                 # Ottieni issuer e subject
                 issuer = current_cert.issuer.rfc4514_string()
@@ -180,7 +180,7 @@ class MTLSAuthenticator:
                 # Verifica che l'issuer corrisponda al Root CA
                 # (nel nostro caso semplificato: solo un livello)
                 if issuer != root_subject:
-                    return False, f"Certificato firmato da issuer sconosciuto: {issuer}"
+                    return False, f"Certificato non firmato da Root CA fidato (issuer: {issuer})"
                 
                 # Verifica Authority Key Identifier / Subject Key Identifier
                 try:

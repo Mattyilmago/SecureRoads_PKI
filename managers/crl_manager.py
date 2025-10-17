@@ -1,378 +1,312 @@
 ﻿import json
-import os
+import struct
+import shutil
 from datetime import datetime, timedelta, timezone
+from enum import IntEnum
+from pathlib import Path
+from typing import Optional
 
-from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.x509 import ReasonFlags
+from cryptography.hazmat.primitives.asymmetric import ec
 
-from utils.cert_utils import get_certificate_expiry_time, get_certificate_identifier, get_certificate_ski
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
+from utils.pki_paths import EntityPaths
+from protocols.etsi_message_types import compute_hashed_id8
+from protocols.etsi_authorization_ticket import ETSIAuthorizationTicketEncoder
+
+
+class CRLReason(IntEnum):
+    """ETSI TS 102941 CRL Reason Codes"""
+    UNSPECIFIED = 0
+    KEY_COMPROMISE = 1
+    CA_COMPROMISE = 2
+    SUPERSEDED = 3
+    CESSATION_OF_OPERATION = 4
 
 
 class CRLManager:
     """
-    Manages Full CRL and Delta CRL creation and publication.
+    ETSI-compliant CRL Manager using ASN.1 OER format.
+    
+    Manages Certificate Revocation Lists according to ETSI TS 102941 V2.1.1.
+    Uses HashedId8 identifiers instead of X.509 serial numbers.
+    
+    Standards:
+    - ETSI TS 102941 V2.1.1 Section 6.6: CRL Messages
+    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
     """
+    
+    ETSI_EPOCH = datetime(2004, 1, 1, tzinfo=timezone.utc)
 
-    def __init__(self, authority_id, base_dir, issuer_certificate, issuer_private_key):
-        """Initializes CRL Manager for a specific authority."""
-        self.authority_id = authority_id
-        self.issuer_certificate = issuer_certificate
-        self.issuer_private_key = issuer_private_key
-
-        # Percorsi file con separazione full/delta
-        self.crl_dir = os.path.join(base_dir, "crl/")
-        self.full_crl_dir = os.path.join(self.crl_dir, "full/")
-        self.delta_crl_dir = os.path.join(self.crl_dir, "delta/")
-        self.full_crl_path = os.path.join(self.full_crl_dir, "full_crl.pem")
-        self.delta_crl_path = os.path.join(self.delta_crl_dir, "delta_crl.pem")
-        self.metadata_path = os.path.join(self.crl_dir, "crl_metadata.json")
-        self.log_dir = os.path.join(base_dir, "logs/")
-        self.backup_dir = os.path.join(base_dir, "backup/")
+    def __init__(
+        self,
+        authority_id: str,
+        paths: EntityPaths,
+        issuer_certificate_oer: bytes,
+        issuer_private_key
+    ):
+        """
+        Initialize ETSI CRL Manager.
         
-        # Inizializza logger
+        Args:
+            authority_id: Authority identifier (EA_001, AA_001, etc.)
+            paths: EntityPaths object from PathManager
+            issuer_certificate_oer: Issuer certificate in ASN.1 OER format (bytes)
+            issuer_private_key: ECC private key for signing CRL
+        """
+        self.authority_id = authority_id
+        self.issuer_certificate_oer = issuer_certificate_oer
+        self.issuer_private_key = issuer_private_key
+        
+        self.issuer_hashed_id8 = compute_hashed_id8(issuer_certificate_oer)
+
+        # Use EntityPaths (PathManager delegation)
+        self.crl_dir = paths.crl_dir
+        self.log_dir = paths.logs_dir
+        self.backup_dir = paths.backup_dir
+        
+        # CRL subdirectories
+        self.full_crl_dir = self.crl_dir / "full"
+        self.delta_crl_dir = self.crl_dir / "delta"
+        self.full_crl_path = self.full_crl_dir / "full_crl.oer"
+        self.delta_crl_path = self.delta_crl_dir / "delta_crl.oer"
+        self.metadata_path = self.crl_dir / "crl_metadata.json"
+        
         self.logger = PKILogger.get_logger(
             name=f"CRLManager_{authority_id}",
-            log_dir=self.log_dir,
+            log_dir=str(self.log_dir),  # PKILogger needs string
             console_output=True
         )
 
-        # Crea directory
         PKIFileHandler.ensure_directories(
-            self.crl_dir,
-            self.full_crl_dir,
-            self.delta_crl_dir,
-            self.log_dir,
-            self.backup_dir,
+            str(self.crl_dir),
+            str(self.full_crl_dir),
+            str(self.delta_crl_dir),
+            str(self.log_dir),
+            str(self.backup_dir),
         )
 
-        # Lista completa dei certificati revocati (per Full CRL)
         self.revoked_certificates = []
+        self.crl_number = 0
+        self.base_crl_number = 0
+        self.last_full_crl_time = None
+        self.delta_revocations = []
 
-        # Metadata per tracking
-        self.crl_number = 0  # Numero sequenziale CRL
-        self.base_crl_number = 0  # Numero della Full CRL di riferimento per Delta
-        self.last_full_crl_time = None  # Timestamp ultima Full CRL
-        self.delta_revocations = []  # Revoche per il prossimo Delta CRL
-
-        # Carica metadata se esistono
         self.load_metadata()
-
-        # Carica Full CRL metadata per ricostruire lista certificati revocati
         self.load_full_crl_metadata()
         
-        # Salva metadata iniziali se non esistono (primo avvio)
-        if not os.path.exists(self.metadata_path):
-            self.logger.info(f"Primo avvio: creazione metadata iniziali")
+        if not self.metadata_path.exists():
+            self.logger.info(f"First initialization: creating metadata")
             self.save_metadata()
 
-        self.logger.info(f"Inizializzato per {authority_id}")
-        self.logger.info(f"CRL Number attuale: {self.crl_number}")
-        self.logger.info(f"Base CRL Number: {self.base_crl_number}")
+        self.logger.info(f"ETSI CRL Manager initialized for {authority_id}")
+        self.logger.info(f"  Issuer HashedId8: {self.issuer_hashed_id8.hex()[:16]}...")
+        self.logger.info(f"  CRL Number: {self.crl_number}")
+        self.logger.info(f"  Format: ASN.1 OER (ETSI TS 102941)")
 
-    def add_revoked_certificate(self, certificate, reason=ReasonFlags.unspecified):
+    def add_revoked_certificate(self, certificate_oer: bytes, reason: CRLReason = CRLReason.UNSPECIFIED, expiry_time: Optional[datetime] = None):
         """
-        Aggiunge un certificato alla lista di revoca.
-
-        Questo metodo:
-        1. Aggiunge alla lista completa (per Full CRL)
-        2. Aggiunge alla lista delta (per prossimo Delta CRL)
-        3. Salva expiry_date per cleanup automatico
-
+        Add certificate to revocation list (ETSI-compliant).
+        
         Args:
-            certificate: Il certificato X.509 da revocare
-            reason: Il motivo della revoca (ReasonFlags)
+            certificate_oer: Certificate in ASN.1 OER format (bytes)
+            reason: Revocation reason (CRLReason enum)
+            expiry_time: Certificate expiry time (optional, for cleanup)
         """
-        serial_number = certificate.serial_number
-        ski = get_certificate_ski(certificate)
-        cert_id = get_certificate_identifier(certificate)
-        expiry_date = get_certificate_expiry_time(certificate)
-
+        hashed_id8 = compute_hashed_id8(certificate_oer)
+        hashed_id8_hex = hashed_id8.hex()
         revocation_date = datetime.now(timezone.utc)
+        
+        if expiry_time is None:
+            expiry_time = datetime.now(timezone.utc) + timedelta(days=365)
 
-        self.logger.info(f"Aggiungendo certificato revocato:")
-        self.logger.info(f"  Identificatore: {cert_id}")
-        self.logger.info(f"  SKI: {ski[:16]}...")
-        self.logger.info(f"  Serial: {serial_number}")
-        self.logger.info(f"  Motivo: {reason}")
-        self.logger.info(f"  Data scadenza: {expiry_date}")
+        self.logger.info(f"Adding revoked certificate:")
+        self.logger.info(f"  HashedId8: {hashed_id8_hex[:16]}...")
+        self.logger.info(f"  Reason: {reason.name}")
+        self.logger.info(f"  Expiry: {expiry_time}")
 
-        # Controlla se già revocato (usa SKI per confronto, con backward compatibility)
         for entry in self.revoked_certificates:
-            # Prova prima con SKI (nuovo), poi con serial_number (vecchio)
-            if entry.get("ski") == ski or entry.get("serial_number") == serial_number:
-                self.logger.info(f"Certificato già presente nella lista revocati")
+            if entry.get("hashed_id8") == hashed_id8_hex:
+                self.logger.info(f"Certificate already in revocation list")
                 return
 
-        # Log revocation
         self.log_operation(
             "REVOKE_CERTIFICATE",
             {
-                "certificate_id": cert_id,
-                "serial_number": str(serial_number),
-                "reason": str(reason),
-                "expiry_date": expiry_date.isoformat(),
+                "hashed_id8": hashed_id8_hex,
+                "reason": reason.name,
+                "expiry_time": expiry_time.isoformat(),
             },
         )
 
         revoked_entry = {
-            "serial_number": serial_number,  # Necessario per la CRL X.509
-            "ski": ski,  # Per identificazione univoca
-            "cert_id": cert_id,  # Human-readable
+            "hashed_id8": hashed_id8_hex,
             "revocation_date": revocation_date,
-            "expiry_date": expiry_date,
+            "expiry_date": expiry_time,
             "reason": reason,
         }
 
-        # Aggiunge a entrambe le liste
         self.revoked_certificates.append(revoked_entry)
         self.delta_revocations.append(revoked_entry)
 
-        self.logger.info(
-            f"Certificato aggiunto. Totale revocati: {len(self.revoked_certificates)}"
-        )
-        self.logger.info(f"Revoche delta pending: {len(self.delta_revocations)}")
+        self.logger.info(f"Certificate added. Total revoked: {len(self.revoked_certificates)}")
+        self.logger.info(f"Delta pending: {len(self.delta_revocations)}")
 
-    def is_certificate_revoked(self, serial_number):
+    def revoke_by_hashed_id(self, hashed_id8: bytes, reason: CRLReason = CRLReason.UNSPECIFIED, expiry_time: Optional[datetime] = None):
         """
-        Verifica se un certificato è stato revocato.
+        Revoke certificate using HashedId8 directly.
         
         Args:
-            serial_number: Serial number del certificato da verificare (int)
+            hashed_id8: Certificate HashedId8 (8 bytes)
+            reason: Revocation reason
+            expiry_time: Certificate expiry time (optional)
+        """
+        if len(hashed_id8) != 8:
+            raise ValueError(f"HashedId8 must be 8 bytes, got {len(hashed_id8)}")
+        
+        hashed_id8_hex = hashed_id8.hex()
+        revocation_date = datetime.now(timezone.utc)
+        
+        if expiry_time is None:
+            expiry_time = datetime.now(timezone.utc) + timedelta(days=365)
+
+        self.logger.info(f"Adding revocation by HashedId8: {hashed_id8_hex[:16]}...")
+
+        for entry in self.revoked_certificates:
+            if entry.get("hashed_id8") == hashed_id8_hex:
+                self.logger.info(f"HashedId8 already in revocation list")
+                return
+
+        self.log_operation(
+            "REVOKE_BY_HASHED_ID",
+            {
+                "hashed_id8": hashed_id8_hex,
+                "reason": reason.name,
+            },
+        )
+
+        revoked_entry = {
+            "hashed_id8": hashed_id8_hex,
+            "revocation_date": revocation_date,
+            "expiry_date": expiry_time,
+            "reason": reason,
+        }
+
+        self.revoked_certificates.append(revoked_entry)
+        self.delta_revocations.append(revoked_entry)
+
+        self.logger.info(f"HashedId8 added. Total revoked: {len(self.revoked_certificates)}")
+
+    def is_certificate_revoked(self, certificate_oer: bytes) -> bool:
+        """
+        Check if certificate is revoked.
+        
+        Args:
+            certificate_oer: Certificate in ASN.1 OER format
             
         Returns:
-            bool: True se il certificato è revocato, False altrimenti
+            bool: True if revoked
         """
-        # Converti hex string a int se necessario
-        if isinstance(serial_number, str):
-            serial_number = int(serial_number, 16)
+        hashed_id8 = compute_hashed_id8(certificate_oer)
+        hashed_id8_hex = hashed_id8.hex()
         
-        # Cerca nella lista dei certificati revocati
         for entry in self.revoked_certificates:
-            if entry.get("serial_number") == serial_number:
+            if entry.get("hashed_id8") == hashed_id8_hex:
                 return True
         
         return False
 
-    def revoke_by_serial(self, serial_number, reason=ReasonFlags.unspecified):
-        """
-        Revoca un certificato usando solo il serial number (senza certificato completo).
-        Usato quando il certificato non è disponibile.
-
-        Args:
-            serial_number: Il serial number del certificato (int o hex string)
-            reason: Il motivo della revoca (ReasonFlags o string)
-        """
-        # Converti hex string a int se necessario
-        if isinstance(serial_number, str):
-            serial_number = int(serial_number, 16)
-
-        # Converti string reason a ReasonFlags se necessario
-        if isinstance(reason, str):
-            reason = getattr(ReasonFlags, reason, ReasonFlags.unspecified)
-
-        revocation_date = datetime.now(timezone.utc)
-        # Imposta una data di scadenza di default (1 anno da ora)
-        expiry_date = datetime.now(timezone.utc) + timedelta(days=365)
-
-        self.logger.info(f"Aggiungendo revoca per serial: {serial_number}")
-        self.logger.info(f"  Motivo: {reason}")
-
-        # Controlla se già revocato
-        for entry in self.revoked_certificates:
-            if entry.get("serial_number") == serial_number:
-                self.logger.info(f"Serial già presente nella lista revocati")
-                return
-
-        # Log revocation
-        self.log_operation(
-            "REVOKE_BY_SERIAL",
-            {
-                "serial_number": str(serial_number),
-                "reason": str(reason),
-            },
-        )
-
-        revoked_entry = {
-            "serial_number": serial_number,
-            "ski": None,  # Non disponibile
-            "cert_id": f"SERIAL_{serial_number}",
-            "revocation_date": revocation_date,
-            "expiry_date": expiry_date,
-            "reason": reason,
-        }
-
-        # Aggiunge a entrambe le liste
-        self.revoked_certificates.append(revoked_entry)
-        self.delta_revocations.append(revoked_entry)
-
-        self.logger.info(f"Serial aggiunto. Totale revocati: {len(self.revoked_certificates)}")
-        self.logger.info(f"Revoche delta pending: {len(self.delta_revocations)}")
-
     def publish_full_crl(self, validity_days=7):
         """
-        Genera e pubblica una Full CRL contenente TUTTI i certificati revocati.
-
-        La Full CRL:
-        - Contiene tutte le revoche dalla creazione dell'autorità
-        - Viene pubblicata periodicamente (es. settimanalmente)
-        - Serve come base di riferimento per i Delta CRL
-        - Include un CRL Number per identificazione univoca
-
+        Generate and publish Full CRL in ASN.1 OER format (ETSI TS 102941).
+        
         Args:
-            validity_days: Giorni di validità della CRL
+            validity_days: CRL validity in days
         """
-        self.logger.info(f"=== GENERAZIONE FULL CRL ===")
+        self.logger.info(f"=== GENERATING FULL CRL (ETSI ASN.1 OER) ===")
 
-        # Incrementa CRL number
         self.crl_number += 1
         self.base_crl_number = self.crl_number
         self.last_full_crl_time = datetime.now(timezone.utc)
 
-        # Pulisce certificati scaduti prima di pubblicare
         self._cleanup_expired_certificates()
 
         self.logger.info(f"CRL Number: {self.crl_number}")
-        self.logger.info(f"Certificati revocati: {len(self.revoked_certificates)}")
+        self.logger.info(f"Revoked certificates: {len(self.revoked_certificates)}")
 
-        # Crea CRL builder
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(self.issuer_certificate.subject)
-        builder = builder.last_update(datetime.now(timezone.utc))
-        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(days=validity_days))
+        now = datetime.now(timezone.utc)
+        next_update = now + timedelta(days=validity_days)
 
-        # Aggiunge CRL Number extension (obbligatoria per Full CRL)
-        builder = builder.add_extension(x509.CRLNumber(self.crl_number), critical=False)
+        crl_oer = self._encode_crl_oer(
+            crl_number=self.crl_number,
+            this_update=now,
+            next_update=next_update,
+            entries=self.revoked_certificates,
+            is_delta=False
+        )
 
-        # Aggiunge tutti i certificati revocati
-        for entry in self.revoked_certificates:
-            self.logger.info(
-                f"  Serial: {entry['serial_number']}, "
-                f"Revocato: {entry['revocation_date']}, "
-                f"Scade: {entry['expiry_date']}, "
-                f"Motivo: {entry['reason']}"
-            )
+        PKIFileHandler.save_binary_file(crl_oer, str(self.full_crl_path))
 
-            revoked_cert = (
-                x509.RevokedCertificateBuilder()
-                .serial_number(entry["serial_number"])
-                .revocation_date(entry["revocation_date"])
-                .add_extension(x509.CRLReason(entry["reason"]), critical=False)
-                .build()
-            )
-            builder = builder.add_revoked_certificate(revoked_cert)
+        self.logger.info(f"Full CRL saved: {self.full_crl_path} ({len(crl_oer)} bytes)")
 
-        # Firma la CRL
-        crl = builder.sign(private_key=self.issuer_private_key, algorithm=hashes.SHA256())
-
-        # Salva su file
-        with open(self.full_crl_path, "wb") as f:
-            f.write(crl.public_bytes(serialization.Encoding.PEM))
-
-        self.logger.info(f"Full CRL salvata: {self.full_crl_path}")
-
-        # Salva metadata Full CRL (snapshot completo)
         self.save_full_crl_metadata(validity_days)
-
-        # Reset delta revocations (tutto è ora nella Full CRL)
         self.delta_revocations = []
-
-        # Salva metadata manager generale
         self.save_metadata()
 
-        # Log e backup
         self.log_operation(
             "PUBLISH_FULL_CRL",
             {
                 "crl_number": self.crl_number,
                 "revoked_count": len(self.revoked_certificates),
                 "validity_days": validity_days,
+                "size_bytes": len(crl_oer),
             },
         )
         self.backup_crl("full")
 
-        self.logger.info(f"=== FULL CRL PUBBLICATA ===")
+        self.logger.info(f"=== FULL CRL PUBLISHED ===")
         return self.full_crl_path
 
     def publish_delta_crl(self, validity_hours=24, skip_backup=False):
         """
-        Genera e pubblica una Delta CRL contenente SOLO le nuove revoche.
-
-        La Delta CRL:
-        - Contiene solo certificati revocati dall'ultima Full CRL
-        - È molto più piccola e veloce da distribuire
-        - Include riferimento alla Full CRL base (Base CRL Number)
-        - Viene pubblicata frequentemente (es. ogni ora)
-
+        Generate and publish Delta CRL in ASN.1 OER format (ETSI TS 102941).
+        
         Args:
-            validity_hours: Ore di validità della Delta CRL
-            skip_backup: Se True, salta il backup per migliorare performance (default: False)
+            validity_hours: CRL validity in hours
+            skip_backup: Skip backup for performance
         """
-        self.logger.info(f"=== GENERAZIONE DELTA CRL ===")
+        self.logger.info(f"=== GENERATING DELTA CRL (ETSI ASN.1 OER) ===")
 
-        # Controlla se ci sono nuove revoche
         if not self.delta_revocations:
-            self.logger.info(f"Nessuna nuova revoca, Delta CRL non necessaria")
+            self.logger.info(f"No new revocations, Delta CRL not needed")
             return None
 
-        # Incrementa CRL number
         self.crl_number += 1
 
         self.logger.info(f"CRL Number: {self.crl_number}")
         self.logger.info(f"Base CRL Number: {self.base_crl_number}")
-        self.logger.info(f"Nuove revoche dal Full CRL: {len(self.delta_revocations)}")
+        self.logger.info(f"New revocations: {len(self.delta_revocations)}")
 
-        # Crea CRL builder
-        builder = x509.CertificateRevocationListBuilder()
-        builder = builder.issuer_name(self.issuer_certificate.subject)
-        builder = builder.last_update(datetime.now(timezone.utc))
-        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(hours=validity_hours))
+        now = datetime.now(timezone.utc)
+        next_update = now + timedelta(hours=validity_hours)
 
-        # Aggiunge CRL Number extension
-        builder = builder.add_extension(x509.CRLNumber(self.crl_number), critical=False)
-
-        # Aggiunge Delta CRL Indicator extension (identifica come Delta CRL)
-        # Punta alla Full CRL base
-        builder = builder.add_extension(
-            x509.DeltaCRLIndicator(self.base_crl_number),
-            critical=True,  # DEVE essere critical secondo RFC 5280
+        crl_oer = self._encode_crl_oer(
+            crl_number=self.crl_number,
+            this_update=now,
+            next_update=next_update,
+            entries=self.delta_revocations,
+            is_delta=True,
+            base_crl_number=self.base_crl_number
         )
 
-        # Aggiunge SOLO le nuove revoche
-        for entry in self.delta_revocations:
-            self.logger.info(
-                f"  Serial: {entry['serial_number']}, "
-                f"Revocato: {entry['revocation_date']}, "
-                f"Motivo: {entry['reason']}"
-            )
+        PKIFileHandler.save_binary_file(crl_oer, str(self.delta_crl_path))
 
-            revoked_cert = (
-                x509.RevokedCertificateBuilder()
-                .serial_number(entry["serial_number"])
-                .revocation_date(entry["revocation_date"])
-                .add_extension(x509.CRLReason(entry["reason"]), critical=False)
-                .build()
-            )
-            builder = builder.add_revoked_certificate(revoked_cert)
+        self.logger.info(f"Delta CRL saved: {self.delta_crl_path} ({len(crl_oer)} bytes)")
 
-        # Firma la Delta CRL
-        crl = builder.sign(private_key=self.issuer_private_key, algorithm=hashes.SHA256())
-
-        # Salva su file
-        with open(self.delta_crl_path, "wb") as f:
-            f.write(crl.public_bytes(serialization.Encoding.PEM))
-
-        self.logger.info(f"Delta CRL salvata: {self.delta_crl_path}")
-
-        # Salva metadata Delta CRL (snapshot modifiche)
-        self.save_delta_crl_metadata(validity_hours / 24)  # Converti ore in giorni
-
-        # Salva metadata manager generale
+        self.save_delta_crl_metadata(validity_hours / 24)
         self.save_metadata()
 
-        # Log operation (senza backup costoso)
         self.log_operation(
             "PUBLISH_DELTA_CRL",
             {
@@ -380,30 +314,87 @@ class CRLManager:
                 "base_crl_number": self.base_crl_number,
                 "delta_revocations_count": len(self.delta_revocations),
                 "validity_hours": validity_hours,
+                "size_bytes": len(crl_oer),
             },
         )
         
-        # Backup opzionale (disabilitabile per performance)
         if not skip_backup:
             self.backup_crl("delta")
-        else:
-            self.logger.info(f"Backup saltato (ottimizzazione performance)")
 
-        self.logger.info(f"=== DELTA CRL PUBBLICATA ===")
-        return crl
+        self.logger.info(f"=== DELTA CRL PUBLISHED ===")
+        return crl_oer
+
+    def _encode_crl_oer(self, crl_number: int, this_update: datetime, next_update: datetime, entries: list, is_delta: bool = False, base_crl_number: int = 0) -> bytes:
+        """
+        Encode CRL in ASN.1 OER format according to ETSI TS 102941.
+        
+        Structure:
+            EtsiTs102941Crl ::= SEQUENCE {
+                version         Uint8,
+                thisUpdate      Time32,
+                nextUpdate      Time32,
+                crlNumber       Uint32,
+                entries         SEQUENCE OF CrlEntry,
+                signature       Signature
+            }
+            
+            CrlEntry ::= SEQUENCE {
+                id              HashedId8,
+                revocationDate  Time32,
+                reason          CrlReason
+            }
+        """
+        to_be_signed = bytearray()
+        
+        to_be_signed.append(2)
+        
+        to_be_signed.extend(struct.pack('>I', ETSIAuthorizationTicketEncoder.time32_encode(this_update)))
+        to_be_signed.extend(struct.pack('>I', ETSIAuthorizationTicketEncoder.time32_encode(next_update)))
+        to_be_signed.extend(struct.pack('>I', crl_number))
+        
+        if is_delta:
+            to_be_signed.append(1)
+            to_be_signed.extend(struct.pack('>I', base_crl_number))
+        else:
+            to_be_signed.append(0)
+        
+        to_be_signed.extend(struct.pack('>H', len(entries)))
+        
+        for entry in entries:
+            hashed_id8_hex = entry["hashed_id8"]
+            hashed_id8_bytes = bytes.fromhex(hashed_id8_hex)
+            to_be_signed.extend(hashed_id8_bytes)
+            
+            revocation_time32 = ETSIAuthorizationTicketEncoder.time32_encode(entry["revocation_date"])
+            to_be_signed.extend(struct.pack('>I', revocation_time32))
+            
+            reason = entry["reason"]
+            if isinstance(reason, CRLReason):
+                to_be_signed.append(reason.value)
+            else:
+                to_be_signed.append(CRLReason.UNSPECIFIED.value)
+        
+        signature = self.issuer_private_key.sign(
+            bytes(to_be_signed),
+            ec.ECDSA(hashes.SHA256())
+        )
+        
+        crl_complete = bytearray()
+        crl_complete.extend(to_be_signed)
+        crl_complete.extend(struct.pack('>H', len(signature)))
+        crl_complete.extend(signature)
+        
+        return bytes(crl_complete)
 
     def _cleanup_expired_certificates(self):
-        """Rimuove certificati scaduti dalla lista revocati per ridurre dimensione CRL."""
+        """Remove expired certificates from revocation list."""
         now = datetime.now(timezone.utc)
         old_count = len(self.revoked_certificates)
 
-        # Filtra solo certificati non ancora scaduti
-        # Gestisce sia date naive che aware
         filtered = []
         for entry in self.revoked_certificates:
             expiry_date = entry.get("expiry_date")
             if expiry_date:
-                # Se la data è naive, la rendiamo aware assumendo UTC
                 if expiry_date.tzinfo is None:
                     expiry_date = expiry_date.replace(tzinfo=timezone.utc)
                 if expiry_date > now:
@@ -413,60 +404,32 @@ class CRLManager:
 
         removed = old_count - len(self.revoked_certificates)
         if removed > 0:
-            self.logger.info(f"Pulizia: rimossi {removed} certificati scaduti")
-            self.logger.info(f"Certificati attivi rimasti: {len(self.revoked_certificates)}")
+            self.logger.info(f"Cleanup: removed {removed} expired certificates")
 
     def load_full_crl(self):
-        """
-        Carica la Full CRL dal file.
-
-        Returns:
-            x509.CertificateRevocationList o None se non esiste
-        """
-        if not os.path.exists(self.full_crl_path):
-            self.logger.info(f"Full CRL non trovata")
+        """Load Full CRL from file (ASN.1 OER format)."""
+        if not self.full_crl_path.exists():
+            self.logger.info(f"Full CRL not found")
             return None
 
-        with open(self.full_crl_path, "rb") as f:
-            crl = x509.load_pem_x509_crl(f.read())
-
-        self.logger.info(f"Full CRL caricata:")
-        self.logger.info(f"  Certificati revocati: {len(crl)}")
-        self.logger.info(f"  Ultimo aggiornamento: {crl.last_update_utc}")
-        self.logger.info(f"  Prossimo aggiornamento: {crl.next_update_utc}")
-
-        return crl
+        crl_oer = PKIFileHandler.load_binary_file(str(self.full_crl_path))
+        if crl_oer:
+            self.logger.info(f"Full CRL loaded: {len(crl_oer)} bytes")
+        return crl_oer
 
     def load_delta_crl(self):
-        """
-        Carica la Delta CRL dal file.
-
-        Returns:
-            x509.CertificateRevocationList o None se non esiste
-        """
-        if not os.path.exists(self.delta_crl_path):
-            self.logger.info(f"Delta CRL non trovata")
+        """Load Delta CRL from file (ASN.1 OER format)."""
+        if not self.delta_crl_path.exists():
+            self.logger.info(f"Delta CRL not found")
             return None
 
-        with open(self.delta_crl_path, "rb") as f:
-            crl = x509.load_pem_x509_crl(f.read())
-
-        self.logger.info(f"Delta CRL caricata:")
-        self.logger.info(f"  Nuove revoche: {len(crl)}")
-        self.logger.info(f"  Ultimo aggiornamento: {crl.last_update_utc}")
-        self.logger.info(f"  Prossimo aggiornamento: {crl.next_update_utc}")
-
-        return crl
+        crl_oer = PKIFileHandler.load_binary_file(str(self.delta_crl_path))
+        if crl_oer:
+            self.logger.info(f"Delta CRL loaded: {len(crl_oer)} bytes")
+        return crl_oer
 
     def save_metadata(self):
-        """
-        Salva metadata CRL su file JSON per persistenza.
-
-        Questo permette di:
-        - Ripristinare stato dopo restart
-        - Mantenere CRL Number sequence corretta
-        - Tracciare storico pubblicazioni
-        """
+        """Save CRL metadata to JSON file."""
         metadata = {
             "authority_id": self.authority_id,
             "crl_number": self.crl_number,
@@ -476,24 +439,23 @@ class CRLManager:
             ),
             "revoked_count": len(self.revoked_certificates),
             "delta_pending": len(self.delta_revocations),
+            "format": "ASN.1 OER (ETSI TS 102941)",
         }
 
-        with open(self.metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        self.logger.info(f"Metadata salvati: {self.metadata_path}")
+        try:
+            PKIFileHandler.save_json_file(metadata, str(self.metadata_path))
+        except Exception as e:
+            self.logger.error(f"Error saving metadata: {e}")
 
     def load_metadata(self):
-        """
-        Carica metadata CRL da file JSON.
-        """
-        if not os.path.exists(self.metadata_path):
-            self.logger.info(f"Nessun metadata esistente, inizializzo nuovo")
+        """Load CRL metadata from JSON file."""
+        if not self.metadata_path.exists():
             return
 
         try:
-            with open(self.metadata_path, "r") as f:
-                metadata = json.load(f)
+            metadata = PKIFileHandler.load_json_file(str(self.metadata_path))
+            if not metadata:
+                return
 
             self.crl_number = metadata.get("crl_number", 0)
             self.base_crl_number = metadata.get("base_crl_number", 0)
@@ -502,21 +464,14 @@ class CRLManager:
             if last_full:
                 self.last_full_crl_time = datetime.fromisoformat(last_full)
 
-            self.logger.info(f"Metadata caricati con successo")
-            self.logger.info(f"  CRL Number: {self.crl_number}")
-            self.logger.info(f"  Base CRL Number: {self.base_crl_number}")
+            self.logger.info(f"Metadata loaded successfully")
 
         except Exception as e:
-            self.logger.info(f"Errore caricamento metadata: {e}")
+            self.logger.error(f"Error loading metadata: {e}")
 
     def get_statistics(self):
-        """
-        Restituisce statistiche sullo stato del CRL Manager.
-
-        Returns:
-            dict con statistiche
-        """
-        stats = {
+        """Get CRL Manager statistics."""
+        return {
             "authority_id": self.authority_id,
             "crl_number": self.crl_number,
             "base_crl_number": self.base_crl_number,
@@ -525,121 +480,96 @@ class CRLManager:
             "last_full_crl": (
                 self.last_full_crl_time.isoformat() if self.last_full_crl_time else None
             ),
+            "format": "ASN.1 OER",
         }
 
-        return stats
-
     def save_full_crl_metadata(self, validity_days=7):
-        """
-        Salva metadata completi della Full CRL con lista certificati revocati.
-
-        Questo snapshot JSON serve per:
-        - Backup human-readable della Full CRL
-        - API REST per download metadata
-        - Ricostruzione stato dopo crash
-        - Audit trail completo delle revoche
-        """
+        """Save Full CRL metadata with revocation list."""
         metadata = {
-            "version": "1.0",
+            "version": "2.0-ETSI",
+            "format": "ASN.1 OER",
             "crl_number": self.crl_number,
             "authority_id": self.authority_id,
-            "issuer": self.issuer_certificate.subject.rfc4514_string(),
+            "issuer_hashed_id8": self.issuer_hashed_id8.hex(),
             "issue_date": datetime.now(timezone.utc).isoformat(),
             "next_update": (datetime.now(timezone.utc) + timedelta(days=validity_days)).isoformat(),
             "revoked_certificates": [],
         }
 
-        # Converti ReasonFlags in stringa per JSON
         for entry in self.revoked_certificates:
             metadata["revoked_certificates"].append(
                 {
-                    "serial_number": entry["serial_number"],
+                    "hashed_id8": entry["hashed_id8"],
                     "revocation_date": entry["revocation_date"].isoformat(),
                     "reason": (
                         entry["reason"].name
-                        if isinstance(entry["reason"], ReasonFlags)
+                        if isinstance(entry["reason"], CRLReason)
                         else str(entry["reason"])
                     ),
                     "expiry_date": entry["expiry_date"].isoformat(),
                 }
             )
 
-        # Salva su file
-        full_metadata_path = self.full_crl_path.replace(".pem", "_metadata.json")
-        with open(full_metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        full_metadata_path = str(self.full_crl_path).replace(".oer", "_metadata.json")
+        try:
+            PKIFileHandler.save_json_file(metadata, full_metadata_path)
+        except Exception as e:
+            self.logger.error(f"Error saving full CRL metadata: {e}")
 
-        self.logger.info(f"Metadata Full CRL salvati: {full_metadata_path}")
-
-    def save_delta_crl_metadata(self, validity_days=7):
-        """
-        Salva metadata completi della Delta CRL con nuove revoche.
-
-        Questo snapshot JSON serve per:
-        - ITS-S sa esattamente cosa è cambiato
-        - API REST per download incrementale
-        - Audit delle modifiche recenti
-        """
+    def save_delta_crl_metadata(self, validity_days=1):
+        """Save Delta CRL metadata with new revocations."""
         metadata = {
-            "version": "1.0",
+            "version": "2.0-ETSI",
+            "format": "ASN.1 OER",
             "crl_number": self.crl_number,
             "base_crl_number": self.base_crl_number,
             "authority_id": self.authority_id,
-            "issuer": self.issuer_certificate.subject.rfc4514_string(),
+            "issuer_hashed_id8": self.issuer_hashed_id8.hex(),
             "issue_date": datetime.now(timezone.utc).isoformat(),
             "next_update": (datetime.now(timezone.utc) + timedelta(days=validity_days)).isoformat(),
             "new_revocations": [],
         }
 
-        # Converti ReasonFlags in stringa per JSON
         for entry in self.delta_revocations:
             metadata["new_revocations"].append(
                 {
-                    "serial_number": entry["serial_number"],
+                    "hashed_id8": entry["hashed_id8"],
                     "revocation_date": entry["revocation_date"].isoformat(),
                     "reason": (
                         entry["reason"].name
-                        if isinstance(entry["reason"], ReasonFlags)
+                        if isinstance(entry["reason"], CRLReason)
                         else str(entry["reason"])
                     ),
                     "expiry_date": entry["expiry_date"].isoformat(),
                 }
             )
 
-        # Salva su file
-        delta_metadata_path = self.delta_crl_path.replace(".pem", "_metadata.json")
-        with open(delta_metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        self.logger.info(f"Metadata Delta CRL salvati: {delta_metadata_path}")
+        delta_metadata_path = str(self.delta_crl_path).replace(".oer", "_metadata.json")
+        try:
+            PKIFileHandler.save_json_file(metadata, delta_metadata_path)
+        except Exception as e:
+            self.logger.error(f"Error saving delta CRL metadata: {e}")
 
     def load_full_crl_metadata(self):
-        """
-        Carica metadata Full CRL e ricostruisce lista certificati revocati.
+        """Load Full CRL metadata and rebuild revocation list."""
+        full_metadata_path = str(self.full_crl_path).replace(".oer", "_metadata.json")
 
-        Questo permette di ripristinare lo stato completo dopo un riavvio,
-        evitando la perdita della lista revoked_certificates.
-        """
-        full_metadata_path = self.full_crl_path.replace(".pem", "_metadata.json")
-
-        if not os.path.exists(full_metadata_path):
-            self.logger.info(f"Nessun metadata Full CRL esistente")
+        if not Path(full_metadata_path).exists():
             return
 
         try:
-            with open(full_metadata_path, "r") as f:
-                metadata = json.load(f)
+            metadata = PKIFileHandler.load_json_file(full_metadata_path)
+            if not metadata:
+                return
 
-            # Ricostruisci lista certificati revocati
             self.revoked_certificates = []
             for entry in metadata.get("revoked_certificates", []):
-                # Converti stringa reason in ReasonFlags
                 reason_str = entry["reason"]
-                reason = getattr(ReasonFlags, reason_str, ReasonFlags.unspecified)
+                reason = getattr(CRLReason, reason_str, CRLReason.UNSPECIFIED)
 
                 self.revoked_certificates.append(
                     {
-                        "serial_number": entry["serial_number"],
+                        "hashed_id8": entry["hashed_id8"],
                         "revocation_date": datetime.fromisoformat(entry["revocation_date"]),
                         "reason": reason,
                         "expiry_date": datetime.fromisoformat(entry["expiry_date"]),
@@ -647,64 +577,47 @@ class CRLManager:
                 )
 
             self.logger.info(
-                f"Full CRL metadata caricati: {len(self.revoked_certificates)} certificati revocati"
+                f"Full CRL metadata loaded: {len(self.revoked_certificates)} certificates"
             )
 
         except Exception as e:
-            self.logger.info(f"Errore caricamento Full CRL metadata: {e}")
+            self.logger.error(f"Error loading Full CRL metadata: {e}")
 
     def log_operation(self, operation, details):
-        """
-        Log delle operazioni CRL per audit trail ETSI-compliant.
-
-        Args:
-            operation: Tipo di operazione (es. "PUBLISH_FULL_CRL", "REVOKE_CERTIFICATE")
-            details: Dettagli dell'operazione
-        """
+        """Log CRL operations for audit trail."""
         timestamp = datetime.now(timezone.utc).isoformat()
-        log_file = os.path.join(self.log_dir, f"{self.authority_id}_crl_audit.log")
+        log_file = self.log_dir / f"{self.authority_id}_crl_audit.log"
 
         log_entry = {
             "timestamp": timestamp,
             "authority_id": self.authority_id,
             "operation": operation,
             "crl_number": self.crl_number,
+            "format": "ASN.1 OER",
             "details": details,
         }
 
         try:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(log_entry) + "\n")
-            self.logger.info(f"Operazione loggata: {operation}")
+            PKIFileHandler.append_to_log_file(json.dumps(log_entry), str(log_file))
         except Exception as e:
-            self.logger.info(f"Errore logging: {e}")
+            self.logger.error(f"Error logging: {e}")
 
     def backup_crl(self, crl_type="full"):
-        """
-        Crea backup delle CRL per disaster recovery.
-
-        Args:
-            crl_type: Tipo di CRL ("full" o "delta")
-        """
+        """Create CRL backup for disaster recovery."""
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         if crl_type == "full":
             source = self.full_crl_path
-            backup_name = f"full_crl_backup_{timestamp}.pem"
+            backup_name = f"full_crl_backup_{timestamp}.oer"
         else:
             source = self.delta_crl_path
-            backup_name = f"delta_crl_backup_{timestamp}.pem"
+            backup_name = f"delta_crl_backup_{timestamp}.oer"
 
-        backup_path = os.path.join(self.backup_dir, backup_name)
+        backup_path = self.backup_dir / backup_name
 
         try:
-            if os.path.exists(source):
-                import shutil
-
-                shutil.copy2(source, backup_path)
-                self.logger.info(f"Backup creato: {backup_path}")
-
-                # Log backup operation
-                self.log_operation("BACKUP_CRL", {"crl_type": crl_type, "backup_path": backup_path})
+            if source.exists():
+                PKIFileHandler.copy_file(str(source), str(backup_path))
+                self.logger.info(f"Backup created: {backup_path}")
         except Exception as e:
-            self.logger.info(f"Errore creazione backup: {e}")
+            self.logger.error(f"Error creating backup: {e}")

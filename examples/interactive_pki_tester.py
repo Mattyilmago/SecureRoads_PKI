@@ -53,7 +53,7 @@ from utils.pki_paths import PKIPathManager
 
 # Import ETSI components
 from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, SharedAtRequest, compute_hashed_id8, ResponseCode
+from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, SharedAtRequest, ResponseCode
 
 # Variabile globale per processi avviati
 _started_processes = []
@@ -247,7 +247,7 @@ def start_pki_entities():
                     active_count += 1
                 else:
                     print(f"    {entity_id} (:{port}): ❌")
-            except:
+            except (requests.RequestException, Exception):
                 print(f"    {entity_id} (:{port}): ❌")
         else:
             print(f"    {entity_id}: ❌ (porta non trovata)")
@@ -296,7 +296,7 @@ def stop_pki_entities():
                 import signal
                 try:
                     process.send_signal(signal.CTRL_BREAK_EVENT)
-                except:
+                except (AttributeError, OSError):
                     process.terminate()
             else:
                 process.terminate()
@@ -320,12 +320,12 @@ class PKITester:
     def __init__(self):
         self.test_results = []
         self.enrolled_vehicles = {}  # {vehicle_id: {certificate_data}}
-        # Contatori per certificati emessi durante i test
-        self.total_ec_issued = 0
-        self.total_at_issued = 0
-        # Contatori per certificati revocati durante i test
-        self.revoked_ec_count = 0
-        self.revoked_at_count = 0
+        
+        # Statistiche per singola EA/AA
+        self.entity_stats = {
+            "EA": {},  # {ea_id: {"ec_issued": 0, "ec_valid": 0, "ec_revoked": 0}}
+            "AA": {}   # {aa_id: {"at_issued": 0, "at_valid": 0, "at_revoked": 0}}
+        }
         
         # Lista delle entità disponibili (popolata da scan_entities_at_startup)
         self.available_entities = {"EA": [], "AA": []}
@@ -346,6 +346,137 @@ class PKITester:
         self._aa_certificate = None
         self._ea_public_key = None
         self._aa_public_key = None
+    
+    def _init_entity_stats(self, entity_type, entity_id):
+        """Inizializza le statistiche per un'entità se non esistono"""
+        if entity_id not in self.entity_stats[entity_type]:
+            if entity_type == "EA":
+                self.entity_stats[entity_type][entity_id] = {
+                    "ec_issued": 0,
+                    "ec_valid": 0,
+                    "ec_revoked": 0
+                }
+            else:  # AA
+                self.entity_stats[entity_type][entity_id] = {
+                    "at_issued": 0,
+                    "at_valid": 0,
+                    "at_revoked": 0
+                }
+    
+    def _record_ec_issued(self, ea_id, is_valid=True):
+        """Registra un EC emesso da una specifica EA"""
+        self._init_entity_stats("EA", ea_id)
+        self.entity_stats["EA"][ea_id]["ec_issued"] += 1
+        if is_valid:
+            self.entity_stats["EA"][ea_id]["ec_valid"] += 1
+    
+    def _record_at_issued(self, aa_id, count=1, is_valid=True):
+        """Registra AT emessi da una specifica AA"""
+        self._init_entity_stats("AA", aa_id)
+        self.entity_stats["AA"][aa_id]["at_issued"] += count
+        if is_valid:
+            self.entity_stats["AA"][aa_id]["at_valid"] += count
+    
+    def _record_ec_revoked(self, ea_id):
+        """Registra un EC revocato"""
+        self._init_entity_stats("EA", ea_id)
+        self.entity_stats["EA"][ea_id]["ec_revoked"] += 1
+        if self.entity_stats["EA"][ea_id]["ec_valid"] > 0:
+            self.entity_stats["EA"][ea_id]["ec_valid"] -= 1
+    
+    def _record_at_revoked(self, aa_id):
+        """Registra un AT revocato"""
+        self._init_entity_stats("AA", aa_id)
+        self.entity_stats["AA"][aa_id]["at_revoked"] += 1
+        if self.entity_stats["AA"][aa_id]["at_valid"] > 0:
+            self.entity_stats["AA"][aa_id]["at_valid"] -= 1
+    
+    def _extract_entity_id_from_url(self, url):
+        """Estrae l'entity ID dall'URL usando prima la cache, poi chiamando l'API"""
+        # Prima prova a cercare nella cache
+        for entity_type in ["EA", "AA"]:
+            for entity in self.available_entities.get(entity_type, []):
+                if entity['url'] == url:
+                    return entity['id']
+        
+        # Fallback: chiama l'API
+        try:
+            response = requests.get(url, timeout=2, **get_request_kwargs())
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('entity_id', 'UNKNOWN')
+        except (requests.RequestException, Exception):
+            pass
+        
+        # Ultimo fallback: estrae dalla porta
+        port = url.split(':')[-1].replace('/', '')
+        return f"ENTITY_{port}"
+    
+    def _sync_entity_statistics(self):
+        """Sincronizza le statistiche locali con i dati reali delle entità tramite API /stats"""
+        # Sincronizza EA
+        for ea in self.available_entities.get("EA", []):
+            try:
+                stats_response = requests.get(f"{ea['url']}/api/stats", timeout=2)
+                if stats_response.status_code == 200:
+                    stats_data = stats_response.json()
+                    self._init_entity_stats("EA", ea['id'])
+                    # Aggiorna le statistiche reali dall'EA
+                    self.entity_stats["EA"][ea['id']]["ec_issued"] = stats_data.get("certificates_issued", 0)
+                    self.entity_stats["EA"][ea['id']]["ec_valid"] = stats_data.get("active_certificates", 0)
+                    self.entity_stats["EA"][ea['id']]["ec_revoked"] = stats_data.get("revoked_certificates", 0)
+            except Exception:
+                pass  # Mantieni i valori attuali se la sincronizzazione fallisce
+        
+        # Sincronizza AA
+        for aa in self.available_entities.get("AA", []):
+            try:
+                stats_response = requests.get(f"{aa['url']}/api/stats", timeout=2)
+                if stats_response.status_code == 200:
+                    stats_data = stats_response.json()
+                    self._init_entity_stats("AA", aa['id'])
+                    # Aggiorna le statistiche reali dall'AA
+                    self.entity_stats["AA"][aa['id']]["at_issued"] = stats_data.get("certificates_issued", 0)
+                    self.entity_stats["AA"][aa['id']]["at_valid"] = stats_data.get("active_certificates", 0)
+                    self.entity_stats["AA"][aa['id']]["at_revoked"] = stats_data.get("revoked_certificates", 0)
+            except Exception:
+                pass  # Mantieni i valori attuali se la sincronizzazione fallisce
+    
+    def _print_entity_statistics(self):
+        """Stampa statistiche dettagliate per ogni entità EA e AA usando i contatori locali"""
+        ea_stats = self.entity_stats.get("EA", {})
+        aa_stats = self.entity_stats.get("AA", {})
+        
+        if not ea_stats and not aa_stats:
+            return  # Nessuna statistica da mostrare
+        
+        print("\n" + "="*60)
+        print("    📊 STATISTICHE PER ENTITÀ")
+        print("="*60)
+        
+        # Mostra statistiche EA
+        if ea_stats:
+            print("\n    📝 Enrollment Authorities (EA):")
+            print("    " + "-"*56)
+            for ea_id in sorted(ea_stats.keys()):
+                stats = ea_stats[ea_id]
+                print(f"      {ea_id}:")
+                print(f"        • EC emessi: {stats['ec_issued']}")
+                print(f"        • EC validi: {stats['ec_valid']}")
+                print(f"        • EC revocati: {stats['ec_revoked']}")
+        
+        # Mostra statistiche AA
+        if aa_stats:
+            print("\n    🎫 Authorization Authorities (AA):")
+            print("    " + "-"*56)
+            for aa_id in sorted(aa_stats.keys()):
+                stats = aa_stats[aa_id]
+                print(f"      {aa_id}:")
+                print(f"        • AT emessi: {stats['at_issued']}")
+                print(f"        • AT validi: {stats['at_valid']}")
+                print(f"        • AT revocati: {stats['at_revoked']}")
+        
+        print("="*60 + "\n")
         
     def _find_entity_url(self, entity_type, port_start, port_end):
         """Trova dinamicamente l'URL di un'entità in esecuzione"""
@@ -369,10 +500,10 @@ class PKITester:
                             if data.get('entity_type') == entity_type:
                                 self.print_info(f"Trovata {entity_type} su porta {port}")
                                 return url
-                    except:
+                    except (requests.RequestException, Exception):
                         pass
                         
-            except:
+            except (requests.RequestException, ValueError, Exception):
                 pass
         
         # Fallback alla porta di default se nessuna trovata
@@ -414,10 +545,10 @@ class PKITester:
                                     'url': url,
                                     'port': port
                                 }
-                    except:
+                    except (requests.RequestException, Exception):
                         pass
                         
-            except:
+            except (requests.RequestException, ValueError, Exception):
                 pass
             
             return None
@@ -447,14 +578,45 @@ class PKITester:
         if found_aa:
             self.aa_url = found_aa[0]['url']
         
+        # Inizializza statistiche per ogni entità trovata leggendo i dati dalle API /stats
+        for ea in found_ea:
+            try:
+                stats_response = requests.get(f"{ea['url']}/api/stats", timeout=2)
+                if stats_response.status_code == 200:
+                    stats_data = stats_response.json()
+                    self._init_entity_stats("EA", ea['id'])
+                    # Carica le statistiche attuali dall'EA
+                    self.entity_stats["EA"][ea['id']]["ec_issued"] = stats_data.get("certificates_issued", 0)
+                    self.entity_stats["EA"][ea['id']]["ec_valid"] = stats_data.get("active_certificates", 0)
+                    self.entity_stats["EA"][ea['id']]["ec_revoked"] = stats_data.get("revoked_certificates", 0)
+            except Exception as e:
+                # Se fallisce, inizializza con valori 0
+                self._init_entity_stats("EA", ea['id'])
+        
+        for aa in found_aa:
+            try:
+                stats_response = requests.get(f"{aa['url']}/api/stats", timeout=2)
+                if stats_response.status_code == 200:
+                    stats_data = stats_response.json()
+                    self._init_entity_stats("AA", aa['id'])
+                    # Carica le statistiche attuali dall'AA
+                    self.entity_stats["AA"][aa['id']]["at_issued"] = stats_data.get("certificates_issued", 0)
+                    self.entity_stats["AA"][aa['id']]["at_valid"] = stats_data.get("active_certificates", 0)
+                    self.entity_stats["AA"][aa['id']]["at_revoked"] = stats_data.get("revoked_certificates", 0)
+            except Exception as e:
+                # Se fallisce, inizializza con valori 0
+                self._init_entity_stats("AA", aa['id'])
+        
         # Log dei risultati
         total_found = len(found_ea) + len(found_aa)
         if total_found > 0:
             self.print_success(f"Trovate {total_found} entità: {len(found_ea)} EA, {len(found_aa)} AA")
             for ea in found_ea:
-                self.print_info(f"  EA: {ea['id']} (porta {ea['port']})")
+                stats = self.entity_stats["EA"].get(ea['id'], {})
+                self.print_info(f"  EA: {ea['id']} (porta {ea['port']}) - EC: {stats.get('ec_issued', 0)} emessi, {stats.get('ec_valid', 0)} validi, {stats.get('ec_revoked', 0)} revocati")
             for aa in found_aa:
-                self.print_info(f"  AA: {aa['id']} (porta {aa['port']})")
+                stats = self.entity_stats["AA"].get(aa['id'], {})
+                self.print_info(f"  AA: {aa['id']} (porta {aa['port']}) - AT: {stats.get('at_issued', 0)} emessi, {stats.get('at_valid', 0)} validi, {stats.get('at_revoked', 0)} revocati")
         else:
             self.print_info("Nessuna entità PKI trovata nelle porte 5000-5039")
     
@@ -986,7 +1148,7 @@ class PKITester:
                         
                         # Salva certificato su disco
                         paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                        paths.certificates_dir.mkdir(parents=True, exist_ok=True)
+                        paths.create_all()  # Crea TUTTE le directory ITS-S
                         ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
                         with open(ec_path, 'w') as f:
                             f.write(cert_pem)
@@ -995,7 +1157,7 @@ class PKITester:
                         
                         # Salva anche chiave privata
                         key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
-                        paths.private_keys_dir.mkdir(parents=True, exist_ok=True)
+                        # Directory già create con create_all()
                         private_key_pem = private_key.private_bytes(
                             encoding=serialization.Encoding.PEM,
                             format=serialization.PrivateFormat.PKCS8,
@@ -1027,15 +1189,18 @@ class PKITester:
                         "vehicle_id": vehicle_id
                     }
                 
-                # Incrementa contatore EC emessi
-                self.total_ec_issued += 1
+                # Registra EC emesso per questa EA
+                ea_id = self._extract_entity_id_from_url(ea_url)
+                self._record_ec_issued(ea_id, is_valid=True)
                 
                 # Salva info veicolo
                 vehicle_info = {
                     "enrollment_response": result,
                     "private_key": private_key,
                     "public_key_pem": public_key_pem,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "ea_url": ea_url,  # Salva quale EA ha emesso il certificato
+                    "ea_id": ea_id
                 }
                 
                 # Aggiungi certificato PEM se decodificato
@@ -1169,15 +1334,18 @@ class PKITester:
                     self.print_info(f"  Throughput: {enrolled_count/elapsed:.2f} veicoli/s")
                     
                     # Salva veicoli enrollati
+                    ea_id = self._extract_entity_id_from_url(ea_url)
                     for vehicle_data in result.get("enrolled_vehicles", []):
                         vehicle_id = vehicle_data["vehicle_id"]
                         self.enrolled_vehicles[vehicle_id] = {
                             "enrollment_response": vehicle_data,
                             "timestamp": datetime.now().isoformat(),
-                            "batch_enrolled": True
+                            "batch_enrolled": True,
+                            "ea_url": ea_url,
+                            "ea_id": ea_id
                         }
-                    
-                    self.total_ec_issued += enrolled_count
+                        # Registra ogni EC emesso
+                        self._record_ec_issued(ea_id, is_valid=True)
                     
                     self.save_test_result(
                         "batch_vehicle_enrollment",
@@ -1235,23 +1403,49 @@ class PKITester:
                             cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
                             cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
                             
-                            self.print_success(f"    ✓ {vehicle_id} enrollato (ETSI)")
+                            # Salva certificato su disco nella directory del veicolo
+                            try:
+                                paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                                paths.create_all()  # Crea TUTTE le directory ITS-S
+                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
+                                with open(ec_path, 'w') as f:
+                                    f.write(cert_pem)
+                                
+                                # Salva anche chiave privata
+                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
+                                # Directory già create con create_all()
+                                private_key_pem = private_key.private_bytes(
+                                    encoding=serialization.Encoding.PEM,
+                                    format=serialization.PrivateFormat.PKCS8,
+                                    encryption_algorithm=serialization.NoEncryption()
+                                ).decode('utf-8')
+                                with open(key_path, 'w') as f:
+                                    f.write(private_key_pem)
+                                
+                                self.print_success(f"    ✓ {vehicle_id} enrollato e salvato (ETSI)")
+                            except Exception as save_error:
+                                self.print_error(f"    ⚠️ {vehicle_id} enrollato ma errore salvataggio: {save_error}")
                             
-                            # Salva dati veicolo
+                            # Salva dati veicolo in memoria
                             vehicle_info = {
                                 "enrollment_response": {
                                     "success": True,
                                     "certificate": cert_pem,
+                                    "certificate_path": str(ec_path) if 'ec_path' in locals() else None,
+                                    "private_key_path": str(key_path) if 'key_path' in locals() else None,
                                     "serial_number": cert_x509.serial_number
                                 },
                                 "timestamp": datetime.now().isoformat(),
-                                "batch_enrolled": False,
+                                "batch_enrolled": True,
                                 "etsi_encoded": True
                             }
                             
                             self.enrolled_vehicles[vehicle_id] = vehicle_info
                             enrolled_count += 1
-                            self.total_ec_issued += 1
+                            
+                            # Registra EC emesso per questa EA
+                            ea_id = self._extract_entity_id_from_url(ea_url)
+                            self._record_ec_issued(ea_id, is_valid=True)
                         else:
                             self.print_error(f"    ❌ {vehicle_id} enrollment fallito: {inner_response.responseCode}")
                     except Exception as e:
@@ -1298,6 +1492,32 @@ class PKITester:
         if not self.enrolled_vehicles:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
             return False
+        
+        # Controlla se l'EA usata per enrollment è ancora disponibile
+        vehicle_id = list(self.enrolled_vehicles.keys())[0]
+        vehicle_data = self.enrolled_vehicles[vehicle_id]
+        
+        if "ea_id" in vehicle_data:
+            ea_id = vehicle_data["ea_id"]
+            ea_still_available = any(
+                ea['id'] == ea_id for ea in self.available_entities.get("EA", [])
+            )
+            if not ea_still_available:
+                self.print_warning(
+                    f"⚠️  ATTENZIONE: Il veicolo è stato enrollato con {ea_id}, "
+                    f"ma questa EA non è più disponibile!"
+                )
+                self.print_warning(
+                    f"    L'AA potrebbe non riconoscere l'Enrollment Certificate."
+                )
+                self.print_info(
+                    f"    Suggerimento: Usa opzione 'R' per ri-scansionare le entità "
+                    f"o fai un nuovo enrollment con un'EA attualmente attiva."
+                )
+                proceed = input(f"\n    Vuoi procedere comunque? (s/n): ").strip().lower()
+                if proceed != 's':
+                    self.print_info("Operazione annullata")
+                    return False
         
         # Inizia timer DOPO le selezioni dell'utente
         start_time = time.time()
@@ -1417,8 +1637,9 @@ class PKITester:
                         "hmac_key": hmac_key.hex() if hmac_key else None
                     }
                 
-                # Incrementa contatore AT emessi
-                self.total_at_issued += 1
+                # Registra AT emesso per questa AA
+                aa_id = self._extract_entity_id_from_url(aa_url)
+                self._record_at_issued(aa_id, count=1, is_valid=True)
                 
                 # Salva AT nel veicolo
                 vehicle_data["authorization_ticket"] = result
@@ -1550,20 +1771,49 @@ class PKITester:
                             cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
                             cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
                             
+                            # Salva certificato e chiave su disco
+                            try:
+                                paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                                paths.create_all()  # Crea TUTTE le directory ITS-S
+                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
+                                with open(ec_path, 'w') as f:
+                                    f.write(cert_pem)
+                                
+                                # Salva chiave privata
+                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
+                                # Directory già create con create_all()
+                                private_key_pem = private_key.private_bytes(
+                                    encoding=serialization.Encoding.PEM,
+                                    format=serialization.PrivateFormat.PKCS8,
+                                    encryption_algorithm=serialization.NoEncryption()
+                                ).decode('utf-8')
+                                with open(key_path, 'w') as f:
+                                    f.write(private_key_pem)
+                            except Exception as save_error:
+                                print(f"⚠️ (Save error: {str(save_error)[:20]})", end=" ")
+                            
+                            ea_id = self._extract_entity_id_from_url(ea_url)
                             self.enrolled_vehicles[vehicle_id] = {
                                 "enrollment_response": {
                                     "success": True,
                                     "certificate": cert_pem,
+                                    "certificate_path": str(ec_path) if 'ec_path' in locals() else None,
+                                    "private_key_path": str(key_path) if 'key_path' in locals() else None,
                                     "serial_number": cert_x509.serial_number
                                 },
                                 "timestamp": datetime.now().isoformat(),
-                                "etsi_encoded": True
+                                "etsi_encoded": True,
+                                "ea_url": ea_url,
+                                "ea_id": ea_id
                             }
                             
                             print("✅")
                             success_count += 1
                             success_times.append(req_end - req_start)
-                            self.total_ec_issued += 1
+                            
+                            # Registra EC emesso per questa EA
+                            ea_id = self._extract_entity_id_from_url(ea_url)
+                            self._record_ec_issued(ea_id, is_valid=True)
                         else:
                             print(f"❌ (Enrollment failed: {inner_response.responseCode})")
                             failed_count += 1
@@ -1651,6 +1901,45 @@ class PKITester:
             # Verifica che entrambi i veicoli abbiano i certificati
             sender_has_cert = "enrollment_response" in self.enrolled_vehicles[vehicle_ids[0]]
             receiver_has_cert = "enrollment_response" in self.enrolled_vehicles[vehicle_ids[1]]
+            
+            # Salva messaggio in outbox del sender e inbox del receiver
+            try:
+                # Ottieni paths dei veicoli
+                sender_paths = PKIPathManager.get_entity_paths("ITS", vehicle_ids[0])
+                receiver_paths = PKIPathManager.get_entity_paths("ITS", vehicle_ids[1])
+                
+                # Assicurati che le directory esistano
+                sender_paths.create_all()
+                receiver_paths.create_all()
+                
+                # Crea il messaggio da salvare
+                message_text = (
+                    f"=== V2V MESSAGE (CAM) ===\n"
+                    f"Timestamp: {datetime.now().isoformat()}\n"
+                    f"From: {vehicle_ids[0]}\n"
+                    f"To: {vehicle_ids[1]}\n"
+                    f"Message Type: CAM\n"
+                    f"Position: {cam_data['latitude']}, {cam_data['longitude']}\n"
+                    f"Speed: {cam_data['speed']} km/h\n"
+                    f"Heading: {cam_data['heading']}°\n"
+                    f"Sender Certificate: {'Valid ✅' if sender_has_cert else 'Missing ❌'}\n"
+                    f"========================\n\n"
+                )
+                
+                # Salva in outbox del sender
+                outbox_file = sender_paths.outbox_dir / f"{vehicle_ids[0]}_outbox.txt"
+                with open(outbox_file, 'a', encoding='utf-8') as f:
+                    f.write(message_text)
+                self.print_info(f"  📤 Messaggio salvato in outbox: {outbox_file}")
+                
+                # Salva in inbox del receiver
+                inbox_file = receiver_paths.inbox_dir / f"from_{vehicle_ids[0]}.txt"
+                with open(inbox_file, 'a', encoding='utf-8') as f:
+                    f.write(message_text)
+                self.print_info(f"  📥 Messaggio salvato in inbox: {inbox_file}")
+                
+            except Exception as save_error:
+                self.print_error(f"  ⚠️  Errore salvataggio messaggi: {save_error}")
             
             if sender_has_cert and receiver_has_cert:
                 self.print_success("Messaggio CAM inviato con successo!")
@@ -1904,8 +2193,9 @@ class PKITester:
                     self.print_test_execution_time("Butterfly Key Expansion", elapsed)
                     self.print_info(f"  Throughput: {at_count/elapsed:.2f} AT/s")
                     
-                    # Incrementa contatore AT emessi
-                    self.total_at_issued += at_count
+                    # Registra AT emessi per questa AA
+                    aa_id = self._extract_entity_id_from_url(aa_url)
+                    self._record_at_issued(aa_id, count=at_count, is_valid=True)
                     
                     # Salva AT nel veicolo (placeholder)
                     vehicle_data["butterfly_tickets"] = [f"AT_{i}_placeholder" for i in range(at_count)]
@@ -2031,8 +2321,10 @@ class PKITester:
                     self.print_info(f"    Serial: {serial_hex}")
                     self.print_info(f"    Response: {result.get('message', 'Success')}")
                     
-                    # Incrementa contatore EC revocati
-                    self.revoked_ec_count += 1
+                    # Registra EC revocato per questa EA
+                    ea_id = self._extract_entity_id_from_url(ea_url)
+                    self._record_ec_revoked(ea_id)
+                    
                     success_count += 1
                     
                     # Verifica rapida inserimento in CRL (senza attesa)
@@ -2133,8 +2425,9 @@ class PKITester:
                             self.print_info(f"    Serial: {at_serial_hex}")
                             self.print_info(f"    Response: {at_result.get('message', 'Success')}")
                             
-                            # Incrementa contatore AT revocati
-                            self.revoked_at_count += 1
+                            # Registra AT revocato per questa AA
+                            aa_id = self._extract_entity_id_from_url(aa_url)
+                            self._record_at_revoked(aa_id)
                             
                             # Verifica rapida inserimento AT in CRL AA (senza attesa)
                             # La Delta CRL è pubblicata immediatamente dopo la revoca
@@ -2390,13 +2683,18 @@ class PKITester:
             print("  B. 📊 Mostra risultati")
             print("  C. 🗑️  Pulisci dati test")
             print("  D. 🚀 Batch Enrollment Ottimizzato (configurabile)")
+            print("  R. 🔍 Ri-scansiona entità disponibili")
             print("  0. ❌ Esci")
+            
+            # Mostra statistiche dettagliate per EA/AA
+            print("\n  📊 Statistiche Entità:")
+            self._print_entity_statistics()
             
             print("\n  Stato corrente:")
             print(f"    Veicoli enrollati: {len(self.enrolled_vehicles)}")
             print(f"    Test eseguiti: {len(self.test_results)}")
             
-            choice = input("\n  Scegli test (0-9, A-D): ").strip().upper()
+            choice = input("\n  Scegli test (0-9, A-D, R): ").strip().upper()
             
             if choice == "1":
                 self.test_1_vehicle_enrollment()
@@ -2422,6 +2720,10 @@ class PKITester:
                 self.cleanup()
             elif choice == "D":
                 self.test_batch_vehicle_enrollment()
+            elif choice == "R":
+                self.print_info("🔍 Ri-scansione entità in corso...")
+                self.scan_entities_at_startup()
+                self.print_success("Scansione completata!")
             elif choice == "0":
                 self.print_info("Uscita...")
                 break
@@ -2477,15 +2779,9 @@ class PKITester:
             self.print_success("Tutti i test superati!")
         else:
             self.print_error(f"{failed} test falliti")
-        # Conteggio totale certificati emessi (usando contatori dinamici)
-        total_ec = self.total_ec_issued
-        total_at = self.total_at_issued
         
-        print(f"\n  📊 RIEPILOGO CERTIFICATI:")
-        print(f"     Enrollment Certificates (EC): {total_ec} totali, {total_ec - self.revoked_ec_count} validi ({self.revoked_ec_count} revocato)")
-        print(f"     Authorization Tickets (AT): {total_at} totali, {total_at - self.revoked_at_count} validi ({self.revoked_at_count} revocato)")
-        print(f"     Totale certificati emessi: {total_ec + total_at}")
-        print(f"     Totale certificati validi: {total_ec + total_at - self.revoked_ec_count - self.revoked_at_count}")
+        # Stampa statistiche dettagliate per ogni entità EA/AA
+        self._print_entity_statistics()
         
         # Metriche di performance
         print(f"\n  📈 METRICHE PERFORMANCE:")

@@ -15,13 +15,28 @@ Date: October 2025
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
+
+
+# ============================================================================
+# ETSI CONSTANTS (ETSI TS 103097 Section 4)
+# ============================================================================
+
+# ETSI Epoch: 2004-01-01 00:00:00 UTC (TAI - International Atomic Time)
+# Used as reference for Time32 encoding
+ETSI_EPOCH = datetime(2004, 1, 1, tzinfo=timezone.utc)
+
+# Certificate Types (ETSI TS 103097 Section 6.4.1)
+CERT_TYPE_EXPLICIT = 0  # Root CA
+CERT_TYPE_AUTHORIZATION = 1  # Authorization Ticket
+CERT_TYPE_ENROLLMENT = 2  # Enrollment Certificate
 
 # ============================================================================
 # ENUMERATIONS
@@ -197,7 +212,7 @@ class InnerEcResponse:
 
     requestHash: bytes  # Hash of original InnerEcRequest
     responseCode: ResponseCode
-    certificate: Optional[bytes] = None  # DER-encoded X.509 certificate
+    certificate: Optional[bytes] = None  # ASN.1 OER encoded ETSI TS 103097 certificate
 
     def is_success(self) -> bool:
         """Check if enrollment was successful"""
@@ -308,7 +323,7 @@ class AuthorizationRequest:
 
     version: str = "1.3.1"
     encryptedData: bytes = b""  # Encrypted InnerAtRequest
-    enrollmentCertificate: bytes = b""  # DER-encoded EC for authentication
+    enrollmentCertificate: bytes = b""  # ASN.1 OER encoded Enrollment Certificate
     recipientId: Optional[str] = None  # HashedId8 of AA certificate
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -372,7 +387,7 @@ class InnerAtResponse:
 
     requestHash: bytes  # Hash of original InnerAtRequest
     responseCode: ResponseCode
-    certificate: Optional[bytes] = None  # DER-encoded AT certificate
+    certificate: Optional[bytes] = None  # ASN.1 OER encoded Authorization Ticket (ETSI TS 103097)
 
     def is_success(self) -> bool:
         """Check if authorization was successful"""
@@ -543,7 +558,7 @@ class CrlResponse:
 
     responseCode: ResponseCode
     version: str = "1.3.1"
-    crlData: Optional[bytes] = None  # DER-encoded X.509 CRL
+    crlData: Optional[bytes] = None  # ASN.1 OER encoded CRL (ETSI TS 102941)
     nextUpdate: Optional[datetime] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -592,8 +607,8 @@ class CaCertificateResponse:
 
     responseCode: ResponseCode
     version: str = "1.3.1"
-    certificate: Optional[bytes] = None  # DER-encoded certificate
-    certificateChain: Optional[List[bytes]] = None  # Full chain to root
+    certificate: Optional[bytes] = None  # ASN.1 OER encoded ETSI certificate
+    certificateChain: Optional[List[bytes]] = None  # Full chain to root (ASN.1 OER)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def is_success(self) -> bool:
@@ -609,6 +624,18 @@ class CaCertificateResponse:
 # UTILITY FUNCTIONS
 # ============================================================================
 
+# Import certificate-related utilities from centralized module (DRY principle)
+from protocols.etsi_certificate_utils import (
+    compute_hashed_id8,
+    decode_public_key_compressed,
+    encode_public_key_compressed,
+    extract_public_key_from_asn1_certificate,
+    extract_validity_period,
+    time32_decode,
+    time32_encode,
+    verify_asn1_certificate_signature,
+)
+
 
 def compute_request_hash(data: bytes) -> bytes:
     """
@@ -623,34 +650,17 @@ def compute_request_hash(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
-def compute_hashed_id8(certificate_bytes: bytes) -> bytes:
-    """
-    Compute HashedId8 (8-byte identifier) from certificate.
-
-    Used for recipient identification in encrypted messages.
-
-    Args:
-        certificate_bytes: DER-encoded certificate
-
-    Returns:
-        Last 8 bytes of SHA-256 hash
-    """
-    full_hash = hashlib.sha256(certificate_bytes).digest()
-    return full_hash[-8:]  # Last 8 bytes
+# Note: The following functions are now imported from etsi_certificate_utils:
+# - compute_hashed_id8()
+# - time32_encode()
+# - time32_decode()
+# - extract_validity_period()
+# - encode_public_key_compressed()
+# - decode_public_key_compressed()
+# - verify_asn1_certificate_signature()
+# - extract_public_key_from_asn1_certificate()
 
 
-def verify_message_version(version: str) -> bool:
-    """
-    Verify that message version is supported.
-
-    Args:
-        version: ETSI TS 102941 version string
-
-    Returns:
-        True if version is supported
-    """
-    supported_versions = ["1.3.1", "1.4.1", "2.1.1"]
-    return version in supported_versions
 
 
 # ============================================================================

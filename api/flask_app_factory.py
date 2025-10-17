@@ -193,15 +193,10 @@ def create_app(
         try:
             from .blueprints.crl_bp import create_crl_blueprint
             from .blueprints.enrollment_bp import create_enrollment_blueprint
-            from .blueprints.enrollment_simple_bp import create_simple_enrollment_blueprint
             from .blueprints.stats_bp import create_stats_blueprint
 
             enrollment_bp = create_enrollment_blueprint(entity_instance)
             app.register_blueprint(enrollment_bp, url_prefix="/api/enrollment")
-
-            # Simplified JSON endpoint for testing (NOT ETSI compliant)
-            enrollment_simple_bp = create_simple_enrollment_blueprint(entity_instance)
-            app.register_blueprint(enrollment_simple_bp, url_prefix="/api/enrollment")
 
             crl_bp = create_crl_blueprint(entity_instance)
             app.register_blueprint(crl_bp, url_prefix="/api/crl")
@@ -211,8 +206,7 @@ def create_app(
 
             app.logger.info("Registered EA endpoints:")
             app.logger.info("  POST /api/enrollment/request (ETSI ASN.1 OER)")
-            app.logger.info("  POST /api/enrollment/request/simple (JSON - TESTING ONLY)")
-            app.logger.info("  POST /api/enrollment/validation")
+            app.logger.info("  POST /api/enrollment/validation (ETSI ASN.1 OER)")
             app.logger.info("  GET  /api/crl/full")
             app.logger.info("  GET  /api/crl/delta")
             app.logger.info("  GET  /api/stats")
@@ -223,7 +217,6 @@ def create_app(
         # Authorization Authority endpoints
         try:
             from .blueprints.authorization_bp import create_authorization_blueprint
-            from .blueprints.authorization_simple_bp import create_simple_authorization_blueprint
             from .blueprints.crl_bp import create_crl_blueprint
             from .blueprints.stats_bp import create_stats_blueprint
 
@@ -234,10 +227,6 @@ def create_app(
 
             app.register_blueprint(authorization_bp, url_prefix="/api/authorization")
 
-            # Simplified JSON endpoint for testing (NOT ETSI compliant)
-            authorization_simple_bp = create_simple_authorization_blueprint(entity_instance)
-            app.register_blueprint(authorization_simple_bp, url_prefix="/api/authorization")
-
             crl_bp = create_crl_blueprint(entity_instance)
             app.register_blueprint(crl_bp, url_prefix="/api/crl")
             
@@ -246,9 +235,7 @@ def create_app(
 
             app.logger.info("Registered AA endpoints:")
             app.logger.info("  POST /api/authorization/request (ETSI ASN.1 OER)")
-            app.logger.info("  POST /api/authorization/request/simple (JSON - TESTING ONLY)")
             app.logger.info("  POST /api/authorization/butterfly-request (ETSI ASN.1 OER)")
-            app.logger.info("  POST /api/authorization/butterfly-request/simple (JSON - TESTING ONLY)")
             app.logger.info("  GET  /api/crl/full")
             app.logger.info("  GET  /api/crl/delta")
             app.logger.info("  GET  /api/stats")

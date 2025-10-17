@@ -18,9 +18,9 @@ def create_rootca_blueprint(rootca_instance):
             subdir = base_dir / 'subordinates'
             result = []
             if subdir.exists():
-                for p in sorted(subdir.glob('*.pem')):
+                for p in sorted(subdir.glob('*.oer')):
                     try:
-                        # best-effort metadata
+                        # best-effort metadata for ASN.1 OER certificates
                         ski = get_certificate_ski(str(p))
                         cert_id = get_certificate_identifier(str(p))
                         expiry = get_certificate_expiry_time(str(p))
@@ -47,8 +47,9 @@ def create_rootca_blueprint(rootca_instance):
             issued_dir = base_dir / 'issued'
             result = []
             if issued_dir.exists():
-                for p in sorted(issued_dir.glob('*.pem')):
+                for p in sorted(issued_dir.glob('*.oer')):
                     try:
+                        # ASN.1 OER certificates
                         ski = get_certificate_ski(str(p))
                         cert_id = get_certificate_identifier(str(p))
                         expiry = get_certificate_expiry_time(str(p))

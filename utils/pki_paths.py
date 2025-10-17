@@ -36,6 +36,15 @@ class EntityPaths:
         logs_dir: Directory log
         backup_dir: Directory backup
         data_dir: Directory dati aggiuntivi (opzionale)
+        
+        # Directory specifiche ITS-S (opzionali)
+        inbox_dir: Directory inbox (solo ITS-S)
+        outbox_dir: Directory outbox (solo ITS-S)
+        authorization_tickets_dir: Directory AT (solo ITS-S)
+        trust_anchors_dir: Directory trust anchors (solo ITS-S)
+        ctl_full_dir: Directory CTL full (solo ITS-S)
+        ctl_delta_dir: Directory CTL delta (solo ITS-S)
+        own_certificates_dir: Directory certificati propri (solo ITS-S)
     """
     base_dir: Path
     certificates_dir: Path
@@ -45,12 +54,22 @@ class EntityPaths:
     backup_dir: Path
     data_dir: Optional[Path] = None
     
+    # Directory specifiche ITS-S
+    inbox_dir: Optional[Path] = None
+    outbox_dir: Optional[Path] = None
+    authorization_tickets_dir: Optional[Path] = None
+    trust_anchors_dir: Optional[Path] = None
+    ctl_full_dir: Optional[Path] = None
+    ctl_delta_dir: Optional[Path] = None
+    own_certificates_dir: Optional[Path] = None
+    
     def create_all(self, exist_ok: bool = True) -> None:
         """
         Crea tutte le directory necessarie.
         
         Ottimizzato: Controlla prima l'esistenza per evitare chiamate di sistema inutili.
         """
+        # Directory base comuni a tutte le entità
         for path_attr in ['base_dir', 'certificates_dir', 'private_keys_dir', 
                           'crl_dir', 'logs_dir', 'backup_dir']:
             path = getattr(self, path_attr)
@@ -59,10 +78,18 @@ class EntityPaths:
         
         if self.data_dir and not self.data_dir.exists():
             self.data_dir.mkdir(parents=True, exist_ok=exist_ok)
+        
+        # Directory specifiche ITS-S
+        for its_attr in ['inbox_dir', 'outbox_dir', 'authorization_tickets_dir',
+                        'trust_anchors_dir', 'ctl_full_dir', 'ctl_delta_dir', 
+                        'own_certificates_dir']:
+            path = getattr(self, its_attr, None)
+            if path and not path.exists():
+                path.mkdir(parents=True, exist_ok=exist_ok)
     
     def to_dict(self) -> Dict[str, str]:
         """Converte i path in un dizionario di stringhe."""
-        return {
+        result = {
             'base_dir': str(self.base_dir),
             'certificates_dir': str(self.certificates_dir),
             'private_keys_dir': str(self.private_keys_dir),
@@ -71,6 +98,24 @@ class EntityPaths:
             'backup_dir': str(self.backup_dir),
             'data_dir': str(self.data_dir) if self.data_dir else None
         }
+        
+        # Aggiungi directory ITS-S se presenti
+        if self.inbox_dir:
+            result['inbox_dir'] = str(self.inbox_dir)
+        if self.outbox_dir:
+            result['outbox_dir'] = str(self.outbox_dir)
+        if self.authorization_tickets_dir:
+            result['authorization_tickets_dir'] = str(self.authorization_tickets_dir)
+        if self.trust_anchors_dir:
+            result['trust_anchors_dir'] = str(self.trust_anchors_dir)
+        if self.ctl_full_dir:
+            result['ctl_full_dir'] = str(self.ctl_full_dir)
+        if self.ctl_delta_dir:
+            result['ctl_delta_dir'] = str(self.ctl_delta_dir)
+        if self.own_certificates_dir:
+            result['own_certificates_dir'] = str(self.own_certificates_dir)
+        
+        return result
 
 
 class PKIPathManager:
@@ -114,11 +159,20 @@ class PKIPathManager:
         │   │   └── trust_lists/
         │   └── ...
         └── itss/
-            ├── ITS_001/
-            │   ├── certificates/
-            │   ├── private_keys/
-            │   ├── logs/
-            │   └── received_messages/
+            ├── VEHICLE_001/
+            │   ├── certificates/           # Certificati ricevuti (EC, AT, ecc.)
+            │   ├── private_keys/            # Chiavi private del veicolo
+            │   ├── crl/                     # CRL scaricate
+            │   ├── logs/                    # Log operazioni
+            │   ├── backup/                  # Backup certificati
+            │   ├── received_messages/       # Messaggi V2V ricevuti
+            │   ├── inbox/                   # Inbox messaggi CAM/DENM
+            │   ├── outbox/                  # Outbox messaggi inviati
+            │   ├── authorization_tickets/   # AT multipli per pseudonimato
+            │   ├── trust_anchors/           # Trust anchors (EA/AA fidate)
+            │   ├── ctl_full/                # Full CTL
+            │   ├── ctl_delta/               # Delta CTL
+            │   └── own_certificates/        # Certificati propri (EC principale)
             └── ...
     """
     
@@ -214,7 +268,15 @@ class PKIPathManager:
         elif entity_type == "TLM":
             paths.data_dir = base_path / "trust_lists"
         elif entity_type == "ITS":
+            # ITS-S ha una struttura più complessa con directory multiple
             paths.data_dir = base_path / "received_messages"
+            paths.inbox_dir = base_path / "inbox"
+            paths.outbox_dir = base_path / "outbox"
+            paths.authorization_tickets_dir = base_path / "authorization_tickets"
+            paths.trust_anchors_dir = base_path / "trust_anchors"
+            paths.ctl_full_dir = base_path / "ctl_full"
+            paths.ctl_delta_dir = base_path / "ctl_delta"
+            paths.own_certificates_dir = base_path / "own_certificates"
         elif entity_type == "ROOTCA":
             paths.data_dir = base_path / "subordinates"
         
