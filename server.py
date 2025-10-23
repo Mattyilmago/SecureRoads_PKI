@@ -686,11 +686,16 @@ class PKIEntityManager:
             entity = self.get_or_create_root_ca()
         elif entity_type == "EA":
             root_ca = self.get_or_create_root_ca()
+            # EA needs TLM reference only for initialization
+            # After init, EA registers itself to remote TLM via HTTP API
             tlm = self.get_or_create_tlm_main()
             entity = EnrollmentAuthority(root_ca, tlm, ea_id=entity_name)
                 
         elif entity_type == "AA":
             root_ca = self.get_or_create_root_ca()
+            # AA needs TLM reference for EC validation
+            # If TLM is already running as separate service, create local instance
+            # (it will be kept in sync via file-based storage)
             tlm = self.get_or_create_tlm_main()
             entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_name)
                 
@@ -845,10 +850,6 @@ class PKIEntityManager:
         failed_count = 0
         processes = []
 
-        # Crea directory per i log
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-
         # Determina l'eseguibile Python senza finestra
         # pythonw.exe è la versione di Python senza console window
         python_exe = sys.executable
@@ -907,8 +908,26 @@ class PKIEntityManager:
             try:
                 print(f"🔄 Avvio {entity_id} sulla porta {port}...")
 
-                # Crea file di log per l'entità
-                log_file = log_dir / f"{entity_id.lower()}.log"
+                # Determina il tipo di entità dall'ID
+                if entity_id.startswith("EA_"):
+                    entity_type = "EA"
+                elif entity_id.startswith("AA_"):
+                    entity_type = "AA"
+                elif entity_id == "TLM_MAIN":
+                    entity_type = "TLM"
+                elif entity_id.startswith("ROOT_CA"):
+                    entity_type = "RootCA"
+                else:
+                    entity_type = "EA"  # default fallback
+                
+                # Usa PKIPathManager per ottenere la cartella log corretta
+                from utils.pki_paths import PKIPathManager
+                entity_paths = PKIPathManager.get_entity_paths(entity_type, entity_id)
+                entity_log_dir = entity_paths.logs_dir
+                entity_log_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Crea file di log per l'entità nella sua cartella specifica
+                log_file = entity_log_dir / f"{entity_id.lower()}.log"
 
                 # Parse command string into arguments list
                 cmd_parts = shlex.split(command)
@@ -994,7 +1013,7 @@ class PKIEntityManager:
 
             print(f"\n🎯 Totale entità attive (o con processo vivo): {active_count}/{started_count}")
 
-        print("\n💡 Puoi monitorare i log in: logs/")
+        print("\n💡 Puoi monitorare i log in: pki_data/<entity_type>/<entity_id>/logs/")
         print("💡 Usa 'python stop_all.ps1' per fermare tutto")
 
 

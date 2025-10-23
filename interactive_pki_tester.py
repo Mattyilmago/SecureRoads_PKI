@@ -147,11 +147,13 @@ def start_pki_entities(temp_mode=False):
     print(f"  Nomi generati: {ea_name}, {aa_name}")
     
     # Entities da avviare con nomi dinamici
+    # IMPORTANTE: TLM e RootCA DEVONO essere avviati PRIMA di EA/AA
+    # perché EA/AA si registrano automaticamente al TLM all'avvio
     entities = [
-        ("EA", ea_name),
-        ("AA", aa_name),
-        ("TLM", "TLM_MAIN"),
-        ("RootCA", "RootCA")
+        ("TLM", "TLM_MAIN"),      # 1. Prima TLM (per registrazione EA)
+        ("RootCA", "RootCA"),     # 2. Poi RootCA (per firma certificati)
+        ("EA", ea_name),          # 3. EA (si registra al TLM)
+        ("AA", aa_name)           # 4. AA (usa EA per validazione)
     ]
     
     # Trova porte disponibili per ogni entity 
@@ -171,39 +173,35 @@ def start_pki_entities(temp_mode=False):
                 default_port = 5050 if entity_type == 'TLM' else 5999
                 
                 # Solo in modalità temp_mode, prova ad avviare TLM/RootCA se non attive
-                if temp_mode:
-                    # Verifica se sono realmente attive e funzionanti
-                    try:
-                        import socket
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(1)
-                        result = sock.connect_ex(('127.0.0.1', default_port))
-                        sock.close()
-                        
-                        if result == 0:
-                            # Porta occupata - verifica che risponda correttamente
-                            try:
-                                url = build_url('127.0.0.1', default_port, '/health')
-                                response = requests.get(url, timeout=2, **get_request_kwargs())
-                                if response.status_code == 200:
-                                    print(f'    {entity_id}: ✅ già attiva e funzionante (porta {default_port})')
-                                    # Non aggiungere a entity_configs - non serve riavviarla
-                                else:
-                                    # Porta occupata ma non risponde correttamente
-                                    print(f'    {entity_id}: ⚠️  non risponde, skip avvio (porta {default_port} occupata)')
-                            except:
-                                # Non risponde - porta occupata da altro processo
-                                print(f'    {entity_id}: ⚠️  porta {default_port} occupata da altro processo')
-                        else:
-                            # Porta libera - AVVIA TLM/RootCA in temp_mode
-                            print(f'    {entity_id}: 🚀 avvio sulla porta {default_port}')
-                            entity_configs.append((entity_type, entity_id, default_port))
-                            used_ports.add(default_port)
-                    except Exception as e:
-                        print(f'    {entity_id}: ⚠️  errore verifica ({str(e)[:50]})')
-                else:
-                    # Non in temp_mode - assume che siano già attive
-                    print(f"    {entity_id}: ℹ️  già attiva (porta {default_port} occupata)")
+                # Verifica se sono realmente attive e funzionanti
+                try:
+                    import socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex(('127.0.0.1', default_port))
+                    sock.close()
+                    
+                    if result == 0:
+                        # Porta occupata - verifica che risponda correttamente
+                        try:
+                            url = build_url('127.0.0.1', default_port, '/health')
+                            response = requests.get(url, timeout=2, **get_request_kwargs())
+                            if response.status_code == 200:
+                                print(f'    {entity_id}: ✅ già attiva e funzionante (porta {default_port})')
+                                # Non aggiungere a entity_configs - non serve riavviarla
+                            else:
+                                # Porta occupata ma non risponde correttamente
+                                print(f'    {entity_id}: ⚠️  non risponde, skip avvio (porta {default_port} occupata)')
+                        except:
+                            # Non risponde - porta occupata da altro processo
+                            print(f'    {entity_id}: ⚠️  porta {default_port} occupata da altro processo')
+                    else:
+                        # Porta libera - AVVIA TLM/RootCA (SEMPRE necessari per PKI)
+                        print(f'    {entity_id}: 🚀 avvio sulla porta {default_port}')
+                        entity_configs.append((entity_type, entity_id, default_port))
+                        used_ports.add(default_port)
+                except Exception as e:
+                    print(f'    {entity_id}: ⚠️  errore verifica ({str(e)[:50]})')
             else:
                 print(f"    {entity_id}: ⚠️  nessuna porta disponibile nel range - SKIP")
             # Continua con le altre entities invece di fallire completamente
@@ -226,6 +224,7 @@ def start_pki_entities(temp_mode=False):
             ]
             
             # Se temp_mode è True, aggiungi il flag per EA e AA (non per TLM/RootCA)
+            # TLM e RootCA sono sempre persistenti perché condivisi tra test
             if temp_mode and entity_type in ["EA", "AA"]:
                 cmd.append("--temp")
             
@@ -233,15 +232,15 @@ def start_pki_entities(temp_mode=False):
             env = os.environ.copy()
             env['PYTHONPATH'] = str(project_root)
             
-            # Prepare logs directory
-            log_dir = project_root / "logs"
+            # Prepare logs directory - use entity-specific path in pki_data
+            entity_paths = PKIPathManager.get_entity_paths(entity_type, entity_id)
+            log_dir = entity_paths.logs_dir
             log_dir.mkdir(parents=True, exist_ok=True)
 
-            out_path = str(log_dir / f"{entity_id}.out")
-            err_path = str(log_dir / f"{entity_id}.err")
-
-            out_f = open(out_path, "ab")
-            err_f = open(err_path, "ab")
+            # Redirect all output (stdout/stderr) to the main .log file
+            # This consolidates logging to a single file per entity
+            log_path = str(log_dir / f"{entity_id}.log")
+            log_f = open(log_path, "ab")
 
             if os.name == 'nt':  # Windows
                 process = subprocess.Popen(
@@ -250,26 +249,32 @@ def start_pki_entities(temp_mode=False):
                     env=env,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                     shell=False,
-                    stdout=out_f,
-                    stderr=err_f
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT  # Redirect stderr to stdout (combined in .log)
                 )
             else:  # Linux/Mac
                 process = subprocess.Popen(
                     cmd,
                     cwd=str(project_root),
                     env=env,
-                    stdout=out_f,
-                    stderr=err_f
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT  # Redirect stderr to stdout (combined in .log)
                 )
             
             _started_processes.append((entity_type, entity_id, process))
             print("✅")
             
+            # Aspetta che TLM sia pronto prima di avviare EA/AA (che si registrano al TLM)
+            if entity_type == "TLM":
+                print("  ⏳ Attesa TLM pronto (2 secondi)...", end=" ")
+                time.sleep(1)
+                print("✅")
+            
         except Exception as e:
             print(f" ({str(e)[:30]})")
     
-    # Aspetta che i server siano pronti
-    print(f"\n  Attesa avvio server (1 secondo)...")
+    # Aspetta che gli altri server siano pronti
+    print(f"\n  Attesa avvio server rimanenti (1 secondo)...")
     time.sleep(1)
     
     # Verifica che siano attivi usando le porte reali

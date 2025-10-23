@@ -16,6 +16,7 @@ from protocols.certificates.asn1_encoder import (
     decode_certificate_with_asn1,
 )
 from protocols.core import ResponseCode, compute_request_hash, compute_hashed_id8
+from protocols.core.primitives import etsi_verification_key_to_public_key
 from protocols.messages.encoder import ETSIMessageEncoder
 from protocols.messages import (
     InnerAtRequest,
@@ -284,20 +285,20 @@ class AuthorizationAuthority:
                 )
 
             # 3. Estrai chiave pubblica e emetti Authorization Ticket
-            verification_key_bytes = inner_at_request.publicKeys.get("verification")
-            if not verification_key_bytes:
+            verification_key_asn1 = inner_at_request.publicKeys.get("verification")
+            if not verification_key_asn1:
                 self.logger.info(f"[ERROR] Errore: Nessuna verification key fornita")
                 return self._create_at_error_response(
                     request_bytes, inner_at_request.hmacKey, ResponseCode.BAD_REQUEST
                 )
 
-            # Deserializza chiave pubblica
+            # Deserializza chiave pubblica dal formato ASN.1 ETSI
             try:
-                public_key = load_der_public_key(verification_key_bytes)
-            except:
-                # Prova formato X9.62 uncompressed point
-                public_key = ec.EllipticCurvePublicKey.from_encoded_point(
-                    ec.SECP256R1(), verification_key_bytes
+                public_key = etsi_verification_key_to_public_key(verification_key_asn1)
+            except Exception as e:
+                self.logger.error(f"❌ Failed to parse verification key: {e}")
+                return self._create_at_error_response(
+                    request_bytes, inner_at_request.hmacKey, ResponseCode.BAD_REQUEST
                 )
             
             self.logger.info(f"Emissione Authorization Ticket ASN.1 ...")
@@ -522,8 +523,26 @@ class AuthorizationAuthority:
         if attributes is None:
             attributes = {}
         
-        # CAM e DENM sono i messaggi V2X fondamentali (ETSI EN 302 637-2/3)
-        app_permissions = attributes.get('permissions', DEFAULT_APP_PERMISSIONS)
+        # Parse app permissions - ETSI format: list of {'psid': int} dicts
+        # Supports both ETSI format [{'psid': 36}, {'psid': 37}] and legacy ['CAM', 'DENM']
+        raw_permissions = attributes.get('appPermissions') or attributes.get('permissions', DEFAULT_APP_PERMISSIONS)
+        
+        # Convert to ETSI format if needed
+        if raw_permissions and isinstance(raw_permissions, list):
+            if isinstance(raw_permissions[0], dict):
+                # Already in ETSI format: [{'psid': 36}, {'psid': 37}]
+                app_permissions = raw_permissions
+            elif isinstance(raw_permissions[0], str):
+                # Legacy format: ['CAM', 'DENM'] -> convert to PSID format
+                # CAM = PSID 36, DENM = PSID 37 (ETSI EN 302 637)
+                psid_map = {'CAM': 36, 'DENM': 37}
+                app_permissions = [{'psid': psid_map.get(perm, 36)} for perm in raw_permissions if perm in psid_map]
+            else:
+                # Unknown format, use defaults
+                app_permissions = [{'psid': 36}, {'psid': 37}]  # CAM + DENM
+        else:
+            # No permissions specified, use defaults
+            app_permissions = [{'psid': 36}, {'psid': 37}]  # CAM + DENM
         
         # Validità: ETSI raccomanda 1-24h per AT (pseudonymity)
         validity_hours = attributes.get('validity_hours', AT_VALIDITY_DEFAULT_HOURS)
@@ -574,10 +593,13 @@ class AuthorizationAuthority:
         
         PKIFileHandler.save_binary_file(at_certificate_asn, at_path)
         
+        # Format app permissions for logging
+        psid_list = ', '.join([f"PSID {perm['psid']}" for perm in app_permissions])
+        
         self.logger.info(
             f"✅ AT emesso: {at_hashed_id8.hex()[:16]}... "
             f"({len(at_certificate_asn)} bytes ASN.1, {validity_hours}h, "
-            f"apps: {', '.join(app_permissions)})"
+            f"apps: {psid_list})"
         )
         
         # ========================================================================
@@ -798,31 +820,48 @@ class AuthorizationAuthority:
     
     def _auto_register_to_tlm(self) -> None:
         """
-        Auto-registra AA nel Trust List Manager usando HashedId8 (ASN.1 asn compliant).
+        Registrazione automatica al TLM remoto (ETSI TS 102941 § 6.1.3 requirement).
+        Registra l'AA come trust anchor utilizzando il certificato ASN.1 via REST API.
         
-        Questo metodo è chiamato automaticamente durante l'inizializzazione.
+        ETSI-compliant: Usa solo TLM remoto per architettura distribuita.
         """
         try:
+            import base64
+            import requests
+            import os
+            
             # Calcola AA HashedId8 come identificatore univoco (ETSI TS 103097 V2.1.1)
             aa_hashed_id8 = compute_hashed_id8(self.certificate_asn1)
             aa_hashed_id8_hex = aa_hashed_id8.hex()
             
-            # Check if already registered (usa HashedId8 invece di SKI)
-            already_registered = any(
-                anchor.get("hashed_id8") == aa_hashed_id8_hex
-                for anchor in self.tlm.trust_anchors
-            )
+            # Trova porta TLM (default 5050)
+            tlm_port = int(os.getenv("TLM_PORT", "5050"))
+            tlm_url = f"http://127.0.0.1:{tlm_port}/ctl/register"
             
-            if not already_registered:
-                # Registra con certificato ASN.1 asn
-                self.tlm.add_trust_anchor(
-                    certificate=self.certificate_asn1,  # bytes ASN.1 asn
-                    authority_type="AA"
-                )
-                self.logger.info(f"✅ Auto-registered {self.aa_id} to TLM (HashedId8={aa_hashed_id8_hex[:16]}...)")
+            self.logger.info(f"🌐 Registering {self.aa_id} to remote TLM at {tlm_url}...")
+            
+            # Prepara payload ETSI-compliant
+            payload = {
+                "certificate_asn1": base64.b64encode(self.certificate_asn1).decode('utf-8'),
+                "authority_type": "AA",
+                "subject_name": self.aa_id,
+                "expiry_date": (self.certificate_expiry.isoformat() if hasattr(self, 'certificate_expiry') and self.certificate_expiry else None)
+            }
+            
+            # Invia richiesta (con timeout breve per non bloccare startup)
+            response = requests.post(tlm_url, json=payload, timeout=5)
+            
+            if response.status_code == 200:
+                result = response.json()
+                hashed_id8 = result.get('hashed_id8', 'N/A')
+                self.logger.info(f"✅ Auto-registered {self.aa_id} to remote TLM")
+                self.logger.info(f"   HashedId8: {hashed_id8[:16]}...")
             else:
-                self.logger.debug(f"AA {self.aa_id} già registrato in TLM")
+                self.logger.warning(f"⚠️  Remote TLM registration failed: HTTP {response.status_code}")
+                if response.text:
+                    self.logger.warning(f"   Response: {response.text[:200]}")
                 
         except Exception as e:
-            # Auto-registration is best-effort, don't block initialization
-            self.logger.debug(f"Auto-registration to TLM skipped: {e}")
+            # Auto-registration è best-effort, non blocca l'inizializzazione
+            self.logger.warning(f"⚠️  Remote TLM registration failed: {e}")
+            self.logger.warning(f"⚠️  AA {self.aa_id} not registered in TLM - manual registration may be required")

@@ -808,7 +808,11 @@ class MessageEncoder:
             "responseCode": response_code_map.get(response_code, "deniedrequest"),  # ETSI ASN.1 value
         }
         if certificate_asn1:
-            inner_response_asn1["certificate"] = certificate_asn1
+            # Decode certificate bytes to dict for ASN.1 encoding
+            # InnerAtResponse.certificate expects a Certificate structure (dict), not bytes
+            from protocols.certificates.asn1_encoder import decode_certificate_with_asn1
+            certificate_dict = decode_certificate_with_asn1(certificate_asn1, "Certificate")
+            inner_response_asn1["certificate"] = certificate_dict
 
         # 2. Encode inner response
         plaintext = asn1_compiler.encode("InnerAtResponse", inner_response_asn1)
@@ -931,10 +935,17 @@ class MessageEncoder:
         response_code = etsi_to_response_code.get(response_code_str, ResponseCode.INTERNAL_SERVER_ERROR)
 
         # 7. Convert to Python object
+        # Re-encode certificate dict to bytes for ITS-Station to save
+        certificate_bytes = None
+        if inner_response_asn1.get("certificate"):
+            certificate_dict = inner_response_asn1["certificate"]
+            # Re-encode the certificate dict back to ASN.1 OER bytes
+            certificate_bytes = asn1_compiler.encode("Certificate", certificate_dict)
+        
         return InnerAtResponse(
             requestHash=inner_response_asn1["requestHash"],
             responseCode=response_code,
-            certificate=inner_response_asn1.get("certificate"),
+            certificate=certificate_bytes,
         )
 
     # ------------------------------------------------------------------------

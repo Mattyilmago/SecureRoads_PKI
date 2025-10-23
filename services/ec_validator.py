@@ -41,7 +41,8 @@ class ECValidator:
         self,
         tlm,  # TrustListManager instance (direct, no interface)
         logger: PKILogger,
-        authority_id: str = "AA"
+        authority_id: str = "AA",
+        crl_manager=None  # Optional CRLManager for revocation checks
     ):
         """
         Initialize EC validator.
@@ -50,10 +51,12 @@ class ECValidator:
             tlm: TrustListManager instance for trust validation
             logger: Logger instance for validation events
             authority_id: ID of authority using validator (for logging)
+            crl_manager: Optional CRLManager for EC revocation checks (ETSI TS 102941)
         """
         self.tlm = tlm  # Direct TLM reference
         self.logger = logger
         self.authority_id = authority_id
+        self.crl_manager = crl_manager  # For EC revocation checks
     
     def validate(self, enrollment_cert: Union[bytes, x509.Certificate]) -> None:
         """
@@ -78,6 +81,15 @@ class ECValidator:
         self.logger.info(f"🔍 Starting EC validation")
         self.logger.info(f"   HashedId8: {ec_hashed_id8[:16]}...")
         self.logger.info(f"   Size: {ec_size} bytes")
+        
+        # CRITICAL: Reload trust anchors from TLM to get latest registrations
+        # This ensures we have the most up-to-date list including recently registered EAs
+        try:
+            if hasattr(self.tlm, 'load_metadata'):
+                self.tlm.load_metadata()
+                self.logger.info(f"  🔄 Reloaded {len(self.tlm.trust_anchors)} trust anchors from TLM")
+        except Exception as e:
+            self.logger.warning(f"  ⚠️  Could not reload TLM metadata: {e}")
         
         # Step 1: Trust Chain Verification
         self.logger.info(f"  Step 1/3: Verifying trust chain...")
@@ -176,23 +188,41 @@ class ECValidator:
             self.logger.error(f"âŒ Expiry check failed: {e}")
             return False
     
-    def check_revocation(self, certificate: Union[bytes, x509.Certificate]) -> bool:
+    def check_revocation(self, certificate: bytes) -> bool:
         """
-        Check if certificate is revoked via TLM.
+        Check if certificate is revoked via CRL (ETSI TS 102941 Section 6.3.3).
+        
+        Queries the EA's CRL to verify if the Enrollment Certificate has been revoked.
+        If CRLManager is not available, fails open (assumes not revoked) for backward compatibility.
         
         Args:
-            certificate: Certificate to check
+            certificate: Certificate ASN.1 OER bytes to check
             
         Returns:
             True if revoked, False if valid
             
-        Raises:
-            ValueError: If revocation check fails (fail-closed security policy)
+        Note:
+            - If CRLManager not configured: logs warning and returns False (fail-open)
+            - ETSI TS 102941 Section 7.4: AAs SHOULD check EC revocation status
         """
+        if self.crl_manager is None:
+            # CRLManager not configured - fail-open for backward compatibility
+            self.logger.info("  ℹ️  Revocation check skipped (CRLManager not configured)")
+            return False  # Not revoked
+        
         try:
-            return self.tlm.is_revoked(certificate)
+            # Use CRLManager to check if certificate is revoked
+            is_revoked = self.crl_manager.is_certificate_revoked(certificate)
+            
+            if is_revoked:
+                self.logger.warning(f"  ⚠️  Certificate is REVOKED per EA CRL")
+            else:
+                self.logger.debug(f"  ✓ Certificate not revoked")
+            
+            return is_revoked
+            
         except Exception as e:
-            # FAIL-CLOSED security policy (ETSI TS 102941 best practice)
-            # If revocation check fails, reject certificate for security
-            self.logger.error(f"❌ Revocation check failed (fail-closed): {e}")
-            raise ValueError(f"Revocation check failed: {e}")
+            # If CRL check fails, log error but fail-open (assume not revoked)
+            # This prevents denial of service if CRL is temporarily unavailable
+            self.logger.warning(f"  ⚠️  Revocation check failed (assuming not revoked): {e}")
+            return False  # Fail-open

@@ -334,7 +334,9 @@ class TrustListManager:
                     if auth_type in ["EA", "AA"]:
                         from protocols.certificates import SubordinateCertificate as ETSIAuthorityCertificateEncoder
                         encoder = ETSIAuthorityCertificateEncoder()
-                        return encoder.extract_public_key(cert_asn1)
+                        public_key = encoder.extract_public_key(cert_asn1)
+                        self.logger.info(f"✅ Extracted public key from {auth_type} certificate (key type: {type(public_key).__name__})")
+                        return public_key
                     elif auth_type == "RCA":
                         from protocols.certificates.root import RootCertificate
                         encoder = RootCertificate()
@@ -343,9 +345,13 @@ class TrustListManager:
                         # La chiave pubblica � nel campo 'public_key_bytes'
                         from protocols.core.primitives import decode_public_key_compressed
                         if 'public_key_bytes' in decoded:
-                            return decode_public_key_compressed(decoded['public_key_bytes'])
+                            public_key = decode_public_key_compressed(decoded['public_key_bytes'])
+                            self.logger.info(f"✅ Extracted public key from RCA certificate (key type: {type(public_key).__name__})")
+                            return public_key
                 except Exception as e:
-                    self.logger.error(f"Errore estrazione chiave pubblica da anchor {issuer_hashed_id8}: {e}")
+                    self.logger.error(f"❌ Errore estrazione chiave pubblica da anchor {issuer_hashed_id8}: {e}")
+                    import traceback
+                    self.logger.error(f"   Traceback: {traceback.format_exc()}")
                     
         return None
 

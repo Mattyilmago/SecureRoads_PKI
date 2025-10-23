@@ -743,26 +743,44 @@ class EnrollmentAuthority:
 
     def _auto_register_to_tlm(self):
         """
-        Registrazione automatica al TLM (ETSI TS 102941 § 6.1.3 requirement).
-        Registra l'EA come trust anchor utilizzando il certificato ASN.1.
+        Registrazione automatica al TLM remoto (ETSI TS 102941 § 6.1.3 requirement).
+        Registra l'EA come trust anchor utilizzando il certificato ASN.1 via REST API.
+        
+        ETSI-compliant: Usa TLM remoto per architettura distribuita.
         """
         try:
-            tlm = self._tlm_for_registration
+            import base64
+            import requests
+            import os
             
-            # Controlla se già registrato usando HashedId8 (ASN.1)
-            ea_hashed_id8 = self.ea_hashed_id8.hex()
-            already_registered = any(
-                anchor.get("hashed_id8") == ea_hashed_id8 
-                for anchor in tlm.trust_anchors
-            )
+            # Trova porta TLM (default 5050)
+            tlm_port = int(os.getenv("TLM_PORT", "5050"))
+            tlm_url = f"http://127.0.0.1:{tlm_port}/ctl/register"
             
-            if not already_registered:
-                # Registra certificato ASN.1
-                tlm.add_trust_anchor(self.certificate_asn1, authority_type="EA")
-                self.logger.info(f"✅ Auto-registered {self.ea_id} to TLM (ASN.1)")
+            self.logger.info(f"🌐 Registering {self.ea_id} to remote TLM at {tlm_url}...")
+            
+            # Prepara payload ETSI-compliant
+            payload = {
+                "certificate_asn1": base64.b64encode(self.certificate_asn1).decode('utf-8'),
+                "authority_type": "EA",
+                "subject_name": self.ea_id,
+                "expiry_date": (self.certificate_expiry.isoformat() if hasattr(self, 'certificate_expiry') and self.certificate_expiry else None)
+            }
+            
+            # Invia richiesta (con timeout breve per non bloccare startup)
+            response = requests.post(tlm_url, json=payload, timeout=5)
+            
+            if response.status_code == 200:
+                result = response.json()
+                hashed_id8 = result.get('hashed_id8', 'N/A')
+                self.logger.info(f"✅ Auto-registered {self.ea_id} to remote TLM")
+                self.logger.info(f"   HashedId8: {hashed_id8[:16]}...")
             else:
-                self.logger.debug(f"EA {self.ea_id} già registrato in TLM")
+                self.logger.warning(f"⚠️  Remote TLM registration failed: HTTP {response.status_code}")
+                if response.text:
+                    self.logger.warning(f"   Response: {response.text[:200]}")
                 
         except Exception as e:
             # Auto-registration è best-effort, non blocca l'inizializzazione
-            self.logger.warning(f"⚠️  Auto-registration to TLM skipped: {e}")
+            self.logger.warning(f"⚠️  Remote TLM registration failed: {e}")
+            self.logger.warning(f"⚠️  EA {self.ea_id} not registered in TLM - manual registration may be required")

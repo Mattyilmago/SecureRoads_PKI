@@ -252,14 +252,15 @@ def create_app(
             from .blueprints.stats_bp import create_stats_blueprint
 
             tlm_bp = create_trust_list_blueprint(entity_instance)
-            app.register_blueprint(tlm_bp, url_prefix="/api/trust-list")
+            app.register_blueprint(tlm_bp, url_prefix="/ctl")  # ETSI standard prefix
             
             stats_bp = create_stats_blueprint(entity_instance, "TLM")
             app.register_blueprint(stats_bp, url_prefix="/api/stats")
 
             app.logger.info("Registered TLM endpoints:")
-            app.logger.info("  GET /api/trust-list/full")
-            app.logger.info("  GET /api/trust-list/delta")
+            app.logger.info("  GET /ctl/full")
+            app.logger.info("  GET /ctl/delta")
+            app.logger.info("  POST /ctl/register")
             app.logger.info("  GET /api/stats")
         except ImportError as e:
             app.logger.warning(f"Could not import blueprints: {e}")
@@ -401,7 +402,7 @@ def get_available_endpoints(entity_type: str) -> list:
             "GET /api/crl/full",
             "GET /api/crl/delta",
         ],
-        "TLM": ["GET /api/trust-list/full", "GET /api/trust-list/delta"],
+        "TLM": ["GET /ctl/full", "GET /ctl/delta", "POST /ctl/register"],
         "RootCA": ["GET /api/crl/full", "GET /api/crl/delta"],
     }
     return endpoints.get(entity_type, [])

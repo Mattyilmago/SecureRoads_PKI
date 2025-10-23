@@ -130,4 +130,102 @@ def create_trust_list_blueprint(tlm_instance):
             404,
         )
 
+    @bp.route("/register", methods=["POST"])
+    def register_trust_anchor():
+        """
+        POST /ctl/register
+        Register a trust anchor (EA/AA) in the TLM
+        
+        ETSI TS 102941 V2.1.1 Section 6.1.3: EA Registration
+        
+        Request body (JSON):
+        {
+            "certificate_asn1": "<base64_encoded_certificate>",
+            "authority_type": "EA|AA|RCA",
+            "subject_name": "<optional_subject_name>",
+            "expiry_date": "<optional_iso_datetime>"
+        }
+        
+        Response:
+        {
+            "success": true,
+            "message": "Trust anchor registered",
+            "hashed_id8": "<hex_string>"
+        }
+        """
+        current_app.logger.info("🔐 Received trust anchor registration request")
+        
+        try:
+            data = request.get_json()
+            
+            if not data:
+                return jsonify({
+                    "success": False,
+                    "error": "No JSON data provided",
+                    "responseCode": 2
+                }), 400
+            
+            # Extract certificate (ASN.1 OER format)
+            import base64
+            cert_b64 = data.get("certificate_asn1")
+            if not cert_b64:
+                return jsonify({
+                    "success": False,
+                    "error": "Missing certificate_asn1 field",
+                    "responseCode": 2
+                }), 400
+            
+            try:
+                cert_asn1 = base64.b64decode(cert_b64)
+            except Exception as e:
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid base64 encoding: {e}",
+                    "responseCode": 2
+                }), 400
+            
+            # Extract metadata
+            authority_type = data.get("authority_type", "UNKNOWN")
+            subject_name = data.get("subject_name")
+            expiry_date_str = data.get("expiry_date")
+            
+            # Parse expiry date if provided
+            expiry_date = None
+            if expiry_date_str:
+                try:
+                    from datetime import datetime as dt
+                    expiry_date = dt.fromisoformat(expiry_date_str.replace('Z', '+00:00'))
+                except Exception:
+                    current_app.logger.warning(f"Could not parse expiry_date: {expiry_date_str}")
+            
+            # Register in TLM
+            bp.tlm.add_trust_anchor(
+                cert_asn1,
+                authority_type=authority_type,
+                subject_name=subject_name,
+                expiry_date=expiry_date
+            )
+            
+            # Compute HashedId8 for response
+            from protocols.core.primitives import compute_hashed_id8
+            hashed_id8 = compute_hashed_id8(cert_asn1).hex()
+            
+            current_app.logger.info(f"✅ Trust anchor registered: {authority_type} (HashedId8: {hashed_id8[:16]}...)")
+            
+            return jsonify({
+                "success": True,
+                "message": f"Trust anchor registered: {authority_type}",
+                "hashed_id8": hashed_id8,
+                "responseCode": 0
+            }), 200
+            
+        except Exception as e:
+            current_app.logger.error(f"❌ Error registering trust anchor: {e}")
+            return jsonify({
+                "success": False,
+                "error": "Failed to register trust anchor",
+                "message": str(e),
+                "responseCode": 13
+            }), 500
+
     return bp

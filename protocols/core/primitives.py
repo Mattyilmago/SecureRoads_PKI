@@ -913,86 +913,21 @@ def extract_validity_period(cert_asn1_oer: bytes) -> tuple:
     """
     Estrae ValidityPeriod da un certificato ASN.1 OER generico.
     
-    Funzione centralizzata DRY-compliant per estrarre periodo di validità
-    da qualsiasi certificato ETSI TS 103097 V2.1.1 in formato ASN.1 OER.
-    
-    ETSI TS 103097 v2.1.1 Section 6.4.6:
-    ValidityPeriod ::= SEQUENCE {
-        start     Time32,    -- 4 bytes, seconds since ETSI epoch (2004-01-01)
-        duration  Duration   -- 4 bytes, validity duration in seconds
-    }
+    🔄 DELEGATED: Usa extract_validity_period da protocols.certificates.utils (DRY)
+    ==============================================================================
     
     Args:
         cert_asn1_oer: Certificato ASN.1 OER completo (bytes)
         
     Returns:
         tuple: (start_datetime, expiry_datetime, duration_seconds)
-            - start_datetime: Data/ora inizio validità (datetime UTC)
-            - expiry_datetime: Data/ora scadenza (datetime UTC)
-            - duration_seconds: Durata in secondi (int)
             
     Raises:
         ValueError: Se il certificato è malformato o ValidityPeriod non trovato
     """
-    import struct
-    
-    try:
-        # Struttura comune certificati ASN.1 OER:
-        # [tbs_len(2) | version(1) | type(1) | issuer_type(1) | issuer_id(8) | 
-        #  validity_period(8: start_time32(4) + duration(4)) | ...]
-        
-        # Offset tipico per ValidityPeriod: dopo version(1) + type(1) + issuer(1+8) = 11
-        # Ma potrebbe variare, quindi proviamo offset comuni
-        
-        # Leggi TBS length (primi 2 bytes)
-        if len(cert_asn1_oer) < 2:
-            raise ValueError("Certificate too short to extract ValidityPeriod")
-        
-        tbs_len = struct.unpack('>H', cert_asn1_oer[0:2])[0]
-        
-        if len(cert_asn1_oer) < 2 + tbs_len:
-            raise ValueError(f"Certificate truncated: expected {2 + tbs_len} bytes")
-        
-        tbs_data = cert_asn1_oer[2:2+tbs_len]
-        
-        # ValidityPeriod è tipicamente a offset 11 in TBS (dopo version + type + issuer)
-        # Offset possibili: 11 (standard), 10, 12 (variazioni struttura)
-        for validity_offset in [11, 10, 12, 13]:
-            if len(tbs_data) < validity_offset + 8:
-                continue
-            
-            try:
-                # Estrai start Time32 (4 bytes) e duration (4 bytes)
-                start_time32, duration_sec = struct.unpack(
-                    '>II', 
-                    tbs_data[validity_offset:validity_offset+8]
-                )
-                
-                # Sanity check: start_time32 deve essere ragionevole
-                # ETSI epoch: 2004-01-01, quindi start_time32 > 0 e < 2^31
-                if start_time32 == 0 or start_time32 > 0x7FFFFFFF:
-                    continue
-                
-                # Sanity check: duration deve essere ragionevole (max 10 anni)
-                if duration_sec == 0 or duration_sec > (10 * 365 * 86400):
-                    continue
-                
-                # Decodifica start time
-                start_datetime = time32_decode(start_time32)
-                
-                # Calcola expiry
-                expiry_datetime = start_datetime + timedelta(seconds=duration_sec)
-                
-                return (start_datetime, expiry_datetime, duration_sec)
-                
-            except Exception:
-                # Prova prossimo offset
-                continue
-        
-        raise ValueError("ValidityPeriod not found at expected offsets")
-        
-    except Exception as e:
-        raise ValueError(f"Failed to extract ValidityPeriod: {e}")
+    # Delega alla funzione centralizzata (DRY principle)
+    from protocols.certificates.utils import extract_validity_period as extract_vp
+    return extract_vp(cert_asn1_oer)
 
 
 # ============================================================================

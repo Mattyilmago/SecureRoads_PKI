@@ -118,10 +118,10 @@ def compute_hashed_id8(certificate_bytes: bytes) -> bytes:
 
 def extract_validity_period(cert_asn1_oer: bytes) -> Tuple[datetime, datetime, int]:
     """
-    Estrae ValidityPeriod da un certificato ASN.1 OER generico.
+    Estrae ValidityPeriod da un certificato ASN.1 OER generico usando ASN.1 decoder.
     
-    Funzione centralizzata DRY-compliant per estrarre periodo di validità
-    da qualsiasi certificato ETSI TS 103097 V2.1.1 in formato ASN.1 OER.
+    🔄 REFACTORED: Usa asn1_compiler invece di offset fissi (DRY-compliant)
+    =====================================================================
     
     ETSI TS 103097 v2.1.1 Section 6.4.6:
     ValidityPeriod ::= SEQUENCE {
@@ -142,59 +142,64 @@ def extract_validity_period(cert_asn1_oer: bytes) -> Tuple[datetime, datetime, i
         ValueError: Se il certificato è malformato o ValidityPeriod non trovato
     """
     try:
-        # Struttura comune certificati ASN.1 OER:
-        # [tbs_len(2) | version(1) | type(1) | issuer_type(1) | issuer_id(8) | 
-        #  validity_period(8: start_time32(4) + duration(4)) | ...]
+        # Usa ASN.1 decoder ufficiale per estrarre ValidityPeriod
+        from protocols.certificates.asn1_encoder import decode_certificate_with_asn1
         
-        # Offset tipico per ValidityPeriod: dopo version(1) + type(1) + issuer(1+8) = 11
-        # Ma potrebbe variare, quindi proviamo offset comuni
+        # Decodifica certificato
+        cert_dict = decode_certificate_with_asn1(cert_asn1_oer, "EtsiTs103097Certificate")
         
-        # Leggi TBS length (primi 2 bytes)
-        if len(cert_asn1_oer) < 2:
-            raise ValueError("Certificate too short to extract ValidityPeriod")
+        # Naviga nella struttura: certificate -> toBeSigned -> validityPeriod
+        if 'toBeSigned' not in cert_dict:
+            raise ValueError("toBeSigned field not found in certificate")
         
-        tbs_len = struct.unpack('>H', cert_asn1_oer[0:2])[0]
+        to_be_signed = cert_dict['toBeSigned']
         
-        if len(cert_asn1_oer) < 2 + tbs_len:
-            raise ValueError(f"Certificate truncated: expected {2 + tbs_len} bytes")
+        if 'validityPeriod' not in to_be_signed:
+            raise ValueError("validityPeriod field not found in toBeSigned")
         
-        tbs_data = cert_asn1_oer[2:2+tbs_len]
+        validity_period = to_be_signed['validityPeriod']
         
-        # ValidityPeriod è tipicamente a offset 11 in TBS (dopo version + type + issuer)
-        # Offset possibili: 11 (standard), 10, 12 (variazioni struttura)
-        for validity_offset in [11, 10, 12, 13]:
-            if len(tbs_data) < validity_offset + 8:
-                continue
+        # ValidityPeriod ::= SEQUENCE {
+        #     start     Time32,
+        #     duration  Duration
+        # }
+        
+        if 'start' not in validity_period or 'duration' not in validity_period:
+            raise ValueError("ValidityPeriod missing start or duration fields")
+        
+        start_time32 = validity_period['start']
+        duration = validity_period['duration']
+        
+        # Duration è un CHOICE - può essere ('hours', int) o ('microseconds', int) o ('milliseconds', int)
+        if isinstance(duration, tuple) and len(duration) == 2:
+            duration_type, duration_value = duration
             
-            try:
-                # Estrai start Time32 (4 bytes) e duration (4 bytes)
-                start_time32, duration_sec = struct.unpack(
-                    '>II', 
-                    tbs_data[validity_offset:validity_offset+8]
-                )
-                
-                # Sanity check: start_time32 deve essere ragionevole
-                # ETSI epoch: 2004-01-01, quindi start_time32 > 0 e < 2^31
-                if start_time32 == 0 or start_time32 > 0x7FFFFFFF:
-                    continue
-                
-                # Sanity check: duration deve essere ragionevole (max 10 anni)
-                if duration_sec == 0 or duration_sec > (10 * 365 * 86400):
-                    continue
-                
-                # Decodifica start time
-                start_datetime = time32_decode(start_time32)
-                
-                # Calcola expiry
-                expiry_datetime = start_datetime + timedelta(seconds=duration_sec)
-                
-                return (start_datetime, expiry_datetime, duration_sec)
-                
-            except Exception:
-                # Prova prossimo offset
-                continue
+            # Converti in secondi
+            if duration_type == 'hours':
+                duration_sec = duration_value * 3600
+            elif duration_type == 'minutes':
+                duration_sec = duration_value * 60
+            elif duration_type == 'seconds':
+                duration_sec = duration_value
+            elif duration_type == 'milliseconds':
+                duration_sec = duration_value / 1000
+            elif duration_type == 'microseconds':
+                duration_sec = duration_value / 1000000
+            elif duration_type == 'sixtyHours':
+                duration_sec = duration_value * 60 * 3600
+            else:
+                raise ValueError(f"Unknown duration type: {duration_type}")
+        else:
+            # Assume sia già in secondi
+            duration_sec = int(duration)
         
-        raise ValueError("ValidityPeriod not found at expected offsets")
+        # Decodifica start time (ETSI epoch: 2004-01-01)
+        start_datetime = time32_decode(start_time32)
+        
+        # Calcola expiry
+        expiry_datetime = start_datetime + timedelta(seconds=duration_sec)
+        
+        return (start_datetime, expiry_datetime, int(duration_sec))
         
     except Exception as e:
         raise ValueError(f"Failed to extract ValidityPeriod: {e}")

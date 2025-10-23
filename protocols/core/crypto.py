@@ -255,8 +255,10 @@ def verify_asn1_certificate_signature(
     """
     Verifica la firma crittografica di un certificato ASN.1 OER generico.
     
-    Funzione centralizzata DRY-compliant per verificare firme ECDSA-SHA256
-    su certificati ETSI TS 103097 V2.1.1 in formato ASN.1 OER.
+    🔄 REFACTORED: Usa ASN.1 decoder invece di offset fissi (DRY-compliant)
+    =====================================================================
+    Questa funzione ora decodifica il certificato con asn1_compiler per estrarre
+    esattamente lo stesso TBS usato durante la firma, garantendo correttezza.
     
     ETSI TS 102941 v2.1.1 Section 6.1.3.2 - Certificate Signature Verification
     
@@ -277,78 +279,105 @@ def verify_asn1_certificate_signature(
     Raises:
         ValueError: Se il certificato è malformato
     """
-    import struct
+    import logging
     from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
     
+    logger = logging.getLogger("TLM_MAIN")  # Usa logger TLM per vedere i log
+    
     try:
-        # Struttura certificato ASN.1 OER generica:
-        # [headers_vari | tbs_len(2) | tbs_data | sig_type(1) | signature(64)]
+        # Import ASN.1 compiler (evita import circolari)
+        from protocols.certificates.asn1_encoder import decode_certificate_with_asn1, asn1_compiler
         
-        if len(cert_asn1_oer) < 67:  # Minimo teorico
-            raise ValueError("Certificate too short for signature verification")
+        logger.info("🔍 [DEBUG] Starting ASN.1-based signature verification")
         
-        # Prova offset comuni per TBS length (dipende dal tipo certificato)
-        # Offset possibili: 
-        # - Enrollment Certificates: offset 0 (TBS length at start!)
-        # - Authority Certificates: offset 11 (version + type + issuer choice + HashedId8)
-        # - Root Certificates: offset 11-13
-        for tbs_offset in [0, 11, 12, 13, 10, 14, 3]:
-            if len(cert_asn1_oer) < tbs_offset + 2:
-                continue
-                
-            try:
-                # Leggi TBS length (2 bytes big-endian)
-                tbs_len = struct.unpack('>H', cert_asn1_oer[tbs_offset:tbs_offset+2])[0]
-                
-                # Verifica lunghezza ragionevole
-                if tbs_len < 10 or tbs_len > 10000:  # Sanity check
-                    continue
-                
-                # Estrai TBS data
-                tbs_start = tbs_offset + 2
-                tbs_end = tbs_start + tbs_len
-                
-                if tbs_end + 65 > len(cert_asn1_oer):  # Deve esserci spazio per sig
-                    continue
-                
-                tbs_data = cert_asn1_oer[tbs_start:tbs_end]
-                
-                # Estrai signature type (1 byte)
-                sig_type = cert_asn1_oer[tbs_end]
-                if sig_type != 0x00:  # Solo ECDSA-SHA256 supportato
-                    continue
-                
-                # Estrai signature (64 bytes: R 32 + S 32)
-                signature_raw = cert_asn1_oer[tbs_end+1:tbs_end+1+64]
-                if len(signature_raw) != 64:
-                    continue
-                
-                # Converti da formato raw (r||s) a DER per cryptography
-                r_int = int.from_bytes(signature_raw[:32], byteorder='big')
-                s_int = int.from_bytes(signature_raw[32:64], byteorder='big')
-                
-                # Skip invalid signatures (all zeros or malformed)
-                if r_int == 0 or s_int == 0:
-                    continue
-                
-                der_signature = encode_dss_signature(r_int, s_int)
-                
-                # Verifica firma ECDSA-SHA256
-                issuer_public_key.verify(
-                    der_signature,
-                    tbs_data,
-                    ec.ECDSA(hashes.SHA256())
-                )
-                
-                # Firma verificata con successo
-                return True
-                
-            except Exception:
-                # Prova prossimo offset
-                continue
+        # 1. Decodifica certificato con ASN.1 decoder ufficiale
+        cert_dict = decode_certificate_with_asn1(cert_asn1_oer, "EtsiTs103097Certificate")
+        logger.info(f"🔍 [DEBUG] Certificate decoded, keys: {cert_dict.keys()}")
         
-        # Nessun offset ha prodotto una firma valida
-        return False
+        # 2. Estrai TBS usando lo stesso encoder usato durante la firma
+        if 'toBeSigned' not in cert_dict:
+            raise ValueError("toBeSigned field not found in decoded certificate")
+        
+        tbs_bytes = asn1_compiler.encode('ToBeSignedCertificate', cert_dict['toBeSigned'])
+        logger.info(f"🔍 [DEBUG] TBS extracted: {len(tbs_bytes)} bytes")
+        
+        # 3. Estrai signature dal certificato decodificato
+        if 'signature' not in cert_dict:
+            raise ValueError("signature field not found in decoded certificate")
+        
+        signature = cert_dict['signature']
+        
+        # DEBUG: Log signature structure
+        logger.info(f"🔍 [DEBUG] Signature structure: type={type(signature)}")
+        logger.info(f"🔍 [DEBUG] Signature content: {signature}")
+        
+        # signature è un CHOICE: (tag, value)
+        # Esempio: ('ecdsaNistP256Signature', EcdsaP256Signature)
+        if not isinstance(signature, tuple) or len(signature) != 2:
+            raise ValueError(f"Invalid signature format: {type(signature)}")
+        
+        sig_alg, sig_value = signature
+        logger.info(f"🔍 sig_alg={sig_alg}, sig_value type={type(sig_value)}")
+        
+        # Supporta solo ECDSA-SHA256 per ora
+        if sig_alg != 'ecdsaNistP256Signature':
+            raise ValueError(f"Unsupported signature algorithm: {sig_alg}")
+        
+        # sig_value è un dict con 'rSig' e 'sSig':
+        # {
+        #     'rSig': ('x-only', r_bytes),  # CHOICE with 32 bytes
+        #     'sSig': s_bytes  # OCTET STRING with 32 bytes
+        # }
+        
+        if not isinstance(sig_value, dict):
+            raise ValueError(f"Expected dict for signature, got: {type(sig_value)}")
+        
+        logger.info(f"🔍 sig_value keys: {list(sig_value.keys())}")
+        
+        if 'rSig' not in sig_value or 'sSig' not in sig_value:
+            raise ValueError(f"Missing rSig or sSig in signature: {list(sig_value.keys())}")
+        
+        # rSig è un CHOICE, tipicamente ('x-only', r_bytes)
+        r_sig = sig_value['rSig']
+        s_sig = sig_value['sSig']
+        
+        # Estrai r_bytes
+        if isinstance(r_sig, tuple) and len(r_sig) == 2:
+            # CHOICE format: (tag, value)
+            _, r_bytes = r_sig
+        else:
+            # Fallback: assume sia già raw bytes
+            r_bytes = r_sig
+        
+        # s_sig dovrebbe essere già bytes
+        s_bytes = s_sig
+        
+        # Concatena r||s
+        signature_raw = r_bytes + s_bytes
+        
+        if len(signature_raw) != 64:
+            raise ValueError(f"Invalid signature length: {len(signature_raw)} (expected 64)")
+        
+        # 4. Converti da formato raw (r||s) a DER per cryptography
+        r_int = int.from_bytes(signature_raw[:32], byteorder='big')
+        s_int = int.from_bytes(signature_raw[32:64], byteorder='big')
+        
+        # Skip invalid signatures (all zeros)
+        if r_int == 0 or s_int == 0:
+            raise ValueError("Invalid signature: r or s is zero")
+        
+        der_signature = encode_dss_signature(r_int, s_int)
+        
+        # 5. Verifica firma ECDSA-SHA256 su TBS
+        issuer_public_key.verify(
+            der_signature,
+            tbs_bytes,
+            ec.ECDSA(hashes.SHA256())
+        )
+        
+        logger.info("✅ Signature verified successfully using ASN.1 decoder")
+        return True
         
     except Exception as e:
-        raise ValueError(f"Certificate signature verification failed: {e}")
+        logger.error(f"❌ Signature verification failed: {e}")
+        return False

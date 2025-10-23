@@ -600,30 +600,59 @@ curl http://localhost:5020/api/authorization/certificate
 ### Trust List API
 
 ```bash
-# GET /api/trust_list/full - Download Full CTL
-curl http://localhost:5050/api/trust_list/full
+# POST /ctl/register - Register Trust Anchor (EA/AA Auto-Registration)
+# ETSI TS 102941 § 6.1.3: EA/AA registration to TLM
+curl -X POST http://localhost:5050/ctl/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "certificate_asn1": "base64_encoded_certificate",
+    "authority_type": "EA",
+    "subject_name": "EA_001",
+    "expiry_date": "2026-10-22T10:30:00Z"
+  }'
 
 # Risposta (200 OK)
 {
-  "ctl": "base64_encoded_asn1_oer",
-  "version": 42,
-  "issued_at": "2025-10-22T10:30:00Z",
-  "trust_anchors_count": 15,
-  "format": "etsi_ts_103097_asn1_oer"
+  "success": true,
+  "message": "Trust anchor registered: EA",
+  "hashed_id8": "a1b2c3d4e5f67890",
+  "responseCode": 0
 }
 
-# GET /api/trust_list/delta - Download Delta CTL
-curl http://localhost:5050/api/trust_list/delta?since_version=40
+# GET /ctl/full - Download Full CTL
+curl http://localhost:5050/ctl/full
 
 # Risposta (200 OK)
 {
-  "delta_ctl": "base64_encoded_asn1_oer",
-  "from_version": 40,
-  "to_version": 42,
-  "additions": 3,
-  "removals": 1
+  "version": 1,
+  "timestamp": "2025-10-22T10:30:00Z",
+  "tlm_id": "TLM_MAIN",
+  "trust_anchors": [
+    {
+      "authority_type": "EA",
+      "authority_id": "EA_001",
+      "subject": "CN=EnrollmentAuthority_EA_001,O=EnrollmentAuthority_EA_001,C=IT",
+      "added": "2025-10-22T10:30:00Z"
+    }
+  ]
+}
+
+# GET /ctl/delta - Download Delta CTL
+curl http://localhost:5050/ctl/delta?since=2025-10-22T10:00:00Z
+
+# Risposta (404 Not Found - Non ancora implementato)
+{
+  "info": "Delta CTL not available",
+  "message": "Delta CTL functionality not yet implemented",
+  "responseCode": 8
 }
 ```
+
+**⚠️ Nota Compliance ETSI:**
+- L'endpoint `/ctl/register` è un'**estensione pragmatica** per architetture distribuite
+- ETSI TS 102941 Section 6.5 definisce CTL come messaggi ASN.1 OER firmati con `CtlCommand`
+- Per deployment production, considerare implementazione completa ASN.1 CTL messages
+- REST API è accettabile per testing e deployment semplificato
 
 ### CRL API
 
