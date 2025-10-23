@@ -24,19 +24,8 @@ from pathlib import Path
 from typing import Optional
 
 
-def compute_request_hash(data: bytes) -> bytes:
-    """
-    Compute SHA-256 hash of request data.
-    
-    Used for request deduplication and replay protection in ETSI TS 102941.
-    
-    Args:
-        data: Raw request bytes
-        
-    Returns:
-        SHA-256 digest (32 bytes)
-    """
-    return hashlib.sha256(data).digest()
+# NOTE: compute_request_hash() has been moved to protocols.etsi_message_types
+# as it's an ETSI-specific utility for message correlation, not X.509 certificate utility.
 
 
 def get_certificate_ski(certificate: x509.Certificate) -> str:

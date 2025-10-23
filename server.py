@@ -60,17 +60,17 @@ class PKIEntityManager:
         # Cache for batching writes to entity_configs.json to avoid many small writes
         self._entity_config_cache = None
 
-    def get_or_create_root_ca(self, base_dir="./pki_data/root_ca"):
-        """Get or create RootCA singleton instance."""
+    def get_or_create_root_ca(self, ca_id="ROOT_CA_01", base_dir=None):
+        """Get or create RootCA singleton instance with ETSI-compliant ca_id."""
         if self._root_ca_instance is None:
-            self._root_ca_instance = RootCA(base_dir=base_dir)
+            self._root_ca_instance = RootCA(ca_id=ca_id, base_dir=base_dir)
         return self._root_ca_instance
 
-    def get_or_create_tlm_main(self, base_dir="./pki_data/tlm"):
+    def get_or_create_tlm_main(self, base_dir=None):
         """Get or create TLM_MAIN singleton instance."""
         if self._tlm_main_instance is None:
             root_ca = self.get_or_create_root_ca()
-            self._tlm_main_instance = TrustListManager(root_ca, base_dir=base_dir)
+            self._tlm_main_instance = TrustListManager(root_ca, tlm_id="TLM_MAIN", base_dir=base_dir)
         return self._tlm_main_instance
 
     def generate_entity_name_with_suffix(self, desired_name, existing_entities):
@@ -397,12 +397,17 @@ class PKIEntityManager:
         """
         return self.is_port_in_use('localhost', port)
 
-    def find_existing_entities(self, entity_type, base_dir="./pki_data"):
+    def find_existing_entities(self, entity_type, base_dir=None):
         """
         Trova entità esistenti di un tipo, controllando sia le directory che entity_configs.json.
         Questo previene il riutilizzo di nomi di entità che sono state cancellate ma potrebbero
         avere ancora configurazioni o dati residui.
         """
+        # Usa percorso centralizzato se non specificato
+        if base_dir is None:
+            from config import PKI_PATHS
+            base_dir = str(PKI_PATHS.BASE)
+        
         existing = []
 
         # 1. Controlla le directory esistenti in pki_data/
@@ -581,13 +586,16 @@ class PKIEntityManager:
 
         return config
 
-    def launch_single_entity(self, entity_type, entity_id=None, config_path=None, config=None):
+    def launch_single_entity(self, entity_type, entity_id=None, config_path=None, config=None, temp_mode=False):
         """Launch a single PKI entity server (from server.py logic).
 
         Accept either a path to a config (config_path) or a pre-built config dict
         (config). If both are provided, the explicit `config` dict takes precedence.
         This ensures callers that parse CLI args can pass overridden host/port values
         and they will be respected when starting the server.
+        
+        Args:
+            temp_mode: If True, do not save entity to entity_configs.json (temporary test mode)
         """
         print(f" Launching single {entity_type} entity...")
 
@@ -622,51 +630,56 @@ class PKIEntityManager:
         print(f" Host: {config.get('host')}:{config.get('port')}")
 
         # Ensure entity is recorded in entity_configs.json so tooling can discover it
-        try:
-            cfg_path = Path("entity_configs.json")
-            existing_cfg = read_json(cfg_path) or {"start_commands": [], "port_ranges": {}}
+        # Skip saving if temp_mode is True (temporary test mode)
+        if temp_mode:
+            print(f"  [TEMP] Entity {entity_name} will NOT be saved to entity_configs.json")
+        
+        if not temp_mode:
+            try:
+                cfg_path = Path("entity_configs.json")
+                existing_cfg = read_json(cfg_path) or {"start_commands": [], "port_ranges": {}}
 
-            # Build start command string to match format used elsewhere
-            start_cmd_str = f"python server.py --entity {entity_type} --id {entity_name} --port {config.get('port')}"
+                # Build start command string to match format used elsewhere
+                start_cmd_str = f"python server.py --entity {entity_type} --id {entity_name} --port {config.get('port')}"
 
-            # Avoid duplicates: skip if same entity exists or if we're registering a TLM/RootCA
-            # and a TLM/RootCA already exists for the same port or entity
-            found = False
-            for cmd in existing_cfg.get('start_commands', []):
-                if cmd.get('entity') == entity_name:
-                    found = True
-                    break
-                # If registering a TLM, avoid creating another TLM on same port or another system TLM
-                if entity_type == 'TLM':
-                    existing_entity = cmd.get('entity', '')
-                    existing_cmd = cmd.get('command', '')
-                    if existing_entity.startswith('TLM') or 'TLM_MAIN' in existing_entity:
-                        # If port matches, treat as duplicate
-                        if f"--port {config.get('port')}" in existing_cmd:
-                            found = True
-                            break
-                        # If an existing system TLM exists, skip adding another
-                        if existing_entity == 'TLM_MAIN':
-                            found = True
-                            break
-                # Similarly for RootCA avoid duplicates
-                if entity_type == 'RootCA':
-                    if cmd.get('entity') == 'ROOT_CA' or cmd.get('entity', '').startswith('ROOT_CA'):
+                # Avoid duplicates: skip if same entity exists or if we're registering a TLM/RootCA
+                # and a TLM/RootCA already exists for the same port or entity
+                found = False
+                for cmd in existing_cfg.get('start_commands', []):
+                    if cmd.get('entity') == entity_name:
                         found = True
                         break
+                    # If registering a TLM, avoid creating another TLM on same port or another system TLM
+                    if entity_type == 'TLM':
+                        existing_entity = cmd.get('entity', '')
+                        existing_cmd = cmd.get('command', '')
+                        if existing_entity.startswith('TLM') or 'TLM_MAIN' in existing_entity:
+                            # If port matches, treat as duplicate
+                            if f"--port {config.get('port')}" in existing_cmd:
+                                found = True
+                                break
+                            # If an existing system TLM exists, skip adding another
+                            if existing_entity == 'TLM_MAIN':
+                                found = True
+                                break
+                    # Similarly for RootCA avoid duplicates
+                    if entity_type == 'RootCA':
+                        if cmd.get('entity') == 'ROOT_CA' or cmd.get('entity', '').startswith('ROOT_CA'):
+                            found = True
+                            break
 
-            if not found:
-                # Use in-memory cache to batch writes and persist immediately for single-entity launches
-                self._cache_register_entity(entity_name, start_cmd_str)
-                try:
-                    # Persist to disk so tooling and scripts (like start_all_entities) see the new entity
-                    self.flush_entity_config_cache('entity_configs.json')
-                    print(f"✅ Registered {entity_name} and flushed to entity_configs.json")
-                except Exception:
-                    # Keep the entry in-memory if flush fails; outer except will also log a warning
-                    print(f"⚠️ Registered {entity_name} in in-memory config cache (flush failed)")
-        except Exception as e:
-            print(f"⚠️ Warning: failed to update entity_configs.json for {entity_name}: {e}")
+                if not found:
+                    # Use in-memory cache to batch writes and persist immediately for single-entity launches
+                    self._cache_register_entity(entity_name, start_cmd_str)
+                    try:
+                        # Persist to disk so tooling and scripts (like start_all_entities) see the new entity
+                        self.flush_entity_config_cache('entity_configs.json')
+                        print(f"✅ Registered {entity_name} and flushed to entity_configs.json")
+                    except Exception:
+                        # Keep the entry in-memory if flush fails; outer except will also log a warning
+                        print(f"⚠️ Registered {entity_name} in in-memory config cache (flush failed)")
+            except Exception as e:
+                print(f"⚠️ Warning: failed to update entity_configs.json for {entity_name}: {e}")
 
         # Create entity instance based on type
         if entity_type == "RootCA":
@@ -674,14 +687,12 @@ class PKIEntityManager:
         elif entity_type == "EA":
             root_ca = self.get_or_create_root_ca()
             tlm = self.get_or_create_tlm_main()
-            entity = EnrollmentAuthority(root_ca, ea_id=entity_name, tlm=tlm)
-            # Auto-registration now happens in EA.__init__
+            entity = EnrollmentAuthority(root_ca, tlm, ea_id=entity_name)
                 
         elif entity_type == "AA":
             root_ca = self.get_or_create_root_ca()
             tlm = self.get_or_create_tlm_main()
             entity = AuthorizationAuthority(root_ca, tlm, aa_id=entity_name)
-            # Auto-registration now happens in AA.__init__
                 
         elif entity_type == "TLM":
             entity = self.get_or_create_tlm_main()
@@ -1033,6 +1044,7 @@ Examples:
     parser.add_argument("--host", help="Host to bind (overrides config)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--no-auto-start", action="store_true", help="When running multi-entity setup from --config, do not auto-start entities")
+    parser.add_argument("--temp", action="store_true", help="Temporary mode: do not save entity to entity_configs.json (isolated test)")
 
     # Multi-entity setup options
     parser.add_argument("--ea", type=int, default=0, help="Number of Enrollment Authorities to create")
@@ -1078,7 +1090,7 @@ Examples:
             config["debug"] = True
 
         # Pass the constructed config so CLI --port/--host override are respected
-        success = manager.launch_single_entity(args.entity, args.id, None, config)
+        success = manager.launch_single_entity(args.entity, args.id, None, config, temp_mode=args.temp)
         if not success:
             sys.exit(1)
 

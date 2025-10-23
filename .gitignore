@@ -55,10 +55,12 @@ venv.bak/
 *.swo
 *~
 .DS_Store
+.pytest_cache/
 
 # Project specific - PKI Data
 pki_data/
 data/
+testdata/
 
 # Project specific - TLS Certificates
 tls_data/
@@ -86,6 +88,11 @@ test_*.py
 !raspberry_pi_test.py
 !analyze_results.py
 
+# Backup files
+*.backup
+*.backup*
+interactive_pki_tester.py.backup*
+
 # Security - Certificates and Keys
 *.key
 *.pem
@@ -104,3 +111,5 @@ secrets/
 ssl/
 *.der
 *.bin
+
+fix*

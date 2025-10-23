@@ -21,18 +21,30 @@ from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from managers.trust_list_manager import TrustListManager
 from utils.cert_utils import get_certificate_ski
+from protocols.core.primitives import compute_hashed_id8
+from config import PKI_PATHS
 
 
 # Cache RootCA per evitare re-inizializzazioni multiple
 _root_ca_cache = None
+_tlm_cache = None
 
 
 def get_root_ca():
     """Ottiene istanza condivisa di RootCA"""
     global _root_ca_cache
     if _root_ca_cache is None:
-        _root_ca_cache = RootCA(base_dir="data/root_ca")
+        _root_ca_cache = RootCA(ca_id="ROOT_CA_01")
     return _root_ca_cache
+
+
+def get_tlm():
+    """Ottiene istanza condivisa di TLM_MAIN"""
+    global _tlm_cache
+    if _tlm_cache is None:
+        root_ca = get_root_ca()
+        _tlm_cache = TrustListManager(root_ca, tlm_id="TLM_MAIN")
+    return _tlm_cache
 
 
 def list_registered_eas():
@@ -42,8 +54,7 @@ def list_registered_eas():
     print("="*70)
     
     try:
-        root_ca = get_root_ca()
-        tlm = TrustListManager(root_ca, base_dir="./data/tlm/TLM_MAIN/")
+        tlm = get_tlm()
         
         if not tlm.trust_anchors:
             print("\n⚠️  Nessuna EA registrata nel TLM_MAIN")
@@ -76,36 +87,29 @@ def register_ea(ea_id):
     print(f"\nEA ID: {ea_id}")
     
     try:
-        # Carica RootCA
-        print("\n1. Caricamento RootCA...")
         root_ca = get_root_ca()
-        print("   ✅ RootCA caricata")
+        print("\n1. RootCA caricata")
         
-        # Carica o crea EA
-        print(f"\n2. Caricamento EA '{ea_id}'...")
-        ea = EnrollmentAuthority(root_ca, ea_id=ea_id)
+        tlm = get_tlm()
+        print("2. TLM_MAIN caricato")
+        
+        print(f"\n3. Caricamento EA '{ea_id}'...")
+        ea = EnrollmentAuthority(root_ca, tlm, ea_id=ea_id)
         print(f"   ✅ EA '{ea_id}' caricata")
         
-        # Carica o crea TLM_MAIN
-        print(f"\n3. Caricamento TLM_MAIN...")
-        tlm = TrustListManager(root_ca, base_dir="./data/tlm/TLM_MAIN/")
-        print("   ✅ TLM_MAIN caricato")
-        
-        # Verifica se EA è già registrata
-        ea_ski = get_certificate_ski(ea.certificate)
-        already_registered = any(anchor.get("ski") == ea_ski for anchor in tlm.trust_anchors)
+        # Verifica se EA è già registrata (use certificate_asn1 for ASN.1 format)
+        ea_hashed_id8 = compute_hashed_id8(ea.certificate_asn1).hex()
+        already_registered = any(anchor.get("hashed_id8") == ea_hashed_id8 for anchor in tlm.trust_anchors)
         
         if already_registered:
             print(f"\n⚠️  EA '{ea_id}' è già registrata nel TLM_MAIN")
-            print(f"   SKI: {ea_ski[:16]}...")
+            print(f"   HashedId8: {ea_hashed_id8}")
             return
         
-        # Aggiungi EA ai trust anchors
         print(f"\n4. Aggiunta EA ai trust anchors...")
-        tlm.add_trust_anchor(ea.certificate, authority_type="EA")
+        tlm.add_trust_anchor(ea.certificate_asn1, authority_type="EA")
         print(f"   ✅ EA '{ea_id}' aggiunta al TLM_MAIN")
         
-        # Pubblica Full CTL
         print(f"\n5. Pubblicazione Full CTL...")
         tlm.publish_full_ctl()
         print("   ✅ Full CTL pubblicata")
@@ -131,17 +135,15 @@ def unregister_ea(ea_id):
     print(f"\nEA ID: {ea_id}")
     
     try:
-        # Carica RootCA e TLM
         root_ca = get_root_ca()
-        tlm = TrustListManager(root_ca, base_dir="./data/tlm/TLM_MAIN/")
+        tlm = get_tlm()
         
-        # Carica EA per ottenere SKI
-        ea = EnrollmentAuthority(root_ca, ea_id=ea_id)
+        ea = EnrollmentAuthority(root_ca, tlm, ea_id=ea_id)
         ea_ski = get_certificate_ski(ea.certificate)
         
         # Cerca e rimuovi EA
         found = False
-        for anchor in tlm.trust_anchors[:]:  # Copia per iterare durante modifica
+        for anchor in tlm.trust_anchors[:]:
             if anchor.get("ski") == ea_ski:
                 tlm.trust_anchors.remove(anchor)
                 tlm.delta_removals.append(anchor)
@@ -149,7 +151,6 @@ def unregister_ea(ea_id):
                 break
         
         if found:
-            # Pubblica Delta CTL con rimozione
             tlm.publish_delta_ctl()
             print(f"\n✅ EA '{ea_id}' rimossa dal TLM_MAIN")
             print(f"   Trust anchors rimanenti: {len(tlm.trust_anchors)}")

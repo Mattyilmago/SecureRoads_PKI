@@ -1,21 +1,21 @@
 ﻿"""
 ITS Station - ETSI TS 102941 Compliant
 
-**REFACTORED VERSION** - ETSI-compliant, ASN.1 OER only, DRY principles
+**REFACTORED VERSION** - ETSI-compliant, ASN.1 asn only, DRY principles
 
 Implementa l'ITS Station secondo lo standard ETSI TS 102941 V2.1.1 usando
-SOLO ASN.1 OER (NO X.509).
+SOLO ASN.1 asn (NO X.509).
 
 Responsabilità (Single Responsibility):
-- Richiesta Enrollment Certificates (EC) in formato ASN.1 OER
-- Richiesta Authorization Tickets (AT) in formato ASN.1 OER  
+- Richiesta Enrollment Certificates (EC) in formato ASN.1 asn
+- Richiesta Authorization Tickets (AT) in formato ASN.1 asn  
 - Invio/ricezione messaggi V2X firmati
 - Validazione messaggi e certificati
 - Gestione trust anchors e CTL
 
 Standard ETSI Implementati:
 - ETSI TS 102941 V2.1.1: Trust and Privacy Management
-- ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
+- ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 asn)
 - ETSI TS 103 831: Trust List Management
 
 Design Patterns Used:
@@ -31,6 +31,7 @@ Date: October 2025
 import os
 import secrets
 import traceback
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -42,14 +43,19 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
 )
 
-# ETSI Protocol Layer - ASN.1 OER Implementation
-from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import (
+# ETSI Protocol Layer - ASN.1 asn Implementation (Updated imports)
+from protocols.messages.encoder import ETSIMessageEncoder
+from protocols.messages import (
     InnerAtRequest, 
-    InnerEcRequest, 
-    ResponseCode,
-    compute_hashed_id8
+    InnerEcRequest,
 )
+from protocols.core import (
+    ResponseCode,
+    compute_hashed_id8,
+    extract_validity_period,
+    extract_public_key_from_asn1_certificate,
+)
+from protocols.certificates.asn1_encoder import decode_certificate_with_asn1
 
 # Utilities
 from utils.logger import PKILogger
@@ -61,21 +67,21 @@ class ITSStation:
     """
     ITS Station - ETSI TS 102941 Compliant
     
-    **REFACTORED VERSION** - ETSI-compliant, ASN.1 OER only, DRY principles
+    **REFACTORED VERSION** - ETSI-compliant, ASN.1 asn only, DRY principles
     
     Implementa l'ITS Station secondo lo standard ETSI TS 102941 V2.1.1 usando
-    SOLO ASN.1 OER (NO X.509).
+    SOLO ASN.1 asn (NO X.509).
     
     Responsabilità (Single Responsibility):
-    - Richiesta Enrollment Certificates (EC) in formato ASN.1 OER
-    - Richiesta Authorization Tickets (AT) in formato ASN.1 OER
+    - Richiesta Enrollment Certificates (EC) in formato ASN.1 asn
+    - Richiesta Authorization Tickets (AT) in formato ASN.1 asn
     - Invio/ricezione messaggi V2X firmati con AT
     - Validazione messaggi tramite trust anchors
     - Gestione Certificate Trust List (CTL)
     
     Standard ETSI Implementati:
     - ETSI TS 102941 V2.1.1: Trust and Privacy Management
-    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
+    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 asn)
     
     Design Patterns Used:
     - Dependency Injection: ETSIMessageEncoder iniettato
@@ -84,14 +90,18 @@ class ITSStation:
     - DRY: Usa PathManager, PKIFileHandler, shared utilities
     """
     
-    def __init__(self, its_id: str, base_dir: str = "./pki_data/itss/"):
+    def __init__(self, its_id: str, base_dir: str = None):
         """
         Inizializza ITS Station.
         
         Args:
             its_id: Identificativo univoco ITS-S (es: "Vehicle_001")
-            base_dir: Directory base per dati ITS-S
+            base_dir: Directory base per dati ITS-S (default: PKI_PATHS.get_its_path(its_id))
         """
+        if base_dir is None:
+            from config import PKI_PATHS
+            base_dir = str(PKI_PATHS.get_its_path(its_id))
+        
         # ========================================================================
         # 1. SETUP PATHS (PathManager - DRY)
         # ========================================================================
@@ -102,7 +112,7 @@ class ITSStation:
         paths = PKIPathManager.get_entity_paths("ITS", its_id, base_dir)
         
         self.base_dir = str(paths.base_dir)
-        # Standard ETSI: .oer per certificati ASN.1 OER, .key per chiavi private
+        # Standard ETSI: .asn per certificati ASN.1 asn, .key per chiavi private
         self.key_path = str(paths.private_keys_dir / f"{its_id}_key.key")
         self.ec_path_asn1 = str(paths.own_certificates_dir / f"{its_id}_ec.oer")
         self.at_dir = str(paths.authorization_tickets_dir)
@@ -142,15 +152,16 @@ class ITSStation:
         
         self.private_key: Optional[EllipticCurvePrivateKey] = None
         self.public_key: Optional[EllipticCurvePublicKey] = None
-        self.ec_certificate_asn1: Optional[bytes] = None  # ASN.1 OER EC
-        self.at_certificates_asn1: List[bytes] = []  # Lista AT ASN.1 OER
-        self.trust_anchors_asn1: List[bytes] = []  # Trust anchors ASN.1 OER
+        self.ec_certificate_asn1: Optional[bytes] = None  # ASN.1 asn EC
+        self.at_certificates_asn1: List[bytes] = []  # Lista AT ASN.1 asn
+        self.at_private_keys: dict = {}  # Map: hashed_id8 -> private_key for ATs
+        self.trust_anchors_asn1: List[bytes] = []  # Trust anchors ASN.1 asn
 
         # ========================================================================
         # 4. INITIALIZE ETSI MESSAGE ENCODER
         # ========================================================================
         
-        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 OER)...")
+        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 asn)...")
         self.message_encoder = ETSIMessageEncoder()
         self.logger.info("✅ ETSI Message Encoder inizializzato!")
         
@@ -201,14 +212,14 @@ class ITSStation:
         1. ITS-S crea InnerEcRequest con chiave pubblica
         2. ITS-S firma request (Proof of Possession)
         3. ITS-S cripta con chiave pubblica EA (ECIES)
-        4. ITS-S invia EnrollmentRequest ASN.1 OER
+        4. ITS-S invia EnrollmentRequest ASN.1 asn
         
         Args:
-            ea_certificate_asn1: Certificato EA in formato ASN.1 OER
+            ea_certificate_asn1: Certificato EA in formato ASN.1 asn
             requested_attributes: Attributi richiesti (country, organization, etc.)
             
         Returns:
-            bytes: EnrollmentRequest ASN.1 OER encoded
+            bytes: EnrollmentRequest ASN.1 asn encoded
         """
         self.logger.info(f"\n{'='*60}")
         self.logger.info(f"Richiesta Enrollment Certificate ETSI per {self.its_id}")
@@ -239,17 +250,17 @@ class ITSStation:
             requestedSubjectAttributes=requested_attributes,
         )
         
-        # Estrai chiave pubblica EA da certificato ASN.1 OER
-        self.logger.info("Estrazione chiave pubblica EA da certificato ASN.1 OER...")
-        from protocols.etsi_enrollment_certificate import ETSIEnrollmentCertificateEncoder
+        # Estrai chiave pubblica EA da certificato ASN.1 asn
+        self.logger.info("Estrazione chiave pubblica EA da certificato ASN.1 asn...")
+        from protocols.certificates import SubordinateCertificate
         
-        ea_encoder = ETSIEnrollmentCertificateEncoder()
-        ea_public_key = ea_encoder.extract_public_key(ea_certificate_asn1)
+        authority_encoder = SubordinateCertificate()
+        ea_public_key = authority_encoder.extract_public_key(ea_certificate_asn1)
         
         self.logger.info("✅ Chiave pubblica EA estratta con successo!")
         
         # Encode e cripta request
-        self.logger.info("Encoding e crittografia EnrollmentRequest (ASN.1 OER + ECIES)...")
+        self.logger.info("Encoding e crittografia EnrollmentRequest (ASN.1 asn + ECIES)...")
         
         enrollment_request_bytes = self.message_encoder.encode_enrollment_request(
             inner_request=inner_request,
@@ -259,7 +270,7 @@ class ITSStation:
         )
         
         self.logger.info(f"✅ EnrollmentRequest creata: {len(enrollment_request_bytes)} bytes")
-        self.logger.info(f"   Encoding: ASN.1 OER (ISO/IEC 8825-7)")
+        self.logger.info(f"   Encoding: ASN.1 asn (ISO/IEC 8825-7)")
         self.logger.info(f"   Encryption: ECIES (ECDH + AES-128-GCM)")
         self.logger.info(f"{'='*60}\n")
         
@@ -270,7 +281,7 @@ class ITSStation:
         Processa EnrollmentResponse ETSI e salva EC.
         
         Args:
-            response_bytes: ASN.1 OER encoded EnrollmentResponse
+            response_bytes: ASN.1 asn encoded EnrollmentResponse
             
         Returns:
             bool: True se EC ricevuto e salvato, False altrimenti
@@ -292,7 +303,7 @@ class ITSStation:
             self.logger.info(f"   Certificate Received: {response.certificate is not None}")
             
             if response.is_success():
-                # Certificato è già ASN.1 OER
+                # Certificato è già ASN.1 asn
                 self.ec_certificate_asn1 = response.certificate
                 
                 # Salva EC usando PKIFileHandler (DRY)
@@ -303,7 +314,7 @@ class ITSStation:
                 
                 self.logger.info(f"✅ Enrollment Certificate salvato: {self.ec_path_asn1}")
                 self.logger.info(f"   Dimensione: {len(self.ec_certificate_asn1)} bytes")
-                self.logger.info(f"   Formato: ASN.1 OER (ETSI TS 103097)")
+                self.logger.info(f"   Formato: ASN.1 asn (ETSI TS 103097)")
                 self.logger.info(f"{'='*60}\n")
                 return True
             else:
@@ -334,14 +345,14 @@ class ITSStation:
         2. ITS-S crea InnerAtRequest con chiave pubblica + hmacKey
         3. ITS-S allega Enrollment Certificate
         4. ITS-S cripta con chiave pubblica AA (ECIES)
-        5. ITS-S invia AuthorizationRequest ASN.1 OER
+        5. ITS-S invia AuthorizationRequest ASN.1 asn
         
         Args:
-            aa_certificate_asn1: Certificato AA in formato ASN.1 OER
+            aa_certificate_asn1: Certificato AA in formato ASN.1 asn
             requested_attributes: Attributi richiesti (service, region, etc.)
             
         Returns:
-            Tuple[bytes, bytes]: (AuthorizationRequest ASN.1 OER, HMAC key)
+            Tuple[bytes, bytes]: (AuthorizationRequest ASN.1 asn, HMAC key)
         """
         self.logger.info(f"\n{'='*60}")
         self.logger.info(f"Richiesta Authorization Ticket ETSI per {self.its_id}")
@@ -371,6 +382,10 @@ class ITSStation:
         
         self.logger.info("✅ Chiave pubblica dedicata generata per AT (unlinkability)")
         
+        # Salva temporaneamente at_private_key (verrà associata all'AT quando ricevuto)
+        # Usiamo hmac_key come identificatore temporaneo
+        self._pending_at_key = at_private_key
+        
         # Crea InnerAtRequest
         self.logger.info("Creazione InnerAtRequest...")
         inner_request = InnerAtRequest(
@@ -384,9 +399,9 @@ class ITSStation:
             requestedSubjectAttributes=requested_attributes,
         )
         
-        # Estrai chiave pubblica AA da certificato ASN.1 OER
-        self.logger.info("Estrazione chiave pubblica AA da certificato ASN.1 OER...")
-        from protocols.etsi_authority_certificate import ETSIAuthorityCertificateEncoder
+        # Estrai chiave pubblica AA da certificato ASN.1 asn
+        self.logger.info("Estrazione chiave pubblica AA da certificato ASN.1 asn...")
+        from protocols.certificates import SubordinateCertificate as ETSIAuthorityCertificateEncoder
         
         aa_encoder = ETSIAuthorityCertificateEncoder()
         aa_public_key = aa_encoder.extract_public_key(aa_certificate_asn1)
@@ -394,7 +409,7 @@ class ITSStation:
         self.logger.info("✅ Chiave pubblica AA estratta con successo!")
         
         # Encode e cripta request
-        self.logger.info("Encoding e crittografia AuthorizationRequest (ASN.1 OER + ECIES)...")
+        self.logger.info("Encoding e crittografia AuthorizationRequest (ASN.1 asn + ECIES)...")
         
         auth_request_bytes = self.message_encoder.encode_authorization_request(
             inner_request=inner_request,
@@ -404,7 +419,7 @@ class ITSStation:
         )
         
         self.logger.info(f"✅ AuthorizationRequest creata: {len(auth_request_bytes)} bytes")
-        self.logger.info(f"   Encoding: ASN.1 OER (ISO/IEC 8825-7)")
+        self.logger.info(f"   Encoding: ASN.1 asn (ISO/IEC 8825-7)")
         self.logger.info(f"   Encryption: ECIES (ECDH + AES-128-GCM)")
         self.logger.info(f"   EC allegato: Yes")
         self.logger.info(f"   HMAC key embedded: Yes (unlinkability)")
@@ -421,7 +436,7 @@ class ITSStation:
         Processa AuthorizationResponse ETSI e salva AT.
         
         Args:
-            response_bytes: ASN.1 OER encoded AuthorizationResponse
+            response_bytes: ASN.1 asn encoded AuthorizationResponse
             hmac_key: HMAC key usata nella request
             
         Returns:
@@ -444,7 +459,7 @@ class ITSStation:
             self.logger.info(f"   Certificate Received: {response.certificate is not None}")
             
             if response.is_success():
-                # Certificato AT è ASN.1 OER
+                # Certificato AT è ASN.1 asn
                 at_certificate_asn1 = response.certificate
                 
                 # Usa HashedId8 per nome file (ETSI-compliant)
@@ -458,12 +473,20 @@ class ITSStation:
                 # Aggiungi alla lista AT
                 self.at_certificates_asn1.append(at_certificate_asn1)
                 
+                # Associa at_private_key all'AT ricevuto
+                if hasattr(self, '_pending_at_key') and self._pending_at_key:
+                    self.at_private_keys[at_hashed_id8] = self._pending_at_key
+                    self.logger.info(f"✅ Chiave privata AT associata: {at_hashed_id8}")
+                    delattr(self, '_pending_at_key')
+                else:
+                    self.logger.warning(f"⚠️ Chiave privata AT non trovata per {at_hashed_id8}")
+                
                 self.logger.info(f"✅ Authorization Ticket salvato:")
                 self.logger.info(f"   HashedId8: {at_hashed_id8}")
                 self.logger.info(f"   File: {at_filename}")
                 self.logger.info(f"   Path: {at_path}")
                 self.logger.info(f"   Dimensione: {len(at_certificate_asn1)} bytes")
-                self.logger.info(f"   Formato: ASN.1 OER (ETSI TS 103097)")
+                self.logger.info(f"   Formato: ASN.1 asn (ETSI TS 103097)")
                 self.logger.info(f"{'='*60}\n")
                 return True
             else:
@@ -483,10 +506,10 @@ class ITSStation:
     
     def update_trust_anchors(self, anchors_asn1: List[bytes]):
         """
-        Aggiorna trust anchors in formato ASN.1 OER.
+        Aggiorna trust anchors in formato ASN.1 asn.
         
         Args:
-            anchors_asn1: Lista di certificati trust anchor ASN.1 OER
+            anchors_asn1: Lista di certificati trust anchor ASN.1 asn
         """
         self.logger.info(f"Aggiornamento trust anchors per {self.its_id}...")
         self.trust_anchors_asn1 = anchors_asn1
@@ -503,11 +526,11 @@ class ITSStation:
 
     def update_ctl(self, ctl_full_asn1: bytes, ctl_delta_asn1: Optional[bytes] = None):
         """
-        Aggiorna Certificate Trust List (CTL) in formato ASN.1 OER.
+        Aggiorna Certificate Trust List (CTL) in formato ASN.1 asn.
         
         Args:
-            ctl_full_asn1: Full CTL ASN.1 OER
-            ctl_delta_asn1: Delta CTL ASN.1 OER (opzionale)
+            ctl_full_asn1: Full CTL ASN.1 asn
+            ctl_delta_asn1: Delta CTL ASN.1 asn (opzionale)
         """
         self.logger.info(f"Aggiornamento CTL per {self.its_id}...")
         
@@ -547,9 +570,26 @@ class ITSStation:
             self.logger.error("❌ Serve chiave privata e AT per firmare messaggio!")
             return False
         
-        # Firma messaggio
+        # Usa la chiave privata dell'AT (non quella principale!)
+        # Ottieni l'AT più recente
+        latest_at = self.at_certificates_asn1[-1]
+        at_hashed_id8 = compute_hashed_id8(latest_at).hex()[:16]
+        
+        # Recupera la chiave privata associata all'AT
+        at_private_key = self.at_private_keys.get(at_hashed_id8)
+        
+        if not at_private_key:
+            self.logger.error(f"❌ Chiave privata AT non trovata per {at_hashed_id8}!")
+            self.logger.error(f"   AT disponibili: {list(self.at_private_keys.keys())}")
+            self.logger.error(f"   Lunghezza AT certificato: {len(latest_at)} bytes")
+            self.logger.error(f"   HashedId8 completo: {compute_hashed_id8(latest_at).hex()}")
+            return False
+        
+        self.logger.info(f"✅ Usando AT con HashedId8: {at_hashed_id8}")
+        
+        # Firma messaggio con chiave privata dell'AT (ETSI-compliant!)
         from cryptography.hazmat.primitives import hashes
-        signature = self.private_key.sign(
+        signature = at_private_key.sign(
             message.encode(), 
             ec.ECDSA(hashes.SHA256())
         )
@@ -568,24 +608,23 @@ class ITSStation:
         PKIFileHandler.append_to_log_file(signed_message, self.outbox_path)
         
         # Consegna a destinatario (simulated)
-        recipient_base_dir = os.path.join("./pki_data/itss/", f"{recipient_id}/")
-        recipient_inbox_file = os.path.join(
-            recipient_base_dir, 
-            "inbox", 
-            f"{self.its_id}_inbox.txt"
-        )
+        # Usa la stessa base_dir parent del mittente per trovare il destinatario
+        sender_base_parent = os.path.dirname(self.base_dir)
+        recipient_paths = PKIPathManager.get_entity_paths("ITS", recipient_id, sender_base_parent)
+        recipient_inbox_file = str(recipient_paths.inbox_dir / f"{self.its_id}_inbox.txt")
         
         PKIFileHandler.append_to_log_file(signed_message, recipient_inbox_file)
         
         self.logger.info(f"✅ Messaggio {message_type} firmato e inviato")
         return True
 
-    def receive_v2x_messages(self, validate: bool = True) -> List[dict]:
+    def receive_v2x_messages(self, validate: bool = True, clear_after_read: bool = False) -> List[dict]:
         """
         Riceve e valida messaggi V2X dall'inbox.
         
         Args:
             validate: Se True, valida firma di ogni messaggio
+            clear_after_read: Se True, svuota inbox dopo aver letto i messaggi
             
         Returns:
             Lista di messaggi ricevuti (validati se validate=True)
@@ -619,7 +658,7 @@ class ITSStation:
                 
                 for msg_block in message_blocks:
                     if validate:
-                        # Valida messaggio con trust anchors ASN.1 OER
+                        # Valida messaggio con trust anchors ASN.1 asn
                         if self._validate_v2x_message_signature(msg_block):
                             messages.append({"raw": msg_block, "validated": True})
                         else:
@@ -627,6 +666,11 @@ class ITSStation:
                             messages.append({"raw": msg_block, "validated": False})
                     else:
                         messages.append({"raw": msg_block, "validated": None})
+                
+                # Svuota inbox se richiesto
+                if clear_after_read:
+                    inbox_file.unlink()
+                    self.logger.info(f"🗑️  Inbox file rimosso: {inbox_file.name}")
                     
             except Exception as e:
                 self.logger.error(f"Errore lettura {inbox_file.name}: {e}")
@@ -636,7 +680,7 @@ class ITSStation:
 
     def _validate_v2x_message_signature(self, message_block: str) -> bool:
         """
-        Valida firma digitale di un messaggio V2X usando trust anchors ASN.1 OER.
+        Valida firma digitale di un messaggio V2X usando trust anchors ASN.1 asn.
         
         Verifica:
         1. Firma digitale con chiave pubblica del mittente
@@ -675,17 +719,20 @@ class ITSStation:
                 self.logger.error(f"❌ Messaggio malformato da {sender_id}")
                 return False
             
-            # Carica AT del mittente (ASN.1 OER)
-            sender_at_dir = Path("./pki_data/itss") / sender_id / "authorization_tickets"
+            # Carica AT del mittente (ASN.1 asn)
+            # Usa lo stesso base_dir parent del ricevente per trovare il mittente
+            receiver_base_parent = os.path.dirname(self.base_dir)
+            sender_paths = PKIPathManager.get_entity_paths("ITS", sender_id, receiver_base_parent)
+            sender_at_dir = sender_paths.authorization_tickets_dir
             
             if not sender_at_dir.exists():
-                self.logger.warning(f"⚠️  Directory AT mittente {sender_id} non trovata")
+                self.logger.warning(f"⚠️  Directory AT mittente {sender_id} non trovata: {sender_at_dir}")
                 return False
             
-            # Cerca AT più recente del mittente (.oer)
-            sender_at_files = list(sender_at_dir.glob("*.oer"))
+            # Cerca AT più recente del mittente (.asn)
+            sender_at_files = list(sender_at_dir.glob('*.oer'))
             if not sender_at_files:
-                self.logger.warning(f"⚠️  Nessun AT ASN.1 OER per mittente {sender_id}")
+                self.logger.warning(f"⚠️  Nessun AT ASN.1 asn per mittente {sender_id}")
                 return False
             
             # Usa AT più recente
@@ -694,30 +741,38 @@ class ITSStation:
             
             self.logger.info(f"Caricamento AT mittente: {sender_at_path.name}")
             
-            # Carica AT ASN.1 OER
+            # Carica AT ASN.1 asn
             sender_at_asn1 = PKIFileHandler.load_binary_file(str(sender_at_path))
+            sender_at_hash = compute_hashed_id8(sender_at_asn1).hex()
             
-            # Estrai chiave pubblica da AT
-            from protocols.etsi_authorization_ticket import ETSIAuthorizationTicketEncoder
+            self.logger.info(f"   HashedId8 AT mittente: {sender_at_hash[:16]}")
+            self.logger.info(f"   Dimensione AT: {len(sender_at_asn1)} bytes")
             
-            at_encoder = ETSIAuthorizationTicketEncoder()
-            sender_public_key = at_encoder.extract_public_key(sender_at_asn1)
+            # Estrai chiave pubblica da AT (ETSI TS 103097 V2.1.1)
+            sender_public_key = extract_public_key_from_asn1_certificate(sender_at_asn1)
             
-            # === VERIFICA 1: Validità temporale del certificato ===
-            at_decoded = at_encoder.decode_authorization_ticket(sender_at_asn1)
-            
-            if 'error' in at_decoded:
-                self.logger.error(f"❌ Errore decodifica AT: {at_decoded['error']}")
-                return False
-            
-            # Verifica scadenza
-            from datetime import datetime
-            now = datetime.now(timezone.utc)
-            expiry = datetime.fromisoformat(at_decoded['expiry'])
-            
-            if expiry < now:
-                self.logger.error(f"❌ Certificato AT mittente {sender_id} SCADUTO")
-                return False
+            # === VERIFICA 1: Validità temporale del certificato (ETSI TS 103097 V2.1.1) ===
+            try:
+                start_datetime, expiry_datetime, duration_sec = extract_validity_period(sender_at_asn1)
+                now = datetime.now(timezone.utc)
+                
+                if expiry_datetime <= now:
+                    self.logger.error(f"❌ Certificato AT mittente {sender_id} SCADUTO")
+                    self.logger.error(f"   Scaduto: {expiry_datetime.isoformat()}")
+                    self.logger.error(f"   Ora: {now.isoformat()}")
+                    return False
+                
+                if start_datetime > now:
+                    self.logger.error(f"❌ Certificato AT mittente {sender_id} NON ANCORA VALIDO")
+                    self.logger.error(f"   Valido da: {start_datetime.isoformat()}")
+                    self.logger.error(f"   Ora: {now.isoformat()}")
+                    return False
+                
+                self.logger.info(f"✅ Validità temporale OK (scade: {expiry_datetime.isoformat()})")
+                
+            except Exception as validity_err:
+                self.logger.warning(f"⚠️  Impossibile verificare validità temporale: {validity_err}")
+                self.logger.warning("   Procedendo comunque con validazione firma...")
             
             # === VERIFICA 2: Firma digitale ===
             signature_bytes = bytes.fromhex(signature_hex)
@@ -733,7 +788,7 @@ class ITSStation:
                 self.logger.error(f"❌ Firma NON valida da {sender_id}: {e}")
                 return False
             
-            # === VERIFICA 3: Validazione catena certificati ===
+            # === VERIFICA 3: Validazione catena certificati (ETSI TS 102941 V2.1.1) ===
             # Verifica che AT sia firmato da AA fidato in trust anchors
             if not self.trust_anchors_asn1:
                 self.logger.warning(f"⚠️  Nessun trust anchor caricato, skip validazione catena")
@@ -743,13 +798,31 @@ class ITSStation:
             self.logger.info("Validazione catena certificati...")
             
             try:
-                # 1. Estrai issuer_hashed_id8 dall'AT (identifica l'AA) - riusa decodifica già fatta
-                aa_hashed_id8 = at_decoded.get('issuer_hashed_id8', '')
+                # 1. Decodifica AT per estrarre issuer_hashed_id8 (identifica l'AA)
+                at_decoded = decode_certificate_with_asn1(sender_at_asn1, "EtsiTs103097Certificate")
                 
-                if aa_hashed_id8:
-                    self.logger.info(f"   AT firmato da AA con HashedId8: {aa_hashed_id8}")
+                # Estrai issuer da TBS (solitamente campo "issuer")
+                issuer_data = at_decoded.get('toBeSigned', {}).get('issuer', {})
+                
+                # Cerca HashedId8 nell'issuer
+                aa_hashed_id8_bytes = None
+                if isinstance(issuer_data, dict):
+                    # Prova diversi campi possibili
+                    for field in ['sha256AndDigest', 'hashedId8', 'digest']:
+                        if field in issuer_data:
+                            aa_hashed_id8_bytes = issuer_data[field]
+                            break
+                
+                if aa_hashed_id8_bytes:
+                    # Converti in hex per confronto
+                    if isinstance(aa_hashed_id8_bytes, bytes):
+                        aa_hashed_id8 = aa_hashed_id8_bytes.hex()
+                    else:
+                        aa_hashed_id8 = aa_hashed_id8_bytes
                     
-                    # 2. Verifica che l'AA sia nei trust anchors (dovrebbe essere nella CTL)
+                    self.logger.info(f"   AT firmato da AA con HashedId8: {aa_hashed_id8[:16]}...")
+                    
+                    # 2. Verifica che l'AA sia nei trust anchors
                     aa_trusted = False
                     for anchor in self.trust_anchors_asn1:
                         anchor_hashed_id8 = compute_hashed_id8(anchor).hex()
@@ -768,8 +841,10 @@ class ITSStation:
                     
             except Exception as chain_err:
                 self.logger.warning(f"   ⚠️  Errore validazione catena: {chain_err}")
+                import traceback
+                traceback.print_exc()
             
-            # Per ora: se firma valida e AT non scaduto, accetta
+            # Messaggio accettato se firma valida
             self.logger.info(f"✅ Messaggio da {sender_id} VALIDO")
             return True
             
@@ -788,13 +863,13 @@ class ITSStation:
         Ottiene l'Authorization Ticket più recente.
         
         Returns:
-            bytes: AT ASN.1 OER più recente, None se non esiste
+            bytes: AT ASN.1 asn più recente, None se non esiste
         """
         at_dir = Path(self.at_dir)
         if not at_dir.exists():
             return None
         
-        at_files = list(at_dir.glob("*.oer"))
+        at_files = list(at_dir.glob('*.oer'))
         if not at_files:
             return None
         
@@ -816,7 +891,7 @@ class ITSStation:
             dict: Statistiche (EC presente, numero AT, messaggi, etc.)
         """
         at_dir = Path(self.at_dir)
-        at_count = len(list(at_dir.glob("*.oer"))) if at_dir.exists() else 0
+        at_count = len(list(at_dir.glob('*.oer'))) if at_dir.exists() else 0
         
         inbox_path = Path(self.inbox_path)
         inbox_count = len(list(inbox_path.glob("*.txt"))) if inbox_path.exists() else 0

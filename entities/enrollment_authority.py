@@ -12,16 +12,20 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 
-# ETSI Protocol Layer - ASN.1 OER Implementation
-from protocols.etsi_authority_certificate import ETSIAuthorityCertificateEncoder, generate_authority_certificate
-from protocols.etsi_enrollment_certificate import ETSIEnrollmentCertificateEncoder
-from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import (
+# ETSI Protocol Layer - ASN.1 Implementation (100% ETSI Standard)
+from protocols.certificates.asn1_encoder import (
+    decode_certificate_with_asn1,
+    generate_enrollment_certificate,
+    generate_subordinate_certificate,
+)
+from protocols.core import compute_hashed_id8, etsi_verification_key_to_public_key, etsi_encryption_key_to_public_key
+from protocols.core.primitives import extract_validity_period
+from protocols.messages.encoder import ETSIMessageEncoder
+from protocols.messages import (
     InnerEcRequest,
     InnerEcResponse,
-    ResponseCode,
-    compute_request_hash,
 )
+from protocols.core import ResponseCode, compute_request_hash
 
 # Managers (Direct imports - NO interfaces needed)
 from managers.crl_manager import CRLManager
@@ -37,28 +41,28 @@ class EnrollmentAuthority:
     """
     Enrollment Authority (EA) - ETSI TS 102941 Compliant
     
-    **REFACTORED VERSION** - ASN.1 OER Migration Complete
+    **REFACTORED VERSION** - ASN.1 asn Migration Complete
     
     Implementa l'Enrollment Authority secondo lo standard ETSI TS 102941 V2.1.1.
     
     Responsabilità (Single Responsibility):
-    - Emissione Enrollment Certificates (EC) in formato ASN.1 OER nativo
+    - Emissione Enrollment Certificates (EC) in formato ASN.1 asn nativo
     - Gestione revoche tramite CRLManager (delegazione)
     - Validazione Proof of Possession nelle EnrollmentRequest
     - Pubblicazione automatica CRL (Full e Delta)
     
     **Formato Certificati:**
-    - EA Certificate: **ASN.1 OER** (ETSI TS 103097) - firmato da Root CA
-    - Enrollment Certificates (EC): ASN.1 OER binario (ETSI TS 103097)
-    - CRL: X.509 PEM (standard ETSI TS 102941, gestito da CRLManager)
+    - EA Certificate: **ASN.1 asn** (ETSI TS 103097) - firmato da Root CA
+    - Enrollment Certificates (EC): ASN.1 asn binario (ETSI TS 103097)
+    - CRL: ASN.1 OER (ETSI TS 102941, gestito da CRLManager)
     
     Standard ETSI Implementati:
     - ETSI TS 102941 V2.1.1: Trust and Privacy Management
     - ETSI TS 103097 V2.1.1: Certificate Formats and Security Headers
     
     Metodi Principali (ETSI-compliant):
-    - process_enrollment_request_etsi(): Processa EnrollmentRequest ASN.1 OER
-    - issue_enrollment_certificate(): Genera EC in formato ASN.1 OER
+    - process_enrollment_request_etsi(): Processa EnrollmentRequest ASN.1 asn
+    - issue_enrollment_certificate(): Genera EC in formato ASN.1 asn
     - revoke_certificate(): Delega revoca a CRLManager (usa HashedId8)
     
     Design Patterns Used:
@@ -71,21 +75,24 @@ class EnrollmentAuthority:
     def __init__(
         self,
         root_ca,
+        tlm,
         ea_id: Optional[str] = None,
-        base_dir: str = "./pki_data/ea/",
-        tlm=None
+        base_dir: str = None
     ):
         """
         Inizializza Enrollment Authority.
 
         Args:
             root_ca: RootCA instance per firma certificato EA
+            tlm: TrustListManager per registration (REQUIRED per ETSI TS 102941 § 6.1.3)
             ea_id: ID dell'EA (generato automaticamente se None)
-            base_dir: Directory base per dati EA
-            tlm: TrustListManager per auto-registration (optional)
+            base_dir: Directory base per dati EA (default: PKI_PATHS.get_ea_path(ea_id))
             
         Raises:
             ValueError: Se parametri obbligatori mancanti
+        
+        Note:
+            ETSI TS 102941 § 6.1.3 richiede che ogni EA sia registrata presso un TLM
         """
         # ========================================================================
         # 1. VALIDAZIONE PARAMETRI
@@ -93,6 +100,9 @@ class EnrollmentAuthority:
         
         if not root_ca:
             raise ValueError("root_ca è obbligatorio (istanza RootCA)")
+        
+        if not tlm:
+            raise ValueError("tlm è obbligatorio per ETSI TS 102941 compliance (§ 6.1.3)")
         
         # Genera ID randomico se non specificato
         if ea_id is None:
@@ -114,7 +124,7 @@ class EnrollmentAuthority:
         # Store IDs early for logger initialization
         self.ea_id = ea_id
         self.base_dir = str(self.paths.base_dir)
-        # Standard ETSI: .oer per certificati ASN.1 OER, .key per chiavi, .pem per CRL
+        # Standard ETSI: .oer per certificati ASN.1 OER encoded, .key per chiavi, .pem per CRL
         self.ea_certificate_path = str(self.paths.certificates_dir / "ea_certificate.oer")
         self.ea_key_path = str(self.paths.private_keys_dir / "ea_key.key")
         self.ec_dir = str(self.paths.data_dir)  # enrollment_certificates
@@ -143,7 +153,7 @@ class EnrollmentAuthority:
         
         self.root_ca = root_ca
         self.private_key = None
-        self.certificate_asn1 = None  # EA certificate in ASN.1 OER format
+        self.certificate_asn1 = None  # EA certificate in ASN.1 asn format
 
         self.logger.info("✅ Dependencies stored successfully")
         self.logger.info(f"   - RootCA: {type(root_ca).__name__}")
@@ -152,13 +162,9 @@ class EnrollmentAuthority:
         # 4. INITIALIZE ENCODERS (BEFORE CERTIFICATE GENERATION)
         # ========================================================================
         
-        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 OER)...")
+        self.logger.info("Inizializzando ETSI Message Encoder (ASN.1 asn)...")
         self.message_encoder = ETSIMessageEncoder()
         self.logger.info("✅ ETSI Message Encoder inizializzato!")
-        
-        self.logger.info("Inizializzando ETSI Authority Certificate Encoder (ASN.1 OER)...")
-        self.authority_encoder = ETSIAuthorityCertificateEncoder()
-        self.logger.info("✅ ETSI Authority Certificate Encoder inizializzato!")
 
         # ========================================================================
         # 5. LOAD OR GENERATE EA CERTIFICATE AND KEY
@@ -167,8 +173,8 @@ class EnrollmentAuthority:
         self.logger.info("Caricando o generando chiave e certificato EA...")
         self.load_or_generate_ea()
         
-        # Compute EA's HashedId8 from EA certificate ASN.1
-        self.ea_hashed_id8 = self.authority_encoder.compute_hashed_id8(self.certificate_asn1)
+        # Compute EA's HashedId8 from EA certificate ASN.1 (ETSI TS 103097 V2.1.1)
+        self.ea_hashed_id8 = compute_hashed_id8(self.certificate_asn1)
         self.logger.info(f"✅ EA HashedId8: {self.ea_hashed_id8.hex()[:16]}...")
 
         # ========================================================================
@@ -177,8 +183,8 @@ class EnrollmentAuthority:
         
         self.logger.info(f"Inizializzando CRLManager per EA {ea_id}...")
         
-        # CRLManager usa X.509 PEM (standard accettato per CRL secondo ETSI TS 102941)
-        # I certificati sono ASN.1 OER, ma le CRL rimangono in X.509 come da specifica
+        # CRLManager usa ASN.1 OER format (ETSI TS 102941 compliant)
+        # Tutti i dati PKI sono in ASN.1 OER, inclusi i CRL
         self.crl_manager = None
         self.logger.info("⚠️  CRLManager temporaneamente disabilitato (implementazione futura)")
         
@@ -194,14 +200,6 @@ class EnrollmentAuthority:
         #     self.logger.info("✅ Full CRL caricata in memoria")
         # except Exception as e:
         #     self.logger.warning(f"Impossibile caricare Full CRL esistente: {e}")
-
-        # ========================================================================
-        # 7. INITIALIZE ETSI ENROLLMENT CERTIFICATE ENCODER (ASN.1 OER)
-        # ========================================================================
-        
-        self.logger.info("Inizializzando ETSI Enrollment Certificate Encoder (ASN.1 OER)...")
-        self.ec_encoder = ETSIEnrollmentCertificateEncoder()
-        self.logger.info("✅ ETSI Enrollment Certificate Encoder inizializzato!")
 
         # ========================================================================
         # 9. INITIALIZE SCHEDULERS (CRL + EXPIRY)
@@ -227,27 +225,27 @@ class EnrollmentAuthority:
         self.logger.info("=" * 80)
 
     # ========================================================================
-    # ETSI TS 102941 PROTOCOL METHODS (ASN.1 OER)
+    # ETSI TS 102941 PROTOCOL METHODS (ASN.1 asn)
     # ========================================================================
 
     def process_enrollment_request_etsi(self, request_bytes: bytes) -> bytes:
         """
-        Processa una EnrollmentRequest ETSI TS 102941 (ASN.1 OER encoded).
+        Processa una EnrollmentRequest ETSI TS 102941 (ASN.1 asn encoded).
 
         FLUSSO COMPLETO:
-        1. Decripta e decodifica EnrollmentRequest (ASN.1 OER)
+        1. Decripta e decodifica EnrollmentRequest (ASN.1 asn)
         2. Verifica Proof of Possession (firma ITS-S)
-        3. Emette Enrollment Certificate in formato ASN.1 OER
-        4. Crea EnrollmentResponse (ASN.1 OER encoded)
+        3. Emette Enrollment Certificate in formato ASN.1 asn
+        4. Crea EnrollmentResponse (ASN.1 asn encoded)
         5. Cripta risposta con chiave pubblica ITS-S
 
         Args:
-            request_bytes: ASN.1 OER encoded EnrollmentRequest
+            request_bytes: ASN.1 asn encoded EnrollmentRequest
 
         Returns:
-            ASN.1 OER encoded EnrollmentResponse (encrypted)
+            ASN.1 asn encoded EnrollmentResponse (encrypted)
         """
-        self.logger.info(f"🔄 Ricevuto EnrollmentRequest ETSI (ASN.1 OER): {len(request_bytes)} bytes")
+        self.logger.info(f"🔄 Ricevuto EnrollmentRequest ETSI (ASN.1 asn): {len(request_bytes)} bytes")
 
         try:
             # 1. Decripta e decodifica request
@@ -265,49 +263,68 @@ class EnrollmentAuthority:
             # 2. Verifica Proof of Possession (già verificato dal message encoder)
             self.logger.info("✅ Proof of Possession verificato")
 
-            # 3. Estrai chiave pubblica e emetti certificato ASN.1 OER
-            verification_key_bytes = inner_ec_request.publicKeys.get("verification")
-            if not verification_key_bytes:
+            # 3. Estrai chiavi pubbliche (verification per certificato, encryption per risposta)
+            # ETSI TS 102 941 V2.1.1 Section 6.2.3.4:
+            # - Verification key: usata per il certificato enrollment
+            # - Encryption key: usata per cifrare la risposta enrollment
+            verification_key_asn1 = inner_ec_request.publicKeys.get("verification")
+            encryption_key_asn1 = inner_ec_request.publicKeys.get("encryption")
+            
+            if not verification_key_asn1:
                 self.logger.error("❌ Errore: Nessuna verification key fornita")
                 return self._create_error_response(request_bytes, ResponseCode.BAD_REQUEST)
+            
+            if not encryption_key_asn1:
+                self.logger.error("❌ Errore: Nessuna encryption key fornita")
+                return self._create_error_response(request_bytes, ResponseCode.INVALID_ENCRYPTION_KEY)
 
-            # Deserializza chiave pubblica
+            # Converti chiave di verifica da formato ASN.1 ETSI a EllipticCurvePublicKey
+            # La chiave arriva in formato ASN.1: ('ecdsaNistP256', ('compressed-y-0', x_bytes))
             try:
-                public_key = load_der_public_key(verification_key_bytes)
-            except:
-                # Prova formato X9.62 uncompressed point
-                public_key = ec.EllipticCurvePublicKey.from_encoded_point(
-                    ec.SECP256R1(), verification_key_bytes
-                )
+                verification_public_key = etsi_verification_key_to_public_key(verification_key_asn1)
+                self.logger.info(f"✅ Verification key convertita da ASN.1 ETSI")
+            except Exception as e:
+                self.logger.error(f"❌ Errore conversione verification key: {e}")
+                return self._create_error_response(request_bytes, ResponseCode.BAD_REQUEST)
+            
+            # Converti chiave di encryption da formato ASN.1 ETSI a EllipticCurvePublicKey
+            # La chiave arriva in formato ASN.1: {'supportedSymmAlg': 'aes128Ccm', 'publicKey': (...)}
+            try:
+                encryption_public_key = etsi_encryption_key_to_public_key(encryption_key_asn1)
+                self.logger.info(f"✅ Encryption key convertita da ASN.1 ETSI")
+            except Exception as e:
+                self.logger.error(f"❌ Errore conversione encryption key: {e}")
+                return self._create_error_response(request_bytes, ResponseCode.INVALID_ENCRYPTION_KEY)
 
-            # 4. Emetti Enrollment Certificate in formato ASN.1 OER
-            self.logger.info("📜 Emissione Enrollment Certificate (ASN.1 OER)...")
-            ec_certificate_oer = self.issue_enrollment_certificate(
+            # 4. Emetti Enrollment Certificate in formato ASN.1 asn con verification key
+            self.logger.info("📜 Emissione Enrollment Certificate (ASN.1 asn)...")
+            ec_certificate_asn = self.issue_enrollment_certificate(
                 its_id=inner_ec_request.itsId,
-                public_key=public_key,
+                public_key=verification_public_key,
                 attributes=inner_ec_request.requestedSubjectAttributes,
             )
             
-            # Compute HashedId8 for logging
-            ec_hashed_id8 = self.ec_encoder.compute_hashed_id8(ec_certificate_oer)
+            # Compute HashedId8 for logging (ETSI TS 103097 V2.1.1)
+            ec_hashed_id8 = compute_hashed_id8(ec_certificate_asn)
             self.logger.info(f"✅ Enrollment Certificate emesso: HashedId8={ec_hashed_id8.hex()[:16]}...")
 
-            # 5. Crea e cripta response
-            self.logger.info("📦 Creando EnrollmentResponse (ASN.1 OER)...")
+            # 5. Crea e cripta response con encryption key (ETSI TS 102 941 Section 6.2.3.4)
+            self.logger.info("📦 Creando EnrollmentResponse (ASN.1 asn)...")
+            self.logger.info(f"   🔐 Cifrando risposta con encryption key dell'ITS-S")
             request_hash = compute_request_hash(request_bytes)
 
-            # Encode response con certificato ASN.1 OER binario
+            # Encode response con certificato ASN.1 asn binario, cifrato con encryption key
             response_bytes = self.message_encoder.encode_enrollment_response(
                 response_code=ResponseCode.OK,
                 request_hash=request_hash,
-                certificate_asn1=ec_certificate_oer,  # Direttamente bytes ASN.1 OER
-                itss_public_key=public_key,
+                certificate_asn1=ec_certificate_asn,  # Direttamente bytes ASN.1 asn
+                itss_public_key=encryption_public_key,  # USA ENCRYPTION KEY, non verification!
             )
 
             self.logger.info(f"✅ EnrollmentResponse creata: {len(response_bytes)} bytes")
             self.logger.info("   Response code: OK")
-            self.logger.info("   Certificate attached: Yes (ASN.1 OER)")
-            self.logger.info("   Encoding: ASN.1 OER")
+            self.logger.info("   Certificate attached: Yes (ASN.1 asn)")
+            self.logger.info("   Encoding: ASN.1 asn")
 
             return response_bytes
 
@@ -323,7 +340,7 @@ class EnrollmentAuthority:
         attributes=None
     ) -> bytes:
         """
-        Emette un Enrollment Certificate in formato ASN.1 OER (ETSI TS 103097).
+        Emette un Enrollment Certificate in formato ASN.1 asn (ETSI TS 103097).
         
         Usa ETSIEnrollmentCertificateEncoder per generare EC conformi a:
         - ETSI TS 103097 V2.1.1: Certificate format and structure
@@ -335,7 +352,7 @@ class EnrollmentAuthority:
             attributes: Attributi opzionali (country, organization)
             
         Returns:
-            bytes: Enrollment Certificate in formato ASN.1 OER binario
+            bytes: Enrollment Certificate in formato ASN.1 asn binario
         """
         # Extract attributes
         country = "IT"
@@ -348,33 +365,32 @@ class EnrollmentAuthority:
             if "validity_days" in attributes:
                 duration_days = int(attributes["validity_days"])
 
-        # Generate EC using ETSI encoder
+        # Generate EC using ASN.1 encoder
         now_utc = datetime.now(timezone.utc)
         
-        ec_certificate_oer = self.ec_encoder.encode_full_enrollment_certificate(
-            issuer_hashed_id8=self.ea_hashed_id8,
-            subject_public_key=public_key,
-            start_validity=now_utc,
-            duration_days=duration_days,
-            its_id=its_id,
+        ec_certificate_asn = generate_enrollment_certificate(
+            ea_cert_asn1=self.certificate_asn1,
             ea_private_key=self.private_key,
+            its_public_key=public_key,
+            its_id=its_id,
+            duration_days=duration_days,
             country=country,
             organization=organization,
         )
 
-        # Save EC to disk usando PKIFileHandler
-        ec_hashed_id8 = self.ec_encoder.compute_hashed_id8(ec_certificate_oer)
+        # Save EC to disk usando PKIFileHandler (ETSI TS 103097 V2.1.1)
+        ec_hashed_id8 = compute_hashed_id8(ec_certificate_asn)
         ec_filename = f"EC_{ec_hashed_id8.hex()}.oer"
         ec_path = os.path.join(self.ec_dir, ec_filename)
         
         # Usa PKIFileHandler per operazioni I/O (DRY compliance)
-        PKIFileHandler.save_binary_file(ec_certificate_oer, ec_path)
+        PKIFileHandler.save_binary_file(ec_certificate_asn, ec_path)
         
         # Log minimo solo in debug mode
         if self.logger.level <= 10:  # DEBUG level
             self.logger.debug(f"✅ EC emesso: {ec_filename}, HashedId8={ec_hashed_id8.hex()[:16]}...")
         
-        return ec_certificate_oer
+        return ec_certificate_asn
 
     # ========================================================================
     # CERTIFICATE REVOCATION METHODS (DELEGATES TO CRL MANAGER)
@@ -382,7 +398,7 @@ class EnrollmentAuthority:
 
     def revoke_certificate(self, hashed_id8_hex: str, reason: str = "unspecified"):
         """
-        Revoca un certificato ASN.1 OER usando HashedId8.
+        Revoca un certificato ASN.1 asn usando HashedId8.
         Delega la gestione revoca a CRLManager (Single Responsibility).
 
         Args:
@@ -450,7 +466,7 @@ class EnrollmentAuthority:
         return crl_path
 
     # ========================================================================
-    # EA CERTIFICATE AND KEY MANAGEMENT (ASN.1 OER)
+    # EA CERTIFICATE AND KEY MANAGEMENT (ASN.1 asn)
     # ========================================================================
 
     def load_or_generate_ea(self):
@@ -478,15 +494,15 @@ class EnrollmentAuthority:
 
     def generate_signed_certificate_from_rootca_asn1(self):
         """
-        Genera certificato EA in formato ASN.1 OER firmato dalla Root CA.
+        Genera certificato EA in formato ASN.1 asn firmato dalla Root CA.
         
-        Usa il nuovo encoder ETSIAuthorityCertificateEncoder per creare
-        un certificato subordinato secondo ETSI TS 103097.
+        Usa generate_subordinate_certificate() secondo ETSI TS 103097 V2.1.1
+        per creare un certificato subordinato (EA/AA) valido.
         """
         self.logger.info(f"📜 Richiedendo alla Root CA la firma del certificato EA {self.ea_id}...")
         
-        # Usa generate_authority_certificate helper function
-        self.certificate_asn1 = generate_authority_certificate(
+        # Usa generate_subordinate_certificate() - ETSI TS 103097 V2.1.1
+        self.certificate_asn1 = generate_subordinate_certificate(
             root_ca_cert_asn1=self.root_ca.certificate_asn1,
             root_ca_private_key=self.root_ca.private_key,
             authority_public_key=self.private_key.public_key(),
@@ -502,13 +518,19 @@ class EnrollmentAuthority:
         # Usa PKIFileHandler per operazioni I/O (DRY compliance)
         PKIFileHandler.save_binary_file(self.certificate_asn1, self.ea_certificate_path)
         
-        # Decode per logging
-        cert_info = self.authority_encoder.decode_authority_certificate(self.certificate_asn1)
-        self.logger.info("✅ Certificato EA ASN.1 firmato dalla Root CA e salvato!")
-        self.logger.info(f"   Authority ID: {cert_info['authority_id']}")
-        self.logger.info(f"   Authority Type: {cert_info['authority_type']}")
-        self.logger.info(f"   Organization: {cert_info['organization']}")
-        self.logger.info(f"   Validità: {cert_info['start_validity']} - {cert_info['expiry']}")
+        # Decode per logging usando decoder ASN.1 standard ETSI
+        try:
+            cert_decoded = decode_certificate_with_asn1(self.certificate_asn1, "EtsiTs103097Certificate")
+            version = cert_decoded.get('version', '?')
+            cert_type = cert_decoded.get('type', '?')
+            issuer = cert_decoded.get('issuer', {})
+            self.logger.info("✅ Certificato EA ASN.1 firmato dalla Root CA e salvato!")
+            self.logger.info(f"   Version: {version}")
+            self.logger.info(f"   Type: {cert_type}")
+            self.logger.info(f"   Issuer: {issuer}")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Impossibile decodificare certificato per logging: {e}")
+            self.logger.info("✅ Certificato EA ASN.1 salvato!")
 
         # Archivia il certificato anche nella RootCA
         self.logger.info("📦 Richiedendo archiviazione certificato ASN.1 nella RootCA...")
@@ -525,17 +547,21 @@ class EnrollmentAuthority:
         self.logger.info("✅ Chiave privata EA caricata!")
 
     def load_ea_certificate_asn1(self):
-        """Carica il certificato EA ASN.1 OER dal file binario."""
+        """Carica il certificato EA ASN.1 asn dal file binario."""
         self.logger.info(f"📥 Caricando certificato EA ASN.1 da: {self.ea_certificate_path}")
         self.certificate_asn1 = PKIFileHandler.load_binary_file(self.ea_certificate_path)
         
-        # Decode per logging
-        cert_info = self.authority_encoder.decode_authority_certificate(self.certificate_asn1)
-        self.logger.info("✅ Certificato EA ASN.1 caricato!")
-        self.logger.info(f"   Authority ID: {cert_info['authority_id']}")
-        self.logger.info(f"   Authority Type: {cert_info['authority_type']}")
-        self.logger.info(f"   Organization: {cert_info['organization']}")
-        self.logger.info(f"   Validità: {cert_info['start_validity']} - {cert_info['expiry']}")
+        # Decode per logging usando decoder ASN.1 standard ETSI
+        try:
+            cert_decoded = decode_certificate_with_asn1(self.certificate_asn1, "EtsiTs103097Certificate")
+            version = cert_decoded.get('version', '?')
+            cert_type = cert_decoded.get('type', '?')
+            self.logger.info("✅ Certificato EA ASN.1 caricato!")
+            self.logger.info(f"   Version: {version}")
+            self.logger.info(f"   Type: {cert_type}")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Impossibile decodificare certificato per logging: {e}")
+            self.logger.info("✅ Certificato EA ASN.1 caricato!")
 
 
     # ========================================================================
@@ -644,7 +670,7 @@ class EnrollmentAuthority:
             # Conta certificati scaduti trovati
             expired_count = 0
 
-            # Scansiona directory certificati per file EC_*.oer
+            # Scansiona directory certificati per file EC_*.asn
             certificates_dir = self.paths.certificates_dir
             if not certificates_dir.exists():
                 self.logger.debug("Directory certificati non esiste")
@@ -652,32 +678,26 @@ class EnrollmentAuthority:
 
             for cert_file in certificates_dir.glob("EC_*.oer"):
                 try:
-                    # Carica certificato ASN.1 OER usando PKIFileHandler (DRY compliance)
-                    cert_oer = PKIFileHandler.load_binary_file(str(cert_file))
-                    if cert_oer is None:
+                    # Carica certificato ASN.1 asn usando PKIFileHandler (DRY compliance)
+                    cert_asn = PKIFileHandler.load_binary_file(str(cert_file))
+                    if cert_asn is None:
                         continue
                     
-                    # Decodifica per estrarre expiry
-                    cert_data = self.ec_encoder.decode_enrollment_certificate(cert_oer)
-                    
-                    if 'error' in cert_data:
-                        self.logger.warning(f"⚠️  Errore decodifica {cert_file.name}: {cert_data['error']}")
-                        continue
-                    
-                    # Controlla se è scaduto
-                    expiry_str = cert_data.get('expiry')
-                    if expiry_str:
-                        expiry_time = datetime.fromisoformat(expiry_str)
-                        now = datetime.now(timezone.utc)
+                    # Estrai ValidityPeriod con extract_validity_period() - ETSI TS 103097 V2.1.1
+                    try:
+                        start_datetime, expiry_datetime, duration_sec = extract_validity_period(cert_asn)
                         
-                        if expiry_time <= now:
-                            # Certificato scaduto - decrementa contatore
-                            metrics = get_metrics_collector()
-                            metrics.decrement_counter('active_certificates')
+                        # Controlla se è scaduto
+                        now = datetime.now(timezone.utc)
+                        if expiry_datetime <= now:
+                            # Certificato scaduto - incrementa contatore
                             expired_count += 1
-
-                            # Log solo per debug, non rimuovere file (potrebbe servire per audit)
-                            self.logger.debug(f"⏰ Certificato EC scaduto trovato: {cert_file.name}")
+                            self.logger.debug(f"⏰ Certificato EC scaduto: {cert_file.name} (scaduto: {expiry_datetime.isoformat()})")
+                    
+                    except Exception as extract_err:
+                        # Se extract_validity_period fallisce, skippa questo certificato
+                        self.logger.debug(f"⚠️  Impossibile estrarre validity period da {cert_file.name}: {extract_err}")
+                        continue
 
                 except Exception as e:
                     self.logger.warning(f"⚠️  Errore lettura certificato {cert_file.name}: {e}")
@@ -704,7 +724,7 @@ class EnrollmentAuthority:
             error_code: Codice errore da ritornare
 
         Returns:
-            ASN.1 OER encoded EnrollmentResponse con errore
+            ASN.1 asn encoded EnrollmentResponse con errore
         """
         self.logger.warning(f"⚠️  Creando error response: {error_code}")
         request_hash = compute_request_hash(request_bytes)
@@ -723,31 +743,11 @@ class EnrollmentAuthority:
 
     def _auto_register_to_tlm(self):
         """
-        Auto-registrazione al TLM_MAIN se disponibile.
-        Usa TLM passato nel costruttore, oppure cerca nei globals, oppure crea istanza locale.
+        Registrazione automatica al TLM (ETSI TS 102941 § 6.1.3 requirement).
+        Registra l'EA come trust anchor utilizzando il certificato ASN.1.
         """
         try:
-            from managers.trust_list_manager import TrustListManager
-            
-            # 1. Usa TLM passato nel costruttore (priorità massima)
             tlm = self._tlm_for_registration
-            
-            # 2. Cerca TLM esistente nei globals del modulo server (singleton pattern)
-            if tlm is None:
-                try:
-                    import sys
-                    if 'server' in sys.modules:
-                        server_module = sys.modules['server']
-                        if hasattr(server_module, 'PKIEntityManager'):
-                            manager = server_module.PKIEntityManager()
-                            tlm = manager._tlm_main_instance
-                except Exception:
-                    pass
-            
-            # 3. Se non trovato, crea TLM locale (fallback per script standalone)
-            if tlm is None:
-                self.logger.debug("TLM non trovato, creando istanza locale...")
-                tlm = TrustListManager(self.root_ca, base_dir="./pki_data/tlm")
             
             # Controlla se già registrato usando HashedId8 (ASN.1)
             ea_hashed_id8 = self.ea_hashed_id8.hex()
@@ -758,7 +758,7 @@ class EnrollmentAuthority:
             
             if not already_registered:
                 # Registra certificato ASN.1
-                tlm.add_trust_anchor_asn1(self.certificate_asn1, authority_type="EA")
+                tlm.add_trust_anchor(self.certificate_asn1, authority_type="EA")
                 self.logger.info(f"✅ Auto-registered {self.ea_id} to TLM (ASN.1)")
             else:
                 self.logger.debug(f"EA {self.ea_id} già registrato in TLM")

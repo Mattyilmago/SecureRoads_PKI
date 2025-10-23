@@ -229,27 +229,27 @@ from utils.pki_io import PKIFileHandler
 
 # Crea directory
 PKIFileHandler.ensure_directories(
-    "data/certificates",
-    "data/private_keys",
-    "data/crl"
+    "pki_data/certificates",
+    "pki_data/private_keys",
+    "pki_data/crl"
 )
 
 # Salva certificato
-PKIFileHandler.save_certificate(cert, "data/certificates/cert.pem")
+PKIFileHandler.save_certificate(cert, "pki_data/certificates/cert.pem")
 
 # Carica certificato
-cert = PKIFileHandler.load_certificate("data/certificates/cert.pem")
+cert = PKIFileHandler.load_certificate("pki_data/certificates/cert.pem")
 
 # Salva chiave privata (cifrata)
 PKIFileHandler.save_private_key(
     private_key,
-    "data/private_keys/key.pem",
+    "pki_data/private_keys/key.pem",
     password=b"my_secret_password"
 )
 
 # Salva JSON
 metadata = {"version": 1, "count": 42}
-PKIFileHandler.save_json(metadata, "data/metadata.json")
+PKIFileHandler.save_json(metadata, "pki_data/metadata.json")
 ```
 
 ---
@@ -490,8 +490,9 @@ class PKILogger:
 **Utilizzo**:
 ```python
 from utils.logger import PKILogger
+from config import PKI_PATHS
 
-logger = PKILogger(log_dir="data/logs", component_name="EA_001")
+logger = PKILogger(log_dir=str(PKI_PATHS.LOGS), component_name="EA_001")
 
 # Log emissione
 logger.log_certificate_issuance(ec_cert, "Vehicle_001")

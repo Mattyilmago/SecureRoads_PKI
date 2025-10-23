@@ -1,0 +1,267 @@
+-- ETSI TS 103 097 V2.1.1
+-- Security Header and Certificate Formats for Secured V2X Communications
+-- Based on IEEE 1609.2 with ETSI-specific constraints
+
+ETSI-ITS-CDD DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+EXPORTS ALL;
+
+IMPORTS
+    -- Import all base types from IEEE 1609.2
+    Uint8,
+    Uint16,
+    Uint32,
+    Time32,
+    Time64,
+    HashedId3,
+    HashedId8,
+    HashedId32,
+    Opaque,
+    GeographicRegion,
+    CircularRegion,
+    RectangularRegion,
+    PolygonalRegion,
+    IdentifiedRegion,
+    TwoDLocation,
+    ThreeDLocation,
+    ValidityPeriod,
+    Duration,
+    SubjectAssurance,
+    Psid,
+    PsidSsp,
+    SequenceOfPsidSsp,
+    PsidGroupPermissions,
+    SequenceOfPsidGroupPermissions,
+    ServiceSpecificPermissions,
+    HashAlgorithm,
+    PublicVerificationKey,
+    PublicEncryptionKey,
+    BasePublicEncryptionKey,
+    SymmAlgorithm,
+    EccP256CurvePoint,
+    EccP384CurvePoint,
+    Signature,
+    EcdsaP256Signature,
+    EcdsaP384Signature,
+    EncryptedData,
+    SymmetricCiphertext,
+    AesCcmCiphertext,
+    EncryptedDataEncryptionKey,
+    EciesP256EncryptedKey,
+    SequenceOfRecipientInfo,
+    RecipientInfo,
+    Certificate,
+    CertificateType,
+    IssuerIdentifier,
+    ToBeSignedCertificate,
+    CertificateId,
+    Hostname,
+    LinkageData,
+    CrlSeries,
+    VerificationKeyIndicator,
+    SignedData,
+    ToBeSignedData,
+    SignedDataPayload,
+    HeaderInfo,
+    SignerIdentifier,
+    Ieee1609Dot2Data,
+    Ieee1609Dot2Content,
+    SequenceOfCertificate,
+    EndEntityType
+FROM IEEE1609Dot2;
+
+-- =============================================================================
+-- ETSI TS 103097 CERTIFICATE (Constrained IEEE 1609.2 Certificate)
+-- =============================================================================
+
+EtsiTs103097Certificate ::= Certificate (WITH COMPONENTS {
+    version (3),
+    type (explicit),
+    issuer (WITH COMPONENTS {
+        sha256AndDigest
+    }),
+    toBeSigned (WITH COMPONENTS {
+        cracaId ('000000'H),
+        crlSeries (0),
+        validityPeriod,
+        region,
+        assuranceLevel,
+        appPermissions,
+        certIssuePermissions ABSENT,
+        certRequestPermissions ABSENT,
+        canRequestRollover ABSENT,
+        encryptionKey,
+        verifyKeyIndicator (WITH COMPONENTS {
+            verificationKey
+        })
+    }),
+    signature PRESENT
+})
+
+-- =============================================================================
+-- ETSI TS 103097 DATA STRUCTURES
+-- =============================================================================
+
+-- Generic ETSI data wrapper
+EtsiTs103097Data ::= Ieee1609Dot2Data (WITH COMPONENTS {
+    protocolVersion (3),
+    content (WITH COMPONENTS {
+        unsecuredData,
+        signedData (WITH COMPONENTS {..., 
+            tbsData (WITH COMPONENTS {
+                payload (WITH COMPONENTS {
+                    data OPTIONAL,
+                    extDataHash OPTIONAL
+                }),
+                headerInfo (WITH COMPONENTS {
+                    psid,
+                    generationTime,
+                    expiryTime ABSENT,
+                    generationLocation ABSENT,
+                    p2pcdLearningRequest ABSENT,
+                    missingCrlIdentifier ABSENT,
+                    encryptionKey ABSENT
+                })
+            }),
+            signer (WITH COMPONENTS {
+                digest,
+                certificate,
+                self
+            }),
+            signature
+        }),
+        encryptedData,
+        signedCertificateRequest ABSENT
+    })
+})
+
+-- Signed data (for CAMs, DENMs, etc.)
+EtsiTs103097Data-Signed ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        signedData PRESENT
+    })
+})
+
+-- Signed data with external payload
+EtsiTs103097Data-SignedExternalPayload ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        signedData (WITH COMPONENTS {
+            tbsData (WITH COMPONENTS {
+                payload (WITH COMPONENTS {
+                    data ABSENT,
+                    extDataHash PRESENT
+                })
+            })
+        })
+    })
+})
+
+-- Encrypted data (for enrollment/authorization requests)
+EtsiTs103097Data-Encrypted ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        encryptedData PRESENT
+    })
+})
+
+-- Signed and encrypted data
+EtsiTs103097Data-SignedAndEncrypted ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        signedData (WITH COMPONENTS {
+            tbsData (WITH COMPONENTS {
+                payload (WITH COMPONENTS {
+                    data (WITH COMPONENTS {
+                        content (WITH COMPONENTS {
+                            encryptedData PRESENT
+                        })
+                    })
+                })
+            })
+        })
+    })
+})
+
+-- Encrypted data with specific AES-128-CCM
+EtsiTs103097Data-Encrypted-Unicast ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        encryptedData (WITH COMPONENTS {
+            recipients (WITH COMPONENT (WITH COMPONENTS {
+                certRecipInfo PRESENT
+            })),
+            ciphertext (WITH COMPONENTS {
+                aes128ccm
+            })
+        })
+    })
+})
+
+-- =============================================================================
+-- ETSI-SPECIFIC CERTIFICATE TYPES
+-- =============================================================================
+
+-- Root CA Certificate  
+EtsiTs103097Certificate-Root ::= EtsiTs103097Certificate
+
+-- Enrollment Authority Certificate
+EtsiTs103097Certificate-EA ::= EtsiTs103097Certificate
+
+-- Authorization Authority Certificate
+EtsiTs103097Certificate-AA ::= EtsiTs103097Certificate
+
+-- Enrollment Certificate
+EtsiTs103097Certificate-EC ::= EtsiTs103097Certificate
+
+-- Authorization Ticket
+EtsiTs103097Certificate-AT ::= EtsiTs103097Certificate
+
+-- =============================================================================
+-- ETSI-SPECIFIC ENCRYPTION CONSTRAINTS
+-- =============================================================================
+
+EtsiTs103097Data-Encrypted-Aes128Ccm ::= EtsiTs103097Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        encryptedData (WITH COMPONENTS {
+            ciphertext (WITH COMPONENTS {
+                aes128ccm PRESENT
+            })
+        })
+    })
+})
+
+-- =============================================================================
+-- HELPER TYPES FOR COMMON OPERATIONS
+-- =============================================================================
+
+-- Hash output (SHA-256)
+HashedId256 ::= HashedId32
+
+-- Timestamp for generation
+GenerationTime ::= Time64
+
+-- Validity for certificates
+CertificateValidity ::= ValidityPeriod
+
+-- Application ID (PSID for CAM, DENM, etc.)
+ItsAid ::= Psid
+
+-- Common ITS AIDs
+ItsAidCam ::= ItsAid (36)
+ItsAidDenm ::= ItsAid (37)
+ItsAidSpat ::= ItsAid (137)
+ItsAidMap ::= ItsAid (138)
+ItsAidSsem ::= ItsAid (139)
+ItsAidSrem ::= ItsAid (140)
+ItsAidEvcsn ::= ItsAid (141)
+ItsAidSaem ::= ItsAid (142)
+ItsAidRtcmem ::= ItsAid (143)
+
+-- =============================================================================
+-- ETSI CERTIFICATE REQUEST FORMAT
+-- =============================================================================
+
+EtsiTs103097Data-SignedCertificateRequest ::= Ieee1609Dot2Data (WITH COMPONENTS {
+    content (WITH COMPONENTS {
+        signedCertificateRequest PRESENT
+    })
+})
+
+END

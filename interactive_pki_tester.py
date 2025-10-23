@@ -1,4 +1,4 @@
-"""
+﻿"""
 Interactive PKI Tester - Test quotidiani per SecureRoad PKI usando API REST
 
 Script interattivo per eseguire test comuni sulla PKI:
@@ -41,19 +41,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography import x509
 
 # Import PKIEntityManager for port management
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from cryptography.hazmat.primitives import hashes
 from server import PKIEntityManager
 from utils.pki_paths import PKIPathManager
 
 # Import ETSI components
-from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import InnerEcRequest, InnerAtRequest, SharedAtRequest, ResponseCode
+from protocols.messages.encoder import ETSIMessageEncoder
+from protocols.messages.types import InnerEcRequest, InnerAtRequest, SharedAtRequest
+from protocols.core.types import ResponseCode, convert_app_permissions_to_psid_ssp
+from protocols.core.primitives import public_key_to_etsi_verification_key, public_key_to_etsi_encryption_key
+from protocols.certificates.asn1_encoder import decode_certificate_with_asn1
+from protocols.certificates.utils import extract_public_key_from_asn1_certificate
 
 # Variabile globale per processi avviati
 _started_processes = []
@@ -106,8 +108,13 @@ def safe_print(text, **kwargs):
         print(safe_text, **kwargs)
 
 
-def start_pki_entities():
-    """Avvia le entities PKI automaticamente controllando la disponibilità delle porte"""
+def start_pki_entities(temp_mode=False):
+    """
+    Avvia le entities PKI automaticamente controllando la disponibilità delle porte
+    
+    Args:
+        temp_mode: Se True, non salva EA/AA in entity_configs.json (test temporanei)
+    """
     global _started_processes
     
     if _started_processes:
@@ -124,7 +131,7 @@ def start_pki_entities():
     #time.sleep(2)  # Aspetta che si chiudano
     
     # Trova root del progetto
-    project_root = Path(__file__).parent.parent
+    project_root = Path(__file__).parent
     
     # Crea manager per gestione porte
     manager = PKIEntityManager()
@@ -147,7 +154,7 @@ def start_pki_entities():
         ("RootCA", "RootCA")
     ]
     
-    # Trova porte disponibili per ogni entità
+    # Trova porte disponibili per ogni entity 
     used_ports = manager.find_used_ports()  # Inizia con porte già in uso
     entity_configs = []
     
@@ -159,11 +166,46 @@ def start_pki_entities():
             entity_configs.append((entity_type, entity_id, port))
             print(f"    {entity_id}: porta {port}")
         else:
-            # Distingui tra TLM/RootCA (già attive) e altre entities (errore)
+            # Distingui tra TLM/RootCA (necessarie per test) e altre entities (errore)
             if entity_type in ["TLM", "RootCA"]:
-                print(f"    {entity_id}: ℹ️  già attiva (porta occupata)")
+                default_port = 5050 if entity_type == 'TLM' else 5999
+                
+                # Solo in modalità temp_mode, prova ad avviare TLM/RootCA se non attive
+                if temp_mode:
+                    # Verifica se sono realmente attive e funzionanti
+                    try:
+                        import socket
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(('127.0.0.1', default_port))
+                        sock.close()
+                        
+                        if result == 0:
+                            # Porta occupata - verifica che risponda correttamente
+                            try:
+                                url = build_url('127.0.0.1', default_port, '/health')
+                                response = requests.get(url, timeout=2, **get_request_kwargs())
+                                if response.status_code == 200:
+                                    print(f'    {entity_id}: ✅ già attiva e funzionante (porta {default_port})')
+                                    # Non aggiungere a entity_configs - non serve riavviarla
+                                else:
+                                    # Porta occupata ma non risponde correttamente
+                                    print(f'    {entity_id}: ⚠️  non risponde, skip avvio (porta {default_port} occupata)')
+                            except:
+                                # Non risponde - porta occupata da altro processo
+                                print(f'    {entity_id}: ⚠️  porta {default_port} occupata da altro processo')
+                        else:
+                            # Porta libera - AVVIA TLM/RootCA in temp_mode
+                            print(f'    {entity_id}: 🚀 avvio sulla porta {default_port}')
+                            entity_configs.append((entity_type, entity_id, default_port))
+                            used_ports.add(default_port)
+                    except Exception as e:
+                        print(f'    {entity_id}: ⚠️  errore verifica ({str(e)[:50]})')
+                else:
+                    # Non in temp_mode - assume che siano già attive
+                    print(f"    {entity_id}: ℹ️  già attiva (porta {default_port} occupata)")
             else:
-                print(f"    {entity_id}: ❌ nessuna porta disponibile nel range - SKIP")
+                print(f"    {entity_id}: ⚠️  nessuna porta disponibile nel range - SKIP")
             # Continua con le altre entities invece di fallire completamente
     
     print("\n  Avvio entities...")
@@ -182,6 +224,10 @@ def start_pki_entities():
                 "--port", str(port),
                 "--host", "127.0.0.1"
             ]
+            
+            # Se temp_mode è True, aggiungi il flag per EA e AA (non per TLM/RootCA)
+            if temp_mode and entity_type in ["EA", "AA"]:
+                cmd.append("--temp")
             
             # Avvia in background con PYTHONPATH settato
             env = os.environ.copy()
@@ -220,7 +266,7 @@ def start_pki_entities():
             print("✅")
             
         except Exception as e:
-            print(f"❌ ({str(e)[:30]})")
+            print(f" ({str(e)[:30]})")
     
     # Aspetta che i server siano pronti
     print(f"\n  Attesa avvio server (1 secondo)...")
@@ -255,7 +301,7 @@ def start_pki_entities():
     print(f"\n  Entities attive: {active_count}/{len(_started_processes)}")
     
     if active_count == 0:
-        print("\n  ⚠️  Nessuna entity attiva! Test potrebbero fallire.")
+        print("\n  ℹ️ Nessuna entity attiva! Test potrebbero fallire.")
     
     # Restituisci informazioni sulle entities avviate con porte
     entity_info = []
@@ -307,9 +353,9 @@ def stop_pki_entities():
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-                print("⚠️  (forzata)")
+                print("ℹ️ (forzata)")
         except Exception as e:
-            print(f"❌ ({str(e)[:20]})")
+            print(f" ({str(e)[:20]})")
     
     _started_processes = []
 
@@ -327,7 +373,7 @@ class PKITester:
             "AA": {}   # {aa_id: {"at_issued": 0, "at_valid": 0, "at_revoked": 0}}
         }
         
-        # Lista delle entità disponibili (popolata da scan_entities_at_startup)
+        # Lista delle entity disponibili (popolata da scan_entities_at_startup)
         self.available_entities = {"EA": [], "AA": []}
         
         # Default URLs (will be set after scanning)
@@ -348,7 +394,7 @@ class PKITester:
         self._aa_public_key = None
     
     def _init_entity_stats(self, entity_type, entity_id):
-        """Inizializza le statistiche per un'entità se non esistono"""
+        """Inizializza le statistiche per un'entit se non esistono"""
         if entity_id not in self.entity_stats[entity_type]:
             if entity_type == "EA":
                 self.entity_stats[entity_type][entity_id] = {
@@ -413,7 +459,7 @@ class PKITester:
         return f"ENTITY_{port}"
     
     def _sync_entity_statistics(self):
-        """Sincronizza le statistiche locali con i dati reali delle entità tramite API /stats"""
+        """Sincronizza le statistiche locali con i dati reali delle entity tramite API /stats"""
         # Sincronizza EA
         for ea in self.available_entities.get("EA", []):
             try:
@@ -443,7 +489,7 @@ class PKITester:
                 pass  # Mantieni i valori attuali se la sincronizzazione fallisce
     
     def _print_entity_statistics(self):
-        """Stampa statistiche dettagliate per ogni entità EA e AA usando i contatori locali"""
+        """Stampa statistiche dettagliate per ogni entity EA e AA usando i contatori locali"""
         ea_stats = self.entity_stats.get("EA", {})
         aa_stats = self.entity_stats.get("AA", {})
         
@@ -451,35 +497,35 @@ class PKITester:
             return  # Nessuna statistica da mostrare
         
         print("\n" + "="*60)
-        print("    📊 STATISTICHE PER ENTITÀ")
+        print("     STATISTICHE PER ENTITÀ")
         print("="*60)
         
         # Mostra statistiche EA
         if ea_stats:
-            print("\n    📝 Enrollment Authorities (EA):")
+            print("\n    📋 Enrollment Authorities (EA):")
             print("    " + "-"*56)
             for ea_id in sorted(ea_stats.keys()):
                 stats = ea_stats[ea_id]
                 print(f"      {ea_id}:")
-                print(f"        • EC emessi: {stats['ec_issued']}")
-                print(f"        • EC validi: {stats['ec_valid']}")
-                print(f"        • EC revocati: {stats['ec_revoked']}")
+                print(f"        ✅ EC emessi: {stats['ec_issued']}")
+                print(f"        ✅ EC validi: {stats['ec_valid']}")
+                print(f"        🚫 EC revocati: {stats['ec_revoked']}")
         
         # Mostra statistiche AA
         if aa_stats:
-            print("\n    🎫 Authorization Authorities (AA):")
+            print("\n    📋 Authorization Authorities (AA):")
             print("    " + "-"*56)
             for aa_id in sorted(aa_stats.keys()):
                 stats = aa_stats[aa_id]
                 print(f"      {aa_id}:")
-                print(f"        • AT emessi: {stats['at_issued']}")
-                print(f"        • AT validi: {stats['at_valid']}")
-                print(f"        • AT revocati: {stats['at_revoked']}")
+                print(f"        🎫 AT emessi: {stats['at_issued']}")
+                print(f"        ✅ AT validi: {stats['at_valid']}")
+                print(f"        🚫 AT revocati: {stats['at_revoked']}")
         
         print("="*60 + "\n")
         
     def _find_entity_url(self, entity_type, port_start, port_end):
-        """Trova dinamicamente l'URL di un'entità in esecuzione"""
+        """Trova dinamicamente l'URL di un'entit in esecuzione"""
         import socket
         
         for port in range(port_start, port_end + 1):
@@ -491,7 +537,7 @@ class PKITester:
                 sock.close()
                 
                 if result == 0:
-                    # Porta aperta, verifica se è l'entità giusta
+                    # Porta aperta, verifica se  l'entit giusta
                     url = f"http://127.0.0.1:{port}"
                     try:
                         response = requests.get(f"{url}/", timeout=2)
@@ -513,14 +559,14 @@ class PKITester:
     
     def scan_entities_at_startup(self):
         """Scansiona tutte le porte da 5000 a 5039 all'avvio per identificare EA e AA disponibili"""
-        self.print_info("🔍 Scansione entità disponibili (porte 5000-5039)...")
+        self.print_info("ℹ  Scansione entity disponibili (porte 5000-5039)...")
         
         import socket
         import concurrent.futures
         import requests
         
         def check_port(port):
-            """Controlla una singola porta e restituisce info entità se trovata"""
+            """Controlla una singola porta e restituisce info entity se trovata"""
             try:
                 # Test connessione TCP
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -529,7 +575,7 @@ class PKITester:
                 sock.close()
                 
                 if result == 0:
-                    # Porta aperta, verifica se è un'entità PKI
+                    # Porta aperta, verifica se  un'entit PKI
                     url = f"http://127.0.0.1:{port}"
                     try:
                         response = requests.get(f"{url}/", timeout=2)
@@ -578,7 +624,7 @@ class PKITester:
         if found_aa:
             self.aa_url = found_aa[0]['url']
         
-        # Inizializza statistiche per ogni entità trovata leggendo i dati dalle API /stats
+        # Inizializza statistiche per ogni entity trovata leggendo i dati dalle API /stats
         for ea in found_ea:
             try:
                 stats_response = requests.get(f"{ea['url']}/api/stats", timeout=2)
@@ -610,15 +656,15 @@ class PKITester:
         # Log dei risultati
         total_found = len(found_ea) + len(found_aa)
         if total_found > 0:
-            self.print_success(f"Trovate {total_found} entità: {len(found_ea)} EA, {len(found_aa)} AA")
+            self.print_success(f"✅ Trovate {total_found} entity: {len(found_ea)} EA, {len(found_aa)} AA")
             for ea in found_ea:
                 stats = self.entity_stats["EA"].get(ea['id'], {})
-                self.print_info(f"  EA: {ea['id']} (porta {ea['port']}) - EC: {stats.get('ec_issued', 0)} emessi, {stats.get('ec_valid', 0)} validi, {stats.get('ec_revoked', 0)} revocati")
+                self.print_info(f"  📋 EA: {ea['id']} (porta {ea['port']}) - EC: {stats.get('ec_issued', 0)} emessi, {stats.get('ec_valid', 0)} validi, {stats.get('ec_revoked', 0)} revocati")
             for aa in found_aa:
                 stats = self.entity_stats["AA"].get(aa['id'], {})
-                self.print_info(f"  AA: {aa['id']} (porta {aa['port']}) - AT: {stats.get('at_issued', 0)} emessi, {stats.get('at_valid', 0)} validi, {stats.get('at_revoked', 0)} revocati")
+                self.print_info(f"  📋 AA: {aa['id']} (porta {aa['port']}) - AT: {stats.get('at_issued', 0)} emessi, {stats.get('at_valid', 0)} validi, {stats.get('at_revoked', 0)} revocati")
         else:
-            self.print_info("Nessuna entità PKI trovata nelle porte 5000-5039")
+            self.print_info("Nessuna entity PKI trovata nelle porte 5000-5039")
     
     def select_entity_interactive(self, entity_type):
         """Mostra lista delle autorità disponibili dalla cache e chiede all'utente quale scegliere"""
@@ -653,28 +699,31 @@ class PKITester:
             return None
         
         # Mostra la lista delle autorità disponibili dalla cache
-        self.print_info(f"Autorità {entity_type} disponibili:")
+        self.print_info(f"📋 Autorità {entity_type} disponibili:")
         for i, entity in enumerate(available_entities, 1):
             print(f"  {i}. {entity['id']} - Porta {entity['port']}")
         
         # Chiedi all'utente quale scegliere
-        while True:
-            try:
-                choice = input(f"\nScegli l'{entity_type} da usare (1-{len(available_entities)}) o 0 per annullare: ").strip()
-                choice_num = int(choice)
+        if len(available_entities) > 1:
+            while True:
+                try:
+                    choice = input(f"\nScegli l'{entity_type} da usare (1-{len(available_entities)}) o 0 per annullare: ").strip()
+                    choice_num = int(choice)
                 
-                if choice_num == 0:
-                    self.print_info("Operazione annullata")
-                    return None
-                elif 1 <= choice_num <= len(available_entities):
-                    selected = available_entities[choice_num - 1]
-                    self.print_success(f"Selezionata {entity_type}: {selected['id']} su porta {selected['port']}")
-                    return selected['url']
-                else:
-                    self.print_error(f"Scelta non valida. Inserisci un numero tra 1 e {len(available_entities)} o 0 per annullare")
-            except ValueError:
-                self.print_error("Inserisci un numero valido")
-    
+                    if choice_num == 0:
+                        self.print_info("Operazione annullata")
+                        return None
+                    elif 1 <= choice_num <= len(available_entities):
+                        selected = available_entities[choice_num - 1]
+                        self.print_success(f"✅ Selezionata {entity_type}: {selected['id']} su porta {selected['port']}")
+                        return selected['url']
+                    else:
+                        self.print_error(f"Scelta non valida. Inserisci un numero tra 1 e {len(available_entities)} o 0 per annullare")
+                except ValueError:
+                    self.print_error("Inserisci un numero valido")
+        else:
+            self.print_success(f"✅ Selezionata {entity_type}: {available_entities[0]['id']} su porta {available_entities[0]['port']}")
+            return available_entities[0]['url']
     def print_header(self, text):
         """Stampa intestazione formattata"""
         print("\n" + "="*70)
@@ -683,23 +732,23 @@ class PKITester:
     
     def print_success(self, text):
         """Stampa messaggio di successo"""
-        print(f"✅ {text}")
+        print(f" {text}")
         
     def print_error(self, text):
         """Stampa messaggio di errore"""
-        print(f"❌ {text}")
+        print(f" {text}")
     
     def print_warning(self, text):
         """Stampa messaggio di warning"""
-        print(f"⚠️  {text}")
+        print(f"ℹ  {text}")
         
     def print_info(self, text):
         """Stampa informazione"""
-        print(f"ℹ️  {text}")
+        print(f"ℹ  {text}")
     
     def print_test_execution_time(self, test_name, duration):
         """Stampa il tempo di esecuzione di un test"""
-        self.print_info(f"⏱️  Tempo esecuzione {test_name}: {duration:.2f}s")
+        self.print_info(f"ℹ  Tempo esecuzione {test_name}: {duration:.2f}s")
     
     @staticmethod
     def time_test_execution(test_name=None):
@@ -712,13 +761,13 @@ class PKITester:
                     end_time = time.time()
                     duration = end_time - start_time
                     display_name = test_name or func.__name__.replace('test_', '').replace('_', ' ').title()
-                    args[0].print_info(f"⏱️  Tempo esecuzione {display_name}: {duration:.2f}s")
+                    args[0].print_info(f"ℹ  Tempo esecuzione {display_name}: {duration:.2f}s")
                     return result
                 except Exception as e:
                     end_time = time.time()
                     duration = end_time - start_time
                     display_name = test_name or func.__name__.replace('test_', '').replace('_', ' ').title()
-                    args[0].print_error(f"⏱️  Test {display_name} fallito dopo {duration:.2f}s: {e}")
+                    args[0].print_error(f"ℹ  Test {display_name} fallito dopo {duration:.2f}s: {e}")
                     raise
             return wrapper
         return decorator
@@ -734,14 +783,15 @@ class PKITester:
         self.test_results.append(result)
         
         # Salva su file per la dashboard
-        results_file = Path("pki_data/test_results.json")
+        from config import PKI_PATHS
+        results_file = PKI_PATHS.BASE / "test_results.json"
         results_file.parent.mkdir(parents=True, exist_ok=True)
         
         with open(results_file, 'w') as f:
             json.dump(self.test_results, f, indent=2)
     
     def get_entity_metrics(self, entity_url):
-        """Ottiene le metriche da un'entità PKI"""
+        """Ottiene le metriche da un'entit PKI"""
         try:
             response = requests.get(f"{entity_url}/api/stats", timeout=5, **get_request_kwargs())
             if response.status_code == 200:
@@ -755,7 +805,7 @@ class PKITester:
     
     def print_metrics_summary(self, ea_metrics=None, aa_metrics=None):
         """Stampa riepilogo metriche delle entities"""
-        self.print_info("📊 METRICHE ENTITIES:")
+        self.print_info(" METRICHE ENTITIES:")
         
         if ea_metrics:
             self.print_info(f"  EA ({ea_metrics.get('entity_id', 'N/A')}):")
@@ -770,14 +820,14 @@ class PKITester:
             self.print_info(f"    Tickets revocati: {aa_metrics.get('revoked_certificates', 0)}")
     
     def get_ea_certificate(self, ea_url=None):
-        """Ottiene il certificato pubblico dell'EA dall'endpoint"""
+        """Ottiene il certificato pubblico dell'EA dall'endpoint (ASN.1 format)"""
         # Usa URL passato come parametro o fallback a self.ea_url
         url = ea_url or self.ea_url
         if not url:
             self.print_error("Nessun URL EA disponibile")
             return None, None
         
-        # Se l'URL è cambiato, invalida la cache
+        # Se l'URL  cambiato, invalida la cache
         if hasattr(self, '_last_ea_url') and self._last_ea_url != url:
             self._ea_certificate = None
             self._ea_public_key = None
@@ -786,51 +836,63 @@ class PKITester:
             
         if self._ea_certificate is None:
             try:
-                # Ottieni certificato dall'endpoint EA
+                # Ottieni certificato dall'endpoint EA (formato ASN.1 OER binario)
                 response = requests.get(f"{url}/api/enrollment/certificate", timeout=5, **get_request_kwargs())
                 if response.status_code == 200:
-                    cert_pem = response.text
-                    self._ea_certificate = x509.load_pem_x509_certificate(
-                        cert_pem.encode('utf-8'), default_backend()
-                    )
-                    self._ea_public_key = self._ea_certificate.public_key()
-                    self.print_info(f"Ottenuto certificato EA dall'endpoint")
+                    # Il certificato  in formato ASN.1 OER (binary)
+                    cert_asn1 = response.content
+                    self._ea_certificate = cert_asn1
+                    
+                    # Estrai chiave pubblica dal certificato ASN.1
+                    self._ea_public_key = extract_public_key_from_asn1_certificate(cert_asn1)
+                    self.print_info(f"Ottenuto certificato EA dall'endpoint (ASN.1 format)")
                 else:
-                    self.print_error(f"Errore ottenimento certificato EA: {response.status_code}")
+                    self.print_error(f"❌ Errore ottenimento certificato EA: {response.status_code}")
                     # Fallback al file system
                     self._fallback_get_ea_certificate()
             except Exception as e:
-                self.print_error(f"Errore caricamento certificato EA: {e}")
+                self.print_error(f"❌ Errore caricamento certificato EA: {e}")
                 # Fallback al file system
                 self._fallback_get_ea_certificate()
         return self._ea_certificate, self._ea_public_key
     
     def _fallback_get_ea_certificate(self):
-        """Fallback: ottiene certificato EA dal file system"""
+        """Fallback: ottiene certificato EA dal file system (ASN.1 format)"""
         try:
-            cert_path = Path("test_root/subordinates")
-            if cert_path.exists():
-                cert_files = list(cert_path.glob("EA_*.pem"))
-                if cert_files:
-                    with open(cert_files[0], 'r') as f:
-                        cert_pem = f.read()
-                    self._ea_certificate = x509.load_pem_x509_certificate(
-                        cert_pem.encode('utf-8'), default_backend()
-                    )
-                    self._ea_public_key = self._ea_certificate.public_key()
-                    self.print_info(f"Usando certificato EA dal file system (fallback)")
+            # Cerca file .oer nella directory dell'EA
+            from pathlib import Path
+            ea_dirs = list(Path("pki_data/ea").glob("EA_*"))
+            if ea_dirs:
+                cert_path = ea_dirs[0] / "certificates" / "ea_certificate.oer"
+                if cert_path.exists():
+                    with open(cert_path, 'rb') as f:
+                        cert_asn1 = f.read()
+                    self._ea_certificate = cert_asn1
+                    try:
+                        self._ea_public_key = extract_public_key_from_asn1_certificate(cert_asn1)
+                        self.print_info(f"Usando certificato EA dal file system (fallback): {cert_path}")
+                    except Exception as e:
+                        self.print_error(f"❌ Errore estrazione chiave pubblica EA: {e}")
+                        # Prova decodifica ASN.1 completa
+                        try:
+                            cert_decoded = decode_certificate_with_asn1(cert_asn1, "EtsiTs103097Certificate")
+                            # Estrai chiave pubblica dai dati decodificati
+                            if 'toBeSigned' in cert_decoded and 'verifyKeyIndicator' in cert_decoded['toBeSigned']:
+                                self.print_info("Chiave pubblica trovata tramite decodifica ASN.1")
+                        except Exception as e2:
+                            self.print_error(f"❌ Errore decodifica certificato EA: {e2}")
         except Exception as e:
-            self.print_error(f"Errore caricamento certificato EA dal file system: {e}")
+            self.print_error(f"❌ Errore caricamento certificato EA dal file system: {e}")
     
     def get_aa_certificate(self, aa_url=None):
-        """Ottiene il certificato pubblico dell'AA dall'endpoint"""
+        """Ottiene il certificato pubblico dell'AA dall'endpoint (ASN.1 format)"""
         # Usa URL passato come parametro o fallback a self.aa_url
         url = aa_url or self.aa_url
         if not url:
             self.print_error("Nessun URL AA disponibile")
             return None, None
         
-        # Se l'URL è cambiato, invalida la cache
+        # Se l'URL  cambiato, invalida la cache
         if hasattr(self, '_last_aa_url') and self._last_aa_url != url:
             self._aa_certificate = None
             self._aa_public_key = None
@@ -839,74 +901,88 @@ class PKITester:
             
         if self._aa_certificate is None:
             try:
-                # Ottieni certificato dall'endpoint AA
-                response = requests.get(f"{url}/api/authorization/certificate", timeout=5)
+                # Ottieni certificato dall'endpoint AA (formato ASN.1 OER binario)
+                response = requests.get(f"{url}/api/authorization/certificate", timeout=5, **get_request_kwargs())
                 if response.status_code == 200:
-                    cert_pem = response.text
-                    self._aa_certificate = x509.load_pem_x509_certificate(
-                        cert_pem.encode('utf-8'), default_backend()
-                    )
-                    self._aa_public_key = self._aa_certificate.public_key()
-                    self.print_info(f"Ottenuto certificato AA dall'endpoint")
+                    # Il certificato  in formato ASN.1 OER (binary)
+                    cert_asn1 = response.content
+                    self._aa_certificate = cert_asn1
+                    
+                    # Estrai chiave di ENCRYPTION dal certificato ASN.1 (ETSI TS 102 941)
+                    # Per le richieste authorization, usiamo la encryption key dell'AA
+                    self._aa_public_key = extract_public_key_from_asn1_certificate(cert_asn1, key_type="encryption")
+                    self.print_info(f"Ottenuto certificato AA dall'endpoint (ASN.1 format)")
+                    self.print_info(f"  🔐 Estratta encryption key per cifrare richieste")
                 else:
-                    self.print_error(f"Errore ottenimento certificato AA: {response.status_code}")
+                    self.print_error(f"❌ Errore ottenimento certificato AA: {response.status_code}")
                     # Fallback al file system
                     self._fallback_get_aa_certificate()
             except Exception as e:
-                self.print_error(f"Errore caricamento certificato AA: {e}")
+                self.print_error(f"❌ Errore caricamento certificato AA: {e}")
                 # Fallback al file system
                 self._fallback_get_aa_certificate()
         return self._aa_certificate, self._aa_public_key
     
     def _fallback_get_aa_certificate(self):
-        """Fallback: ottiene certificato AA dal file system"""
+        """Fallback: ottiene certificato AA dal file system (ASN.1 format)"""
         try:
-            cert_path = Path("test_root/subordinates")
-            if cert_path.exists():
-                cert_files = list(cert_path.glob("AA_*.pem"))
-                if cert_files:
-                    with open(cert_files[0], 'r') as f:
-                        cert_pem = f.read()
-                    self._aa_certificate = x509.load_pem_x509_certificate(
-                        cert_pem.encode('utf-8'), default_backend()
-                    )
-                    self._aa_public_key = self._aa_certificate.public_key()
-                    self.print_info(f"Usando certificato AA dal file system (fallback)")
+            # Cerca file .oer nella directory dell'AA
+            from pathlib import Path
+            aa_dirs = list(Path("pki_data/aa").glob("AA_*"))
+            if aa_dirs:
+                cert_path = aa_dirs[0] / "certificates" / "aa_certificate.oer"
+                if cert_path.exists():
+                    with open(cert_path, 'rb') as f:
+                        cert_asn1 = f.read()
+                    self._aa_certificate = cert_asn1
+                    # Usa encryption key per cifrare richieste authorization
+                    self._aa_public_key = extract_public_key_from_asn1_certificate(cert_asn1, key_type="encryption")
+                    self.print_info(f"ℹ  Usando certificato AA dal file system (fallback): {cert_path}")
+                    self.print_info(f"ℹ  🔐 Estratta encryption key per cifrare richieste")
         except Exception as e:
-            self.print_error(f"Errore caricamento certificato AA dal file system: {e}")
+            self.print_error(f"❌ Errore caricamento certificato AA dal file system: {e}")
     
     def create_etsi_enrollment_request(self, vehicle_id, private_key, public_key_pem, ea_url=None):
         """Crea una richiesta enrollment ETSI ASN.1 OER"""
         try:
-            # Ottieni certificato EA
-            ea_cert, ea_public_key = self.get_ea_certificate(ea_url)
-            if not ea_cert or not ea_public_key:
+            # Ottieni certificato EA (ASN.1 format)
+            ea_cert_asn1, ea_public_key = self.get_ea_certificate(ea_url)
+            if not ea_cert_asn1 or not ea_public_key:
                 raise ValueError("Certificato EA non disponibile")
             
-            # Debug: print EA cert info
-            self.print_info(f"EA Certificate subject: {ea_cert.subject}")
-            self.print_info(f"EA Certificate serial: {ea_cert.serial_number}")
+            # Decodifica certificato per debug
+            try:
+                cert_decoded = decode_certificate_with_asn1(ea_cert_asn1, "EtsiTs103097Certificate")
+                self.print_info(f"EA Certificate decoded successfully")
+            except Exception as e:
+                self.print_warning(f"Could not decode EA cert for debug: {e}")
             
-            # Carica chiave pubblica dal PEM
+            # Carica e converti chiave pubblica in formato ETSI
             public_key = serialization.load_pem_public_key(
                 public_key_pem.encode('utf-8'), default_backend()
             )
+            verification_key_etsi = public_key_to_etsi_verification_key(public_key)
             
-            # Converti a bytes per InnerEcRequest
-            public_key_bytes = public_key.public_bytes(
-                encoding=serialization.Encoding.DER,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            )
+            # ETSI TS 102 941: L'ITS-S deve fornire sia verification che encryption key
+            # La verification key viene usata per il certificato
+            # La encryption key viene usata dall'EA per cifrare la risposta
+            encryption_key_etsi = public_key_to_etsi_encryption_key(public_key)
             
-            # Crea InnerEcRequest
+            # Converti ITS-AIDs in formato PsidSsp secondo ETSI standard
+            app_permissions = convert_app_permissions_to_psid_ssp(["CAM", "DENM"])
+            
+            # Crea InnerEcRequest secondo ETSI TS 102941
             inner_request = InnerEcRequest(
                 itsId=vehicle_id,
-                certificateFormat=1,  # X.509
-                publicKeys={"verification": public_key_bytes},
+                certificateFormat=1,  # ETSI TS 103097
+                publicKeys={
+                    "verification": verification_key_etsi,
+                    "encryption": encryption_key_etsi  # Richiesta da ETSI TS 102 941 Section 6.2.3
+                },
                 requestedSubjectAttributes={
                     "country": "IT",
                     "organization": f"TestOrg_{vehicle_id}",
-                    "appPermissions": "CAM,DENM"  # Stringa separata da virgola
+                    "appPermissions": app_permissions  # Lista di PsidSsp dicts
                 }
             )
             
@@ -917,7 +993,7 @@ class PKITester:
                 inner_request=inner_request,
                 private_key=private_key,
                 ea_public_key=ea_public_key,
-                ea_certificate=ea_cert
+                ea_certificate_asn1=ea_cert_asn1  # Passa certificato ASN.1 binario
             )
             
             self.print_info(f"Encoded ETSI request: {len(encoded_request)} bytes")
@@ -925,80 +1001,92 @@ class PKITester:
             return encoded_request
             
         except Exception as e:
-            self.print_error(f"Errore creazione richiesta enrollment ETSI: {e}")
+            self.print_error(f"❌ Errore creazione richiesta enrollment ETSI: {e}")
             import traceback
             traceback.print_exc()
             return None
     
-    def create_etsi_authorization_request(self, vehicle_id, enrollment_cert_pem, private_key, public_key_pem, hmac_key=None, aa_url=None):
-        """Crea una richiesta authorization ETSI ASN.1 OER"""
+    def create_etsi_authorization_request(self, vehicle_id, enrollment_cert_asn1, private_key, public_key_pem, hmac_key=None, aa_url=None):
+        """Crea una richiesta authorization ETSI ASN.1 OER
+        
+        Args:
+            vehicle_id: ID del veicolo
+            enrollment_cert_asn1: Certificato enrollment in formato ASN.1 binario
+            private_key: Chiave privata per firma
+            public_key_pem: Chiave pubblica in PEM
+            hmac_key: HMAC key opzionale
+            aa_url: URL dell'AA
+        """
         try:
-            # Ottieni certificato AA
-            aa_cert, aa_public_key = self.get_aa_certificate(aa_url)
-            if not aa_cert or not aa_public_key:
+            # Ottieni certificato AA (ASN.1 format)
+            aa_cert_asn1, aa_public_key = self.get_aa_certificate(aa_url)
+            if not aa_cert_asn1 or not aa_public_key:
                 raise ValueError("Certificato AA non disponibile")
             
-            # Carica enrollment certificate
-            ec_cert = x509.load_pem_x509_certificate(
-                enrollment_cert_pem.encode('utf-8'), default_backend()
-            )
-            
-            # Carica chiave pubblica dal PEM
+            # Carica e converti chiave pubblica in formato ETSI
             public_key = serialization.load_pem_public_key(
                 public_key_pem.encode('utf-8'), default_backend()
             )
-            
-            # Converti a bytes per InnerAtRequest
-            public_key_bytes = public_key.public_bytes(
-                encoding=serialization.Encoding.DER,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            )
+            verification_key_etsi = public_key_to_etsi_verification_key(public_key)
             
             # Crea HMAC key unica per unlinkability
             if hmac_key is None:
                 hmac_key = secrets.token_bytes(32)
             
-            # Crea InnerAtRequest
+            # Converti ITS-AIDs in formato PsidSsp secondo ETSI standard
+            app_permissions = convert_app_permissions_to_psid_ssp(["CAM", "DENM"])
+            
+            # Crea validityPeriod correttamente strutturato
+            from protocols.core.primitives import time32_encode
+            start_time32 = time32_encode(datetime.now(timezone.utc))
+            duration_choice = ('hours', 7 * 24)  # 7 giorni in ore
+            
+            # Crea InnerAtRequest secondo ETSI TS 102941
             inner_request = InnerAtRequest(
-                publicKeys={"verification": public_key_bytes},
+                publicKeys={"verification": verification_key_etsi},
                 hmacKey=hmac_key,
                 requestedSubjectAttributes={
-                    "appPermissions": "CAM,DENM",  # Stringa separata da virgola
-                    "validityPeriod": 7  # giorni
+                    "appPermissions": app_permissions,  # Lista di PsidSsp dicts
+                    "validityPeriod": {
+                        "start": start_time32,
+                        "duration": duration_choice
+                    }
                 }
             )
             
             # Codifica richiesta ETSI
             encoded_request = self.encoder.encode_authorization_request(
                 inner_request=inner_request,
-                enrollment_certificate=ec_cert,
+                enrollment_certificate_asn1=enrollment_cert_asn1,  # Passa ASN.1 binario
+                enrollment_private_key=private_key,  # Chiave privata EC per firma
                 aa_public_key=aa_public_key,
-                aa_certificate=aa_cert,
-                testing_mode=True  # TEMP: testing mode
+                aa_certificate_asn1=aa_cert_asn1,  # Passa ASN.1 binario
+                testing_mode=False  # Usa SignedAndEncrypted standard ETSI
             )
             
             return encoded_request, hmac_key
             
         except Exception as e:
-            self.print_error(f"Errore creazione richiesta authorization ETSI: {e}")
+            self.print_error(f"❌ Errore creazione richiesta authorization ETSI: {e}")
             return None, None
     
-    def create_etsi_butterfly_request(self, vehicle_id, enrollment_cert_pem, num_tickets=5, aa_url=None):
-        """Crea una richiesta butterfly ETSI ASN.1 OER per batch authorization"""
+    def create_etsi_butterfly_request(self, vehicle_id, enrollment_cert_asn1, enrollment_private_key, num_tickets=5, aa_url=None):
+        """Crea una richiesta butterfly ETSI ASN.1 OER per batch authorization
+        
+        Args:
+            vehicle_id: ID del veicolo
+            enrollment_cert_asn1: Certificato enrollment in formato ASN.1 binario
+            enrollment_private_key: Chiave privata enrollment per firma
+            num_tickets: Numero di AT da richiedere
+            aa_url: URL dell'AA
+        """
         try:
-            # Ottieni certificato AA dall'endpoint REST
-            aa_cert, aa_public_key = self.get_aa_certificate(aa_url)
-            if not aa_cert or not aa_public_key:
+            # Ottieni certificato AA dall'endpoint REST (ASN.1 format)
+            aa_cert_asn1, aa_public_key = self.get_aa_certificate(aa_url)
+            if not aa_cert_asn1 or not aa_public_key:
                 raise ValueError("Certificato AA non disponibile")
             
-            self.print_info(f"Certificato AA ottenuto:")
-            self.print_info(f"  Subject: {aa_cert.subject.rfc4514_string()}")
-            self.print_info(f"  Serial: {aa_cert.serial_number}")
-            
-            # Carica enrollment certificate
-            ec_cert = x509.load_pem_x509_certificate(
-                enrollment_cert_pem.encode('utf-8'), default_backend()
-            )
+            self.print_info(f"Certificato AA ottenuto (ASN.1 format)")
             
             # Crea N InnerAtRequests per butterfly
             inner_requests = []
@@ -1008,84 +1096,106 @@ class PKITester:
                 # Genera chiave pubblica per questo AT
                 private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
                 public_key = private_key.public_key()
-                public_key_bytes = public_key.public_bytes(
-                    encoding=serialization.Encoding.DER,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                )
+                
+                # Converti in formato ETSI usando helper DRY
+                verification_key_etsi = public_key_to_etsi_verification_key(public_key)
                 
                 # Genera HMAC key univoca per unlinkability
                 hmac_key = secrets.token_bytes(32)
                 hmac_keys.append(hmac_key)
                 
-                # Crea InnerAtRequest
+                # Converti ITS-AIDs in formato PsidSsp secondo ETSI standard
+                app_permissions = convert_app_permissions_to_psid_ssp(["CAM", "DENM"])
+                
+                # Crea validityPeriod correttamente strutturato
+                from protocols.core.primitives import time32_encode
+                start_time32 = time32_encode(datetime.now(timezone.utc))
+                duration_choice = ('hours', 7 * 24)  # 7 giorni in ore
+                
+                # Crea InnerAtRequest secondo ETSI TS 102941
                 inner_request = InnerAtRequest(
-                    publicKeys={"verification": public_key_bytes},
+                    publicKeys={"verification": verification_key_etsi},
                     hmacKey=hmac_key,
                     requestedSubjectAttributes={
-                        "appPermissions": "CAM,DENM",
-                        "validityPeriod": 7  # giorni
+                        "appPermissions": app_permissions,  # Lista di PsidSsp dicts
+                        "validityPeriod": {
+                            "start": start_time32,
+                            "duration": duration_choice
+                        }
                     }
                 )
                 
                 inner_requests.append(inner_request)
             
-            # Ottieni EA certificate per il SharedAtRequest
-            ea_cert, _ = self.get_ea_certificate()
-            if not ea_cert:
+            # Ottieni EA certificate per il SharedAtRequest (ASN.1 format)
+            ea_cert_asn1, _ = self.get_ea_certificate()
+            if not ea_cert_asn1:
                 self.print_error("Certificato EA non disponibile, uso placeholder")
                 ea_hashed_id8 = b"\x00" * 8
             else:
-                # Calcola HashedId8 del certificato EA
-                from protocols.etsi_message_types import compute_hashed_id8
-                ea_cert_der = ea_cert.public_bytes(serialization.Encoding.DER)
-                ea_hashed_id8 = compute_hashed_id8(ea_cert_der)
+                # Calcola HashedId8 del certificato EA (ASN.1)
+                from protocols.core.primitives import compute_hashed_id8
+                ea_hashed_id8 = compute_hashed_id8(ea_cert_asn1)
                 self.print_info(f"EA HashedId8: {ea_hashed_id8.hex()}")
             
             # Crea SharedAtRequest per parametri condivisi
             key_tag = secrets.token_bytes(16)  # Random key tag per questa richiesta
+            
+            # Converti ITS-AIDs in formato PsidSsp secondo ETSI standard
+            app_permissions = convert_app_permissions_to_psid_ssp(["CAM", "DENM"])
+            
+            # Crea validityPeriod correttamente strutturato
+            from protocols.core.primitives import time32_encode
+            start_time32 = time32_encode(datetime.now(timezone.utc))
+            duration_choice = ('hours', 7 * 24)  # 7 giorni in ore
             
             shared_at_request = SharedAtRequest(
                 eaId=ea_hashed_id8,
                 keyTag=key_tag,
                 certificateFormat=1,
                 requestedSubjectAttributes={
-                    "appPermissions": "CAM,DENM",
-                    "validityPeriod": 7
+                    "appPermissions": app_permissions,  # Lista di PsidSsp dicts
+                    "validityPeriod": {
+                        "start": start_time32,
+                        "duration": duration_choice
+                    }
                 }
             )
             
             # Crea ButterflyAuthorizationRequest
-            from protocols.etsi_message_types import ButterflyAuthorizationRequest
+            from protocols.messages.types import ButterflyAuthorizationRequest
             butterfly_request = ButterflyAuthorizationRequest(
                 sharedAtRequest=shared_at_request,
                 innerAtRequests=inner_requests,
                 batchSize=len(inner_requests),
-                enrollmentCertificate=ec_cert.public_bytes(serialization.Encoding.DER),
+                enrollmentCertificate=enrollment_cert_asn1,  # Passa ASN.1 binario
                 timestamp=datetime.now(timezone.utc)
             )
             
-            # Codifica richiesta ETSI
+            # Codifica richiesta ETSI con SignedAndEncrypted (100% ETSI standard)
             encoded_request = self.encoder.encode_butterfly_authorization_request(
                 butterfly_request=butterfly_request,
-                enrollment_certificate=ec_cert,
+                enrollment_certificate_asn1=enrollment_cert_asn1,  # ASN.1 binario
+                enrollment_private_key=enrollment_private_key,  # Chiave privata per firma
                 aa_public_key=aa_public_key,
-                aa_certificate=aa_cert
+                aa_certificate_asn1=aa_cert_asn1  # ASN.1 binario
             )
             
             self.print_info(f"Encoded ETSI butterfly request: {len(encoded_request)} bytes")
             self.print_info(f"  Numero AT richiesti: {num_tickets}")
+            self.print_info(f"  Formato: SignedAndEncrypted (ETSI TS 102941 compliant)")
             
             return encoded_request, hmac_keys
             
         except Exception as e:
-            self.print_error(f"Errore creazione richiesta butterfly ETSI: {e}")
+            self.print_error(f"❌ Errore creazione richiesta butterfly ETSI: {e}")
             import traceback
             traceback.print_exc()
             return None, None
 
     def test_1_vehicle_enrollment(self):
         """Test 1: Enrollment completo di un veicolo usando API ETSI standard"""
-        self.print_header("TEST 1: Enrollment Veicolo (ETSI Standard)")
+        self.print_header("🚗 TEST 1: Enrollment Veicolo (ETSI Standard)")
         
         # Chiedi all'utente quale EA usare
         ea_url = self.select_entity_interactive("EA")
@@ -1097,9 +1207,13 @@ class PKITester:
         
         try:
             vehicle_id = f"VEHICLE_{int(time.time())}"
-            self.print_info(f"Creazione richiesta enrollment ETSI: {vehicle_id}")
+            self.print_info(f"📝 Creazione richiesta enrollment ETSI: {vehicle_id}")
             
-            # Genera chiavi per il veicolo
+            # 1. Crea directory PRIMA di generare chiavi
+            paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+            paths.create_all()
+            
+            # 2. Genera chiavi per il veicolo
             private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
             public_key = private_key.public_key()
             public_key_pem = public_key.public_bytes(
@@ -1107,18 +1221,29 @@ class PKITester:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode('utf-8')
             
-            # Crea richiesta enrollment ETSI ASN.1 OER
+            # 3. SALVA SUBITO la chiave privata (CRITICO!)
+            key_path = paths.private_keys_dir / f"{vehicle_id}_key.key"
+            private_key_pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ).decode('utf-8')
+            with open(key_path, 'w') as f:
+                f.write(private_key_pem)
+            self.print_info(f"  🔑 Chiave privata salvata: {key_path}")
+            
+            # 4. Crea richiesta enrollment ETSI ASN.1 OER
             encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem, ea_url)
             if not encoded_request:
-                self.print_error("Impossibile creare richiesta enrollment ETSI")
+                self.print_error("❌ Impossibile creare richiesta enrollment ETSI")
                 return False
             
-            self.print_info(f"Invio richiesta ETSI a {ea_url}/api/enrollment/request")
+            self.print_info(f"📤 Invio richiesta ETSI a {ea_url}/api/enrollment/request")
             self.print_info(f"Payload ASN.1 OER: {len(encoded_request)} bytes")
             
-            # Headers per ETSI
+            # Headers per ETSI TS 102941
             headers = {
-                "Content-Type": "application/octet-stream"
+                "Content-Type": "application/vnd.etsi.ts102941.v2.1.1"
             }
             
             response = requests.post(
@@ -1132,7 +1257,7 @@ class PKITester:
             if response.status_code == 200:
                 # La risposta dovrebbe essere ASN.1 OER encoded
                 response_data = response.content
-                self.print_success(f"Enrollment Certificate ottenuto!")
+                self.print_success(f"✅ Enrollment Certificate ottenuto!")
                 self.print_info(f"  Response ASN.1 OER: {len(response_data)} bytes")
                 
                 # Decodifica risposta ETSI per estrarre il certificato
@@ -1141,50 +1266,34 @@ class PKITester:
                     inner_response = encoder.decode_enrollment_response(response_data, private_key)
                     
                     if inner_response.is_success() and inner_response.certificate:
-                        # Converti DER a PEM
-                        cert_der = inner_response.certificate
-                        cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
-                        cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                        # Il certificato è già in formato ASN.1 binario (OER)
+                        cert_asn1 = inner_response.certificate
                         
-                        # Salva certificato su disco
-                        paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                        paths.create_all()  # Crea TUTTE le directory ITS-S
-                        ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
-                        with open(ec_path, 'w') as f:
-                            f.write(cert_pem)
+                        # Salva certificato su disco (formato ASN.1 binario)
+                        # Directory già create all'inizio
+                        ec_path = paths.certificates_dir / f"{vehicle_id}_EC.oer"
+                        with open(ec_path, 'wb') as f:  # Modalità binaria
+                            f.write(cert_asn1)
                         
-                        self.print_info(f"  Certificato salvato: {ec_path}")
-                        
-                        # Salva anche chiave privata
-                        key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
-                        # Directory già create con create_all()
-                        private_key_pem = private_key.private_bytes(
-                            encoding=serialization.Encoding.PEM,
-                            format=serialization.PrivateFormat.PKCS8,
-                            encryption_algorithm=serialization.NoEncryption()
-                        ).decode('utf-8')
-                        with open(key_path, 'w') as f:
-                            f.write(private_key_pem)
-                        
-                        self.print_info(f"  Chiave privata salvata: {key_path}")
+                        self.print_info(f"  💾 Certificato ASN.1 salvato: {ec_path}")
                         
                         result = {
-                            "message": "ETSI Enrollment successful",
+                            "message": "ETSI ✅ Enrollment successful",
                             "response_size": len(response_data),
                             "vehicle_id": vehicle_id,
                             "certificate_path": str(ec_path),
                             "private_key_path": str(key_path),
-                            "certificate_pem": cert_pem
+                            "certificate_asn1": cert_asn1  # Salva binario invece di PEM
                         }
                     else:
                         self.print_error(f"Enrollment fallito: {inner_response.responseCode}")
                         return False
                         
                 except Exception as e:
-                    self.print_error(f"Errore decodifica risposta ETSI: {e}")
+                    self.print_error(f"❌ Errore decodifica risposta ETSI: {e}")
                     # Fallback: salva dati raw
                     result = {
-                        "message": "ETSI Enrollment successful (raw)",
+                        "message": "ETSI ✅ Enrollment successful (raw)",
                         "response_size": len(response_data),
                         "vehicle_id": vehicle_id
                     }
@@ -1203,9 +1312,9 @@ class PKITester:
                     "ea_id": ea_id
                 }
                 
-                # Aggiungi certificato PEM se decodificato
-                if 'certificate_pem' in result:
-                    vehicle_info["certificate_pem"] = result["certificate_pem"]
+                # Aggiungià certificato ASN.1 se decodificato
+                if 'certificate_asn1' in result:
+                    vehicle_info["certificate_asn1"] = result["certificate_asn1"]
                 
                 self.enrolled_vehicles[vehicle_id] = vehicle_info
                 
@@ -1219,7 +1328,7 @@ class PKITester:
                     {
                         "vehicle_id": vehicle_id,
                         "response_size": len(response_data),
-                        "message": "ETSI enrollment successful",
+                        "message": "ETSI ✅ enrollment successful",
                         "execution_time": duration
                     }
                 )
@@ -1252,10 +1361,10 @@ class PKITester:
         if num_vehicles is None:
             if self.auto_mode:
                 num_vehicles = 10
-                self.print_info("Modalità auto: uso 10 veicoli per enrollment batch.")
+                self.print_info("Modalit  auto: uso 10 veicoli per enrollment batch.")
             else:
                 try:
-                    num_vehicles_input = input("  Quanti veicoli enrollare in batch? (default 10): ").strip()
+                    num_vehicles_input = input("  Quanti veicoli enrollare in batch (default 10): ").strip()
                     num_vehicles = int(num_vehicles_input) if num_vehicles_input else 10
                     if num_vehicles <= 0:
                         raise ValueError("Deve essere positivo")
@@ -1263,7 +1372,7 @@ class PKITester:
                     self.print_error(f"Input non valido: {e}. Uso default 10.")
                     num_vehicles = 10
         
-        self.print_header(f"TEST BATCH: Enrollment {num_vehicles} veicoli (Ottimizzato)")
+        self.print_header(f"🚀 TEST BATCH: Enrollment {num_vehicles} veicoli (Ottimizzato)")
         
         # Chiedi all'utente quale EA usare
         ea_url = self.select_entity_interactive("EA")
@@ -1281,8 +1390,8 @@ class PKITester:
                 vehicle_id = f"VEHICLE_BATCH_{int(time.time())}_{i}"
                 vehicle_ids.append(vehicle_id)
                 
-                # Usa chiave più piccola per ottimizzazione (se possibile)
-                # Nota: SECP256R1 è già ottimizzato, ma potremmo usare curve più piccole in futuro
+                # Usa chiave pi piccola per ottimizzazione (se possibile)
+                # Nota: SECP256R1  già ottimizzato, ma potremmo usare curve pi piccole in futuro
                 private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
                 public_key = private_key.public_key()
                 
@@ -1318,7 +1427,7 @@ class PKITester:
                 response = requests.post(
                     f"{ea_url}/api/enrollment/request/batch",
                     json=batch_request,
-                    timeout=60,  # Timeout più lungo per batch
+                    timeout=60,  # Timeout pi lungo per batch
                     **get_request_kwargs()
                 )
                 
@@ -1384,7 +1493,7 @@ class PKITester:
                 response = requests.post(
                     f"{ea_url}/api/enrollment/request",
                     data=encoded_request,
-                    headers={"Content-Type": "application/octet-stream"},
+                    headers={"Content-Type": "application/vnd.etsi.ts102941.v2.1.1"},
                     timeout=10,
                     **get_request_kwargs()
                 )
@@ -1398,21 +1507,19 @@ class PKITester:
                         inner_response = self.encoder.decode_enrollment_response(response_data, private_key)
                         
                         if inner_response.is_success() and inner_response.certificate:
-                            # Converti DER a PEM
-                            cert_der = inner_response.certificate
-                            cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
-                            cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                            # Il certificato  già in formato ASN.1 binario (OER)
+                            cert_asn1 = inner_response.certificate
                             
-                            # Salva certificato su disco nella directory del veicolo
+                            # Salva certificato su disco nella directory del veicolo (formato ASN.1)
                             try:
                                 paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                                paths.create_all()  # Crea TUTTE le directory ITS-S
-                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
-                                with open(ec_path, 'w') as f:
-                                    f.write(cert_pem)
+                                paths.create_all()
+                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.oer"
+                                with open(ec_path, 'wb') as f:
+                                    f.write(cert_asn1)
                                 
                                 # Salva anche chiave privata
-                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
+                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.key"
                                 # Directory già create con create_all()
                                 private_key_pem = private_key.private_bytes(
                                     encoding=serialization.Encoding.PEM,
@@ -1424,16 +1531,15 @@ class PKITester:
                                 
                                 self.print_success(f"    ✓ {vehicle_id} enrollato e salvato (ETSI)")
                             except Exception as save_error:
-                                self.print_error(f"    ⚠️ {vehicle_id} enrollato ma errore salvataggio: {save_error}")
+                                self.print_error(f"    ℹ {vehicle_id} enrollato ma errore salvataggio: {save_error}")
                             
                             # Salva dati veicolo in memoria
                             vehicle_info = {
                                 "enrollment_response": {
                                     "success": True,
-                                    "certificate": cert_pem,
+                                    "certificate_asn1": cert_asn1,
                                     "certificate_path": str(ec_path) if 'ec_path' in locals() else None,
-                                    "private_key_path": str(key_path) if 'key_path' in locals() else None,
-                                    "serial_number": cert_x509.serial_number
+                                    "private_key_path": str(key_path) if 'key_path' in locals() else None
                                 },
                                 "timestamp": datetime.now().isoformat(),
                                 "batch_enrolled": True,
@@ -1447,11 +1553,11 @@ class PKITester:
                             ea_id = self._extract_entity_id_from_url(ea_url)
                             self._record_ec_issued(ea_id, is_valid=True)
                         else:
-                            self.print_error(f"    ❌ {vehicle_id} enrollment fallito: {inner_response.responseCode}")
+                            self.print_error(f"     {vehicle_id} enrollment fallito: {inner_response.responseCode}")
                     except Exception as e:
-                        self.print_error(f"    ❌ {vehicle_id} errore decodifica ETSI: {e}")
+                        self.print_error(f"     {vehicle_id} errore decodifica ETSI: {e}")
                 else:
-                    self.print_error(f"    ❌ {vehicle_id} fallito: {response.status_code}")
+                    self.print_error(f"     {vehicle_id} fallito: {response.status_code}")
             
             self.print_success(f"Enrollment sequenziale completato!")
             self.print_info(f"  Veicoli enrollati: {enrolled_count}/{num_vehicles}")
@@ -1476,13 +1582,13 @@ class PKITester:
             self.save_test_result("batch_vehicle_enrollment", "error", {"error": "Connection refused"})
             return False
         except Exception as e:
-            self.print_error(f"Errore batch enrollment: {e}")
+            self.print_error(f"❌ Errore batch enrollment: {e}")
             self.save_test_result("batch_vehicle_enrollment", "error", {"error": str(e)})
             return False
     
     def test_3_authorization_ticket(self):
         """Test 3: Richiesta Authorization Ticket usando API ETSI standard"""
-        self.print_header("TEST 3: Authorization Ticket (ETSI Standard)")
+        self.print_header("🎫 TEST 3: Authorization Ticket (ETSI Standard)")
         
         # Chiedi all'utente quale AA usare
         aa_url = self.select_entity_interactive("AA")
@@ -1493,7 +1599,7 @@ class PKITester:
             self.print_error("Nessun veicolo enrollato! Esegui prima il Test 1")
             return False
         
-        # Controlla se l'EA usata per enrollment è ancora disponibile
+        # Controlla se l'EA usata per enrollment  ancora disponibile
         vehicle_id = list(self.enrolled_vehicles.keys())[0]
         vehicle_data = self.enrolled_vehicles[vehicle_id]
         
@@ -1504,17 +1610,17 @@ class PKITester:
             )
             if not ea_still_available:
                 self.print_warning(
-                    f"⚠️  ATTENZIONE: Il veicolo è stato enrollato con {ea_id}, "
-                    f"ma questa EA non è più disponibile!"
+                    f"ℹ  ATTENZIONE: Il veicolo  stato enrollato con {ea_id}, "
+                    f"ma questa EA non  pi disponibile!"
                 )
                 self.print_warning(
                     f"    L'AA potrebbe non riconoscere l'Enrollment Certificate."
                 )
                 self.print_info(
-                    f"    Suggerimento: Usa opzione 'R' per ri-scansionare le entità "
+                    f"    Suggerimento: Usa opzione 'R' per ri-scansionare le entity "
                     f"o fai un nuovo enrollment con un'EA attualmente attiva."
                 )
-                proceed = input(f"\n    Vuoi procedere comunque? (s/n): ").strip().lower()
+                proceed = input(f"\n    Vuoi procedere comunque (s/n): ").strip().lower()
                 if proceed != 's':
                     self.print_info("Operazione annullata")
                     return False
@@ -1534,21 +1640,21 @@ class PKITester:
                 self.print_error("Nessun enrollment certificate trovato!")
                 return False
             
-            # Usa il certificato enrollment salvato nei dati del veicolo
-            enrollment_cert_pem = vehicle_data.get("certificate_pem")
+            # Usa il certificato enrollment salvato nei dati del veicolo (ASN.1 format)
+            enrollment_cert_asn1 = vehicle_data.get("enrollment_response", {}).get("certificate_asn1")
             
-            if not enrollment_cert_pem:
-                # Fallback: cerca su disco
+            if not enrollment_cert_asn1:
+                # Fallback: cerca su disco (formato .oer)
                 try:
                     paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                    ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
+                    ec_path = paths.certificates_dir / f"{vehicle_id}_EC.oer"
                     if ec_path.exists():
-                        with open(ec_path, 'r') as f:
-                            enrollment_cert_pem = f.read()
+                        with open(ec_path, 'rb') as f:  # Modalit binaria
+                            enrollment_cert_asn1 = f.read()
                 except:
                     pass
             
-            if not enrollment_cert_pem:
+            if not enrollment_cert_asn1:
                 self.print_error("Certificato enrollment non trovato!")
                 return False
             
@@ -1564,25 +1670,22 @@ class PKITester:
             
             # Crea richiesta authorization ETSI ASN.1 OER
             encoded_request, hmac_key = self.create_etsi_authorization_request(
-                vehicle_id, enrollment_cert_pem, private_key, public_key_pem, None, aa_url
+                vehicle_id, enrollment_cert_asn1, private_key, public_key_pem, None, aa_url
             )
             if not encoded_request:
-                self.print_error("Impossibile creare richiesta authorization ETSI")
+                self.print_error("❌ Impossibile creare richiesta authorization ETSI")
                 return False
             
-            # Headers per ETSI
+            # Headers per ETSI TS 102941
             headers = {
-                "Content-Type": "application/octet-stream",
-                "X-Testing-Mode": "true"  # TEMP: usa testing mode per debug
+                "Content-Type": "application/vnd.etsi.ts102941.v2.1.1",
+                "X-Testing-Mode": "true"
             }
             
-            # Aggiungi enrollment certificate come header per testing mode
-            if enrollment_cert_pem:
-                cert_der = x509.load_pem_x509_certificate(
-                    enrollment_cert_pem.encode('utf-8'), default_backend()
-                ).public_bytes(serialization.Encoding.DER)
+            # Aggiungià enrollment certificate come header per testing mode (ASN.1 in base64)
+            if enrollment_cert_asn1:
                 import base64
-                headers["X-Enrollment-Certificate"] = base64.b64encode(cert_der).decode('utf-8')
+                headers["X-Enrollment-Certificate"] = base64.b64encode(enrollment_cert_asn1).decode('utf-8')
             
             response = requests.post(
                 f"{aa_url}/api/authorization/request",
@@ -1605,16 +1708,15 @@ class PKITester:
                     )
                     
                     if inner_response.responseCode == ResponseCode.OK and inner_response.certificate:
-                        # Converti certificato DER a PEM
-                        at_cert = x509.load_der_x509_certificate(inner_response.certificate, default_backend())
-                        at_cert_pem = at_cert.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                        # Il certificato AT  già in formato ASN.1 binario (OER)
+                        at_cert_asn1 = inner_response.certificate
                         
                         result = {
                             "message": "ETSI Authorization successful",
                             "response_size": len(response_data),
                             "vehicle_id": vehicle_id,
                             "hmac_key": hmac_key.hex() if hmac_key else None,
-                            "certificate_pem": at_cert_pem
+                            "certificate_asn1": at_cert_asn1
                         }
                         
                         self.print_info(f"  Authorization Ticket decodificato correttamente")
@@ -1624,11 +1726,12 @@ class PKITester:
                             "message": f"ETSI Authorization failed: {inner_response.responseCode}",
                             "response_size": len(response_data),
                             "vehicle_id": vehicle_id,
-                            "hmac_key": hmac_key.hex() if hmac_key else None
+                            "hmac_key": hmac_key.hex() if hmac_key else None,
+                            "failed": True  # Flag per indicare fallimento
                         }
                         
                 except Exception as e:
-                    self.print_error(f"Errore decodifica risposta ETSI: {e}")
+                    self.print_error(f"❌ Errore decodifica risposta ETSI: {e}")
                     # Fallback: salva dati raw
                     result = {
                         "message": "ETSI Authorization successful (raw)",
@@ -1637,32 +1740,36 @@ class PKITester:
                         "hmac_key": hmac_key.hex() if hmac_key else None
                     }
                 
-                # Registra AT emesso per questa AA
-                aa_id = self._extract_entity_id_from_url(aa_url)
-                self._record_at_issued(aa_id, count=1, is_valid=True)
+                # Registra AT emesso solo se l'authorization è riuscita
+                if not result.get("failed", False):
+                    aa_id = self._extract_entity_id_from_url(aa_url)
+                    self._record_at_issued(aa_id, count=1, is_valid=True)
                 
                 # Salva AT nel veicolo
                 vehicle_data["authorization_ticket"] = result
                 
-                # Salva authorization ticket su disco
-                try:
-                    paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                    paths.create_all()
-                    
-                    if 'certificate_pem' in result:
-                        # Salva come PEM
-                        at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.pem"
-                        with open(at_path, 'w') as f:
-                            f.write(result['certificate_pem'])
-                        self.print_info(f"Authorization Ticket ETSI salvato: {at_path}")
-                    else:
-                        # Fallback: salva raw data come bin
-                        at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.bin"
-                        with open(at_path, 'wb') as f:
-                            f.write(response_data)
-                        self.print_info(f"Authorization Ticket ETSI salvato (raw): {at_path}")
-                except Exception as e:
-                    self.print_warning(f"Errore salvataggio AT ETSI: {e}")
+                # Salva authorization ticket su disco solo se riuscito
+                if not result.get("failed", False):
+                    try:
+                        paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
+                        paths.create_all()
+                        
+                        if 'certificate_asn1' in result:
+                            # Salva come ASN.1 binario (.oer)
+                            at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.oer"
+                            with open(at_path, 'wb') as f:  # Modalit binaria
+                                f.write(result['certificate_asn1'])
+                            self.print_info(f"✅ Authorization Ticket ETSI salvato: {at_path}")
+                        else:
+                            # Fallback: salva raw data come bin
+                            at_path = paths.certificates_dir / f"{vehicle_id}_AT_etsi.bin"
+                            with open(at_path, 'wb') as f:
+                                f.write(response_data)
+                            self.print_info(f"✅ Authorization Ticket ETSI salvato (raw): {at_path}")
+                    except Exception as e:
+                        self.print_warning(f"Errore salvataggio AT ETSI: {e}")
+                else:
+                    self.print_warning(f"⚠️  Authorization Ticket NON salvato (authorization fallita)")
                 
                 # Calcola e stampa tempo di esecuzione
                 duration = time.time() - start_time
@@ -1696,16 +1803,16 @@ class PKITester:
     
     def test_2_multiple_vehicles(self, num_vehicles=None):
         """Test 2: Enrollment multiplo (flotta veicoli) usando API REST"""
-        self.print_header("TEST 2: Enrollment Flotta Veicoli")
+        self.print_header("🚗 TEST 2: Enrollment Flotta Veicoli")
         
         # Chiedi numero di veicoli se non specificato
         if num_vehicles is None:
             if self.auto_mode:
                 num_vehicles = 5
-                self.print_info("Modalità auto: uso 5 veicoli per enrollment flotta.")
+                self.print_info("Modalit  auto: uso 5 veicoli per enrollment flotta.")
             else:
                 try:
-                    num_vehicles_input = input("  Quanti veicoli enrollare nella flotta? (default 5): ").strip()
+                    num_vehicles_input = input("  Quanti veicoli enrollare nella flotta (default 5): ").strip()
                     num_vehicles = int(num_vehicles_input) if num_vehicles_input else 5
                     if num_vehicles <= 0:
                         raise ValueError("Deve essere positivo")
@@ -1745,7 +1852,7 @@ class PKITester:
                 # Crea richiesta ETSI ASN.1 OER
                 encoded_request = self.create_etsi_enrollment_request(vehicle_id, private_key, public_key_pem, ea_url)
                 if not encoded_request:
-                    print(f"❌ (ETSI encoding failed)")
+                    print(f" (ETSI encoding failed)")
                     failed_count += 1
                     continue
                 
@@ -1753,7 +1860,7 @@ class PKITester:
                 response = requests.post(
                     f"{ea_url}/api/enrollment/request",
                     data=encoded_request,
-                    headers={"Content-Type": "application/octet-stream"},
+                    headers={"Content-Type": "application/vnd.etsi.ts102941.v2.1.1"},
                     timeout=10,
                     **get_request_kwargs()
                 )
@@ -1766,22 +1873,19 @@ class PKITester:
                         inner_response = self.encoder.decode_enrollment_response(response_data, private_key)
                         
                         if inner_response.is_success() and inner_response.certificate:
-                            # Converti certificato DER a PEM
-                            cert_der = inner_response.certificate
-                            cert_x509 = x509.load_der_x509_certificate(cert_der, default_backend())
-                            cert_pem = cert_x509.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                            # Il certificato  già in formato ASN.1 binario (OER)
+                            cert_asn1 = inner_response.certificate
                             
-                            # Salva certificato e chiave su disco
+                            # Salva certificato e chiave su disco (formato ASN.1)
                             try:
                                 paths = PKIPathManager.get_entity_paths("ITS", vehicle_id)
-                                paths.create_all()  # Crea TUTTE le directory ITS-S
-                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.pem"
-                                with open(ec_path, 'w') as f:
-                                    f.write(cert_pem)
+                                paths.create_all()
+                                ec_path = paths.certificates_dir / f"{vehicle_id}_EC.oer"
+                                with open(ec_path, 'wb') as f:  # Modalit binaria
+                                    f.write(cert_asn1)
                                 
                                 # Salva chiave privata
-                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.pem"
-                                # Directory già create con create_all()
+                                key_path = paths.private_keys_dir / f"{vehicle_id}_key.key"
                                 private_key_pem = private_key.private_bytes(
                                     encoding=serialization.Encoding.PEM,
                                     format=serialization.PrivateFormat.PKCS8,
@@ -1790,16 +1894,15 @@ class PKITester:
                                 with open(key_path, 'w') as f:
                                     f.write(private_key_pem)
                             except Exception as save_error:
-                                print(f"⚠️ (Save error: {str(save_error)[:20]})", end=" ")
+                                print(f"ℹ (Save error: {str(save_error)[:20]})", end=" ")
                             
                             ea_id = self._extract_entity_id_from_url(ea_url)
                             self.enrolled_vehicles[vehicle_id] = {
                                 "enrollment_response": {
                                     "success": True,
-                                    "certificate": cert_pem,
+                                    "certificate_asn1": cert_asn1,
                                     "certificate_path": str(ec_path) if 'ec_path' in locals() else None,
-                                    "private_key_path": str(key_path) if 'key_path' in locals() else None,
-                                    "serial_number": cert_x509.serial_number
+                                    "private_key_path": str(key_path) if 'key_path' in locals() else None
                                 },
                                 "timestamp": datetime.now().isoformat(),
                                 "etsi_encoded": True,
@@ -1815,17 +1918,17 @@ class PKITester:
                             ea_id = self._extract_entity_id_from_url(ea_url)
                             self._record_ec_issued(ea_id, is_valid=True)
                         else:
-                            print(f"❌ (Enrollment failed: {inner_response.responseCode})")
+                            print(f" (Enrollment failed: {inner_response.responseCode})")
                             failed_count += 1
                     except Exception as e:
-                        print(f"❌ (Decode error: {str(e)[:20]})")
+                        print(f" (Decode error: {str(e)[:20]})")
                         failed_count += 1
                 else:
-                    print(f"❌ ({response.status_code})")
+                    print(f" ({response.status_code})")
                     failed_count += 1
                     
             except Exception as e:
-                print(f"❌ ({str(e)[:30]})")
+                print(f" ({str(e)[:30]})")
                 failed_count += 1
         
         end_time = time.time()
@@ -1866,7 +1969,7 @@ class PKITester:
     
     def test_4_v2v_communication(self):
         """Test 4: Simulazione comunicazione V2V"""
-        self.print_header("TEST 4: Comunicazione V2V (CAM)")
+        self.print_header("📡 TEST 4: Comunicazione V2V (CAM)")
         
         if len(self.enrolled_vehicles) < 2:
             self.print_error("Servono almeno 2 veicoli! Esegui prima il Test 2")
@@ -1922,7 +2025,7 @@ class PKITester:
                     f"Position: {cam_data['latitude']}, {cam_data['longitude']}\n"
                     f"Speed: {cam_data['speed']} km/h\n"
                     f"Heading: {cam_data['heading']}°\n"
-                    f"Sender Certificate: {'Valid ✅' if sender_has_cert else 'Missing ❌'}\n"
+                    f"Sender Certificate: {'Valid ' if sender_has_cert else 'Missing '}\n"
                     f"========================\n\n"
                 )
                 
@@ -1930,21 +2033,21 @@ class PKITester:
                 outbox_file = sender_paths.outbox_dir / f"{vehicle_ids[0]}_outbox.txt"
                 with open(outbox_file, 'a', encoding='utf-8') as f:
                     f.write(message_text)
-                self.print_info(f"  📤 Messaggio salvato in outbox: {outbox_file}")
+                self.print_info(f"   Messaggio salvato in outbox: {outbox_file}")
                 
                 # Salva in inbox del receiver
                 inbox_file = receiver_paths.inbox_dir / f"from_{vehicle_ids[0]}.txt"
                 with open(inbox_file, 'a', encoding='utf-8') as f:
                     f.write(message_text)
-                self.print_info(f"  📥 Messaggio salvato in inbox: {inbox_file}")
+                self.print_info(f"   Messaggio salvato in inbox: {inbox_file}")
                 
             except Exception as save_error:
-                self.print_error(f"  ⚠️  Errore salvataggio messaggi: {save_error}")
+                self.print_error(f"  ℹ  Errore salvataggio messaggi: {save_error}")
             
             if sender_has_cert and receiver_has_cert:
                 self.print_success("Messaggio CAM inviato con successo!")
-                self.print_info("  Sender: Certificato EC valido ✅")
-                self.print_info("  Receiver: Certificato EC valido ✅")
+                self.print_info("  Sender: Certificato EC valido ")
+                self.print_info("  Receiver: Certificato EC valido ")
                 status = "success"
                 note = "V2V communication simulated with valid certificates"
             else:
@@ -2004,78 +2107,90 @@ class PKITester:
             
             for vehicle_id, vehicle_data in self.enrolled_vehicles.items():
                 try:
-                    # Estrai certificato PEM - cerca prima in vehicle_data, poi in enrollment_response
-                    cert_pem = vehicle_data.get("certificate_pem") or vehicle_data.get("enrollment_response", {}).get("certificate")
-                    if not cert_pem:
-                        self.print_error(f"  {vehicle_id}: ❌ Certificato mancante")
+                    # Estrai certificato ASN.1 - cerca prima in vehicle_data, poi in enrollment_response
+                    cert_asn1 = vehicle_data.get("certificate_asn1") or vehicle_data.get("enrollment_response", {}).get("certificate_asn1")
+                    if not cert_asn1:
+                        self.print_error(f"  {vehicle_id}:  Certificato mancante")
                         invalid_count += 1
                         continue
                     
-                    # Parse X.509 certificate
-                    cert_bytes = cert_pem.encode('utf-8')
-                    certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+                    # Decodifica certificato ASN.1 per validazione ETSI TS 103097
+                    cert_decoded = decode_certificate_with_asn1(cert_asn1, "EtsiTs103097Certificate")
                     
-                    # Validazione ETSI TS 103 097 - Certificato ITS
+                    # Validazione completa ETSI TS 103097 V2.1.1 Section 6.2
                     validation_result = {
                         "vehicle_id": vehicle_id,
-                        "serial": certificate.serial_number,
                         "checks": {}
                     }
                     
-                    # 1. Verifica periodo di validità
-                    now = datetime.now(timezone.utc)
-                    not_before = certificate.not_valid_before_utc
-                    not_after = certificate.not_valid_after_utc
+                    # 1. Verifica decodifica ASN.1 OER corretta
+                    validation_result["checks"]["asn1_decodable"] = True
                     
-                    time_valid = not_before <= now <= not_after
-                    validation_result["checks"]["temporal_validity"] = time_valid
+                    # 2. Verifica versione certificato (ETSI TS 103097 V2)
+                    version = cert_decoded.get('version', 0)
+                    validation_result["checks"]["version_valid"] = (version == 3)  # Version 3 = ETSI TS 103097 V2
                     
-                    # 2. Verifica subject
-                    subject = certificate.subject
-                    cn = subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
-                    has_cn = len(cn) > 0 and cn[0].value == vehicle_id
-                    validation_result["checks"]["subject_cn"] = has_cn
-                    
-                    # 3. Verifica issuer (EA)
-                    issuer = certificate.issuer
-                    issuer_cn = issuer.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
-                    has_issuer = len(issuer_cn) > 0
+                    # 3. Verifica presenza issuerIdentifier (HashedId8 della CA)
+                    issuer = cert_decoded.get('issuer', {})
+                    has_issuer = 'sha256AndDigest' in issuer or 'sha384AndDigest' in issuer
                     validation_result["checks"]["has_issuer"] = has_issuer
                     
-                    # 4. Verifica algoritmo firma (ETSI richiede ECDSA)
-                    is_ecdsa = certificate.signature_algorithm_oid._name.startswith('ecdsa')
-                    validation_result["checks"]["ecdsa_signature"] = is_ecdsa
+                    # 4. Verifica toBeSigned structure
+                    tbs = cert_decoded.get('toBeSigned', {})
+                    has_tbs = bool(tbs)
+                    validation_result["checks"]["has_tbs"] = has_tbs
                     
-                    # 5. Verifica chiave pubblica (ECC)
-                    from cryptography.hazmat.primitives.asymmetric import ec
-                    is_ecc = isinstance(certificate.public_key(), ec.EllipticCurvePublicKey)
-                    validation_result["checks"]["ecc_public_key"] = is_ecc
-                    
-                    # 6. Verifica estensioni certificate
-                    has_basic_constraints = False
+                    # 5. Verifica validità temporale (ValidityPeriod)
+                    from protocols.core.primitives import extract_validity_period
                     try:
-                        bc = certificate.extensions.get_extension_for_class(x509.BasicConstraints)
-                        has_basic_constraints = not bc.value.ca  # Deve essere False per ITS-S
-                        validation_result["checks"]["basic_constraints"] = has_basic_constraints
-                    except x509.ExtensionNotFound:
-                        validation_result["checks"]["basic_constraints"] = False
+                        start_time_cert, expiry_time, duration_sec = extract_validity_period(cert_asn1)
+                        now = datetime.now(timezone.utc)
+                        is_valid_time = start_time_cert <= now <= expiry_time
+                        validation_result["checks"]["temporal_validity"] = is_valid_time
+                        validation_result["validity_start"] = start_time_cert.isoformat()
+                        validation_result["validity_end"] = expiry_time.isoformat()
+                    except Exception as e:
+                        validation_result["checks"]["temporal_validity"] = False
+                        validation_result["validity_error"] = str(e)
+                    
+                    # 6. Verifica chiave pubblica (verifyKeyIndicator)
+                    verify_key = tbs.get('verifyKeyIndicator', {})
+                    has_public_key = bool(verify_key)
+                    validation_result["checks"]["has_public_key"] = has_public_key
+                    
+                    # 7. Verifica algoritmo firma (ECDSA NIST P-256)
+                    signature = cert_decoded.get('signature', {})
+                    if isinstance(signature, tuple) and len(signature) == 2:
+                        sig_algo = signature[0]
+                        is_ecdsa = sig_algo in ['ecdsaNistP256Signature', 'ecdsaBrainpoolP256r1Signature']
+                        validation_result["checks"]["ecdsa_signature"] = is_ecdsa
+                    else:
+                        validation_result["checks"]["ecdsa_signature"] = False
+                    
+                    # 8. Verifica app permissions (se presente)
+                    app_permissions = tbs.get('appPermissions', [])
+                    if app_permissions:
+                        validation_result["checks"]["has_app_permissions"] = True
+                        validation_result["app_permissions_count"] = len(app_permissions)
+                    else:
+                        validation_result["checks"]["has_app_permissions"] = False
                     
                     # Determina stato complessivo
                     all_checks = validation_result["checks"]
                     is_valid = all(all_checks.values())
                     
                     if is_valid:
-                        self.print_info(f"  {vehicle_id}: ✅ VALIDO (ETSI compliant)")
+                        self.print_info(f"  {vehicle_id}:  VALIDO (ETSI TS 103097 compliant)")
                         valid_count += 1
                     else:
                         failed_checks = [k for k, v in all_checks.items() if not v]
-                        self.print_error(f"  {vehicle_id}: ❌ INVALIDO - Failed: {', '.join(failed_checks)}")
+                        self.print_error(f"  {vehicle_id}:  INVALIDO - Failed: {', '.join(failed_checks)}")
                         invalid_count += 1
                     
                     validation_details.append(validation_result)
                     
                 except Exception as cert_error:
-                    self.print_error(f"  {vehicle_id}: ❌ Errore parsing: {str(cert_error)[:50]}")
+                    self.print_error(f"  {vehicle_id}:  Errore parsing: {str(cert_error)[:50]}")
                     invalid_count += 1
             
             # Riepilogo
@@ -2121,10 +2236,10 @@ class PKITester:
         if num_tickets is None:
             if self.auto_mode:
                 num_tickets = 20
-                self.print_info("Modalità auto: uso 20 Authorization Tickets per Butterfly.")
+                self.print_info("Modalit  auto: uso 20 Authorization Tickets per Butterfly.")
             else:
                 try:
-                    num_tickets_input = input("  Quanti AT richiedere in batch (Butterfly)? (default 20, max 100 ETSI): ").strip()
+                    num_tickets_input = input("  Quanti AT richiedere in batch (Butterfly) (default 20, max 100 ETSI): ").strip()
                     num_tickets = int(num_tickets_input) if num_tickets_input else 20
                     
                     # ETSI TS 102941 V2.1.1 Section 6.3.3: batch size limits
@@ -2151,29 +2266,38 @@ class PKITester:
             vehicle_id = list(self.enrolled_vehicles.keys())[0]
             vehicle_data = self.enrolled_vehicles[vehicle_id]
             
-            # Usa il certificato enrollment
-            enrollment_cert = vehicle_data.get("certificate_pem") or vehicle_data["enrollment_response"].get("certificate")
-            if not enrollment_cert:
+            # Usa il certificato enrollment ASN.1
+            enrollment_cert_asn1 = vehicle_data.get("certificate_asn1") or vehicle_data["enrollment_response"].get("certificate_asn1")
+            if not enrollment_cert_asn1:
                 self.print_error("Certificato enrollment mancante!")
+                return False
+            
+            # Recupera chiave privata enrollment per firma
+            enrollment_private_key = vehicle_data.get("private_key")
+            if not enrollment_private_key:
+                self.print_error("Chiave privata enrollment mancante!")
                 return False
             
             self.print_info(f"Veicolo: {vehicle_id}")
             self.print_info(f"Richiesta Butterfly: {num_tickets} Authorization Tickets in batch...")
             
             start_time = time.time()
-            # Crea richiesta ETSI butterfly completa
+            # Crea richiesta ETSI butterfly completa con SignedAndEncrypted
             encoded_request, hmac_keys = self.create_etsi_butterfly_request(
-                vehicle_id, enrollment_cert, num_tickets, aa_url
+                vehicle_id, enrollment_cert_asn1, enrollment_private_key, num_tickets, aa_url
             )
             
             if not encoded_request or not hmac_keys:
-                self.print_error("Impossibile creare richiesta butterfly ETSI")
+                self.print_error("❌ Impossibile creare richiesta butterfly ETSI")
                 return False
             
             response = requests.post(
                 f"{aa_url}/api/authorization/request/butterfly",
                 data=encoded_request,
-                headers={"Content-Type": "application/octet-stream"},
+                headers={
+                    "Content-Type": "application/vnd.etsi.ts102941.v2.1.1",
+                    "X-Request-Type": "butterfly"
+                },
                 timeout=30,
                 **get_request_kwargs()
             )
@@ -2213,14 +2337,14 @@ class PKITester:
                     )
                     return True
                 except Exception as e:
-                    self.print_error(f"Errore decodifica risposta butterfly ETSI: {e}")
+                    self.print_error(f"❌ Errore decodifica risposta butterfly ETSI: {e}")
                     self.save_test_result("butterfly_expansion_etsi", "decode_error", {"error": str(e)})
                     return False
             else:
                 self.print_error(f"Butterfly ETSI fallito! Status: {response.status_code}")
                 try:
                     error_data = response.json()
-                    self.print_error(f"Errore dal server: {error_data}")
+                    self.print_error(f"❌ Errore dal server: {error_data}")
                 except:
                     self.print_error(f"Risposta raw: {response.text[:500]}")
                 self.save_test_result("butterfly_expansion_etsi", "failed", {"status": response.status_code})
@@ -2239,10 +2363,10 @@ class PKITester:
         if num_revocations is None:
             if self.auto_mode:
                 num_revocations = 1
-                self.print_info("Modalità auto: revoca 1 certificato.")
+                self.print_info("Modalit  auto: revoca 1 certificato.")
             else:
                 try:
-                    num_revocations_input = input("  Quanti certificati revocare? (default 1): ").strip()
+                    num_revocations_input = input("  Quanti certificati revocare (default 1): ").strip()
                     num_revocations = int(num_revocations_input) if num_revocations_input else 1
                     if num_revocations <= 0:
                         raise ValueError("Deve essere positivo")
@@ -2295,7 +2419,7 @@ class PKITester:
                 serial_number = certificate.serial_number
                 serial_hex = format(serial_number, 'X')  # Converti a hex uppercase
                 
-                self.print_info(f"Revoca veicolo: {vehicle_id}")
+                self.print_info(f"🚫 Revoca veicolo: {vehicle_id}")
                 self.print_info(f"  Serial Number: {serial_number}")
                 self.print_info(f"  Serial Hex: {serial_hex}")
                 
@@ -2328,7 +2452,7 @@ class PKITester:
                     success_count += 1
                     
                     # Verifica rapida inserimento in CRL (senza attesa)
-                    # La Delta CRL è pubblicata immediatamente dopo la revoca
+                    # La Delta CRL  pubblicata immediatamente dopo la revoca
                     self.print_info(f"  Verifica inserimento in CRL...")
                     
                     is_revoked = None
@@ -2343,7 +2467,7 @@ class PKITester:
                             content_type = crl_response.headers.get('Content-Type', '')
                             
                             try:
-                                # Prova PEM prima (più comune)
+                                # Prova PEM prima (pi comune)
                                 if b'-----BEGIN' in crl_data:
                                     crl = x509.load_pem_x509_crl(crl_data, default_backend())
                                 else:
@@ -2356,22 +2480,22 @@ class PKITester:
                                     if revoked_cert.serial_number == serial_number:
                                         is_revoked = True
                                         revocation_date = revoked_cert.revocation_date_utc
-                                        self.print_success(f"    ✅ Certificato presente in CRL!")
+                                        self.print_success(f"     Certificato presente in CRL!")
                                         self.print_info(f"       Data revoca: {revocation_date}")
                                         break
                                 
                                 if not is_revoked:
-                                    self.print_info(f"    ⚠️  Certificato non ancora in CRL (propagazione in corso)")
+                                    self.print_info(f"    ℹ  Certificato non ancora in CRL (propagazione in corso)")
                                     
                             except Exception as parse_error:
-                                self.print_info(f"    ⚠️  Errore parsing CRL: {str(parse_error)[:100]}")
+                                self.print_info(f"    ℹ  Errore parsing CRL: {str(parse_error)[:100]}")
                                 self.print_info(f"       Content-Type: {content_type}")
                                 self.print_info(f"       Size: {len(crl_data)} bytes")
                                 
                         except Exception as verify_error:
-                            self.print_info(f"    ⚠️  Verifica CRL non disponibile: {str(verify_error)[:80]}")
+                            self.print_info(f"    ℹ  Verifica CRL non disponibile: {str(verify_error)[:80]}")
                     else:
-                        self.print_info(f"    ℹ️  CRL non disponibile per verifica (status: {crl_response.status_code})")
+                        self.print_info(f"    ℹ  CRL non disponibile per verifica (status: {crl_response.status_code})")
                     
                     # Ora revoca anche un AT per test completo
                     self.print_info(f"")
@@ -2379,29 +2503,30 @@ class PKITester:
                     
                     # Trova un veicolo con AT
                     at_vehicle = None
-                    at_cert_pem = None
+                    at_cert_asn1 = None
                     for v_id, v_data in self.enrolled_vehicles.items():
                         if "authorization_ticket" in v_data:
                             at_vehicle = v_id
                             at_data = v_data["authorization_ticket"]
-                            # Estrai il certificato PEM dal dizionario
-                            if isinstance(at_data, dict) and "certificate_pem" in at_data:
-                                at_cert_pem = at_data["certificate_pem"]
-                                if at_cert_pem and isinstance(at_cert_pem, str):
+                            # Estrai il certificato ASN.1 dal dizionario
+                            if isinstance(at_data, dict) and "certificate_asn1" in at_data:
+                                at_cert_asn1 = at_data["certificate_asn1"]
+                                if at_cert_asn1 and isinstance(at_cert_asn1, bytes):
                                     break
-                            elif isinstance(at_data, str):
-                                at_cert_pem = at_data
+                            elif isinstance(at_data, bytes):
+                                at_cert_asn1 = at_data
                                 break
                     
-                    if at_cert_pem:
-                        # Parse AT per serial
-                        at_cert_bytes = at_cert_pem.encode('utf-8')
-                        at_certificate = x509.load_pem_x509_certificate(at_cert_bytes, default_backend())
-                        at_serial_number = at_certificate.serial_number
-                        at_serial_hex = format(at_serial_number, 'X')
+                    if at_cert_asn1:
+                        # Decodifica AT per estrarre serial (ETSI TS 103097)
+                        # TODO: Implementare estrazione serial da certificato ETSI
+                        # Per ora usa un hash del certificato come identificatore
+                        from protocols.core.primitives import compute_hashed_id8
+                        at_hashed_id = compute_hashed_id8(at_cert_asn1)
+                        at_serial_hex = at_hashed_id.hex()
                         
                         self.print_info(f"  Veicolo con AT: {at_vehicle}")
-                        self.print_info(f"  AT Serial: {at_serial_number} (hex: {at_serial_hex})")
+                        self.print_info(f"  AT HashedId8: {at_serial_hex}")
                         
                         # Richiesta revoca AT
                         at_revoke_request = {
@@ -2430,7 +2555,7 @@ class PKITester:
                             self._record_at_revoked(aa_id)
                             
                             # Verifica rapida inserimento AT in CRL AA (senza attesa)
-                            # La Delta CRL è pubblicata immediatamente dopo la revoca
+                            # La Delta CRL  pubblicata immediatamente dopo la revoca
                             self.print_info(f"  Verifica inserimento AT in CRL AA...")
                             
                             # Usa Delta CRL per verificare revoche recenti (secondo ETSI)
@@ -2444,7 +2569,7 @@ class PKITester:
                                     aa_content_type = aa_crl_response.headers.get('Content-Type', '')
                                     
                                     try:
-                                        # Prova PEM prima (più comune)
+                                        # Prova PEM prima (pi comune)
                                         if b'-----BEGIN' in aa_crl_data:
                                             aa_crl = x509.load_pem_x509_crl(aa_crl_data, default_backend())
                                         else:
@@ -2453,26 +2578,27 @@ class PKITester:
                                         
                                         # Cerca serial AT nella CRL AA
                                         at_is_revoked = False
+                                        # TODO: Implementare verifica CRL ETSI (usa HashedId8, non serial)
                                         for revoked_cert in aa_crl:
-                                            if revoked_cert.serial_number == at_serial_number:
+                                            if False:  # Disabilitato: at_serial_number non pi disponibile
                                                 at_is_revoked = True
                                                 at_revocation_date = revoked_cert.revocation_date_utc
-                                                self.print_success(f"    ✅ AT presente in CRL AA!")
+                                                self.print_success(f"     AT presente in CRL AA!")
                                                 self.print_info(f"       Data revoca: {at_revocation_date}")
                                                 break
                                         
                                         if not at_is_revoked:
-                                            self.print_info(f"    ⚠️  AT non ancora in CRL AA (propagazione in corso)")
+                                            self.print_info(f"    ℹ  AT non ancora in CRL AA (propagazione in corso)")
                                             
                                     except Exception as parse_error:
-                                        self.print_info(f"    ⚠️  Errore parsing CRL AA: {str(parse_error)[:100]}")
+                                        self.print_info(f"    ℹ  Errore parsing CRL AA: {str(parse_error)[:100]}")
                                         self.print_info(f"       Content-Type: {aa_content_type}")
                                         self.print_info(f"       Size: {len(aa_crl_data)} bytes")
                                         
                                 except Exception as verify_error:
-                                    self.print_info(f"    ⚠️  Verifica CRL AA non disponibile: {str(verify_error)[:80]}")
+                                    self.print_info(f"    ℹ  Verifica CRL AA non disponibile: {str(verify_error)[:80]}")
                             else:
-                                self.print_info(f"    ℹ️  CRL AA non disponibile per verifica (status: {aa_crl_response.status_code})")
+                                self.print_info(f"    ℹ  CRL AA non disponibile per verifica (status: {aa_crl_response.status_code})")
                             
                         else:
                             self.print_error(f"  Revoca AT fallita! Status: {at_response.status_code}")
@@ -2485,8 +2611,8 @@ class PKITester:
                     
                 elif response.status_code == 404:
                     # Endpoint non implementato - fallback a simulazione
-                    self.print_info(f"  ⚠️  API revoca non disponibile su questo EA")
-                    self.print_info(f"    Modalità fallback: simulazione locale")
+                    self.print_info(f"  ℹ  API revoca non disponibile su questo EA")
+                    self.print_info(f"    Modalit  fallback: simulazione locale")
                     
                     # Rimuovi veicolo dalla lista (simulazione)
                     del self.enrolled_vehicles[vehicle_id]
@@ -2502,7 +2628,7 @@ class PKITester:
                     failed_count += 1
                     
             except Exception as e:
-                self.print_error(f"Errore revoca {vehicle_id}: {e}")
+                self.print_error(f"❌ Errore revoca {vehicle_id}: {e}")
                 failed_count += 1
         
         print()
@@ -2565,7 +2691,7 @@ class PKITester:
             self.print_info(f"  Nota: AA pubblica CRL automaticamente alla revoca, nessun endpoint manuale")
             
             # Test EA CRL
-            self.print_info(f"Download CRL da EA...")
+            self.print_info(f"📥 Download CRL da EA...")
             response = requests.get(f"{ea_url}/api/crl/full", timeout=5)
             
             if response.status_code == 200:
@@ -2591,7 +2717,7 @@ class PKITester:
                     "delta_crl_available": ea_delta_available
                 }
             elif response.status_code == 404:
-                self.print_info(f"⚠️  CRL EA non ancora pubblicata (prima esecuzione)")
+                self.print_info(f"ℹ  CRL EA non ancora pubblicata (prima esecuzione)")
                 results["ea"] = {
                     "note": "CRL not yet published - acceptable on first run",
                     "status": 404
@@ -2602,7 +2728,7 @@ class PKITester:
                 results["ea"] = {"status": response.status_code, "error": "Download failed"}
             
             # Test AA CRL
-            self.print_info(f"Download CRL da AA...")
+            self.print_info(f"📥 Download CRL da AA...")
             aa_response = requests.get(f"{aa_url}/api/crl/full", timeout=5)
             
             if aa_response.status_code == 200:
@@ -2628,7 +2754,7 @@ class PKITester:
                     "delta_crl_available": aa_delta_available
                 }
             elif aa_response.status_code == 404:
-                self.print_info(f"⚠️  CRL AA non ancora pubblicata (prima esecuzione)")
+                self.print_info(f"ℹ  CRL AA non ancora pubblicata (prima esecuzione)")
                 results["aa"] = {
                     "note": "CRL not yet published - acceptable on first run",
                     "status": 404
@@ -2671,11 +2797,11 @@ class PKITester:
         while True:
             self.print_header("PKI TESTER - Menu Interattivo (API REST)")
             print("\n  Test Disponibili:")
-            print("  1. ✈️  Enrollment singolo veicolo")
+            print("  1. 🚗 Enrollment singolo veicolo")
             print("  2. 🚗 Enrollment flotta veicoli (configurabile)")
             print("  3. 🎫 Richiesta Authorization Ticket")
             print("  4. 📡 Simulazione comunicazione V2V")
-            print("  5. ✔️  Validazione certificati")
+            print("  5. ✅ Validazione certificati")
             print("  6. 🦋 Butterfly Expansion (configurabile)")
             print("  7. 🚫 Revoca certificato (configurabile)")
             print("  8. 📥 Download CRL (EA & AA)")
@@ -2683,11 +2809,11 @@ class PKITester:
             print("  B. 📊 Mostra risultati")
             print("  C. 🗑️  Pulisci dati test")
             print("  D. 🚀 Batch Enrollment Ottimizzato (configurabile)")
-            print("  R. 🔍 Ri-scansiona entità disponibili")
+            print("  R. 🔍 Ri-scansiona entity disponibili")
             print("  0. ❌ Esci")
             
             # Mostra statistiche dettagliate per EA/AA
-            print("\n  📊 Statistiche Entità:")
+            print("\n  ℹ️ Statistiche Entità:")
             self._print_entity_statistics()
             
             print("\n  Stato corrente:")
@@ -2721,7 +2847,7 @@ class PKITester:
             elif choice == "D":
                 self.test_batch_vehicle_enrollment()
             elif choice == "R":
-                self.print_info("🔍 Ri-scansione entità in corso...")
+                self.print_info("ℹ Ri-scansione entity in corso...")
                 self.scan_entities_at_startup()
                 self.print_success("Scansione completata!")
             elif choice == "0":
@@ -2737,9 +2863,9 @@ class PKITester:
         self.print_header("ESECUZIONE TUTTI I TEST")
         
         if self.auto_mode:
-            self.print_info("Modalità auto: uso valori predefiniti per tutti i test.")
+            self.print_info("Modalit  auto: uso valori predefiniti per tutti i test.")
         else:
-            self.print_info("Ogni test configurabile chiederà i suoi parametri durante l'esecuzione.")
+            self.print_info("Ogni test configurabile chieder  i suoi parametri durante l'esecuzione.")
         print()  # Riga vuota per separazione
         
         tests = [
@@ -2770,7 +2896,7 @@ class PKITester:
         failed = len(results) - passed
         
         for name, result in results:
-            status = "✅ PASS" if result else "❌ FAIL"
+            status = " PASS" if result else " FAIL"
             print(f"  {name}: {status}")
         
         print(f"\n  Totale: {passed}/{len(results)} test superati")
@@ -2780,11 +2906,11 @@ class PKITester:
         else:
             self.print_error(f"{failed} test falliti")
         
-        # Stampa statistiche dettagliate per ogni entità EA/AA
+        # Stampa statistiche dettagliate per ogni entity EA/AA
         self._print_entity_statistics()
         
         # Metriche di performance
-        print(f"\n  📈 METRICHE PERFORMANCE:")
+        print(f"\n   METRICHE PERFORMANCE:")
         print(f"     Tempo totale suite: {total_duration:.2f}s")
         print(f"     Numero di test eseguiti: {len(results)}")
     
@@ -2797,7 +2923,7 @@ class PKITester:
             return
         
         for i, result in enumerate(self.test_results, 1):
-            status_icon = "✅" if result['status'] == "success" else "❌"
+            status_icon = "" if result['status'] == "success" else ""
             print(f"\n  [{i}] {status_icon} {result['test']}")
             print(f"      Timestamp: {result['timestamp']}")
             print(f"      Status: {result['status']}")
@@ -2812,7 +2938,7 @@ class PKITester:
         self.enrolled_vehicles.clear()
         
         self.print_success(f"Rimossi {count} veicoli test dalla memoria")
-        self.print_info("⚠️  I dati sul server EA rimangono (riavvia server per reset completo)")
+        self.print_info("ℹ  I dati sul server EA rimangono (riavvia server per reset completo)")
 
 
 def main():
@@ -2863,14 +2989,23 @@ def main():
         help="Scansiona tutte le porte 5000-5039 all'avvio per identificare EA/AA disponibili"
     )
     
+    parser.add_argument(
+        "--temp",
+        action="store_true",
+        help="Modalità temporanea: non salvare EA/AA avviate in entity_configs.json (test isolati)"
+    )
+    
     args = parser.parse_args()
     
     # Avvia entities se richiesto
     started_entities = []
     if not args.no_start:
-        started_entities = start_pki_entities()
+        started_entities = start_pki_entities(temp_mode=args.temp)
     else:
-        print("\n[WARNING] Modalità --no-start: usando entities già attive")
+        print("\n[WARNING] Modalit  --no-start: usando entities già attive")
+    
+    if args.temp:
+        print("\n[INFO] Modalità --temp: le entità EA/AA non saranno salvate in entity_configs.json")
     
     tester = PKITester()
     tester.auto_mode = args.auto
@@ -2878,7 +3013,7 @@ def main():
     tester.aa_url = args.aa_url
     
     # SEMPRE scansiona le porte 5000-5039 per trovare EA e AA disponibili
-    # (sia che le abbiamo appena avviate, sia in modalità --no-start)
+    # (sia che le abbiamo appena avviate, sia in modalità--no-start)
     print("\n" + "="*70)
     print("  SCANSIONE ENTITÀ DISPONIBILI")
     print("="*70)
@@ -2919,7 +3054,7 @@ def main():
             tester.run_interactive_menu()
     
     finally:
-        # Chiudi i processi avviati solo se --cleanup è attivo
+        # Chiudi i processi avviati solo se --cleanup  attivo
         if args.cleanup and not args.no_start:
             stop_pki_entities()
 

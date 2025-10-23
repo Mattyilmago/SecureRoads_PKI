@@ -1,4 +1,4 @@
-"""
+﻿"""
 Authentication Middleware
 
 Implements API key authentication for REST endpoints.
@@ -12,7 +12,7 @@ from functools import wraps
 
 from flask import current_app, jsonify, request
 
-from protocols.etsi_message_types import ResponseCode
+from protocols.core.types import ResponseCode
 
 
 def setup_auth(app, api_keys=None):

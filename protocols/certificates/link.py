@@ -35,10 +35,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 # Import centralized ETSI utilities from etsi_message_types (DRY compliance)
-from protocols.etsi_message_types import compute_hashed_id8, time32_decode, time32_encode
+from protocols.core.primitives import compute_hashed_id8, time32_decode, time32_encode
 
 
-class ETSILinkCertificateEncoder:
+class LinkCertificate:
     """
     Codifica e decodifica Link Certificates in formato ASN.1 OER ETSI-compliant.
 
@@ -341,7 +341,7 @@ def convert_json_to_asn1_link_certificate(
     Returns:
         bytes: Link certificate in formato ASN.1 OER
     """
-    encoder = ETSILinkCertificateEncoder()
+    encoder = LinkCertificate()
 
     # Estrai certificati in DER
     issuer_cert_der = root_ca_cert.public_bytes(serialization.Encoding.DER)
@@ -368,7 +368,7 @@ def convert_asn1_to_json_link_certificate(asn1_bytes: bytes) -> Dict:
     Returns:
         Dict: Link certificate in formato JSON
     """
-    encoder = ETSILinkCertificateEncoder()
+    encoder = LinkCertificate()
     decoded = encoder.decode_full_link_certificate(asn1_bytes)
 
     return {
@@ -411,7 +411,7 @@ def decode_link_certificates_bundle(bundle_bytes: bytes) -> list[Dict]:
     offset += 2
 
     link_certificates = []
-    encoder = ETSILinkCertificateEncoder()
+    encoder = LinkCertificate()
 
     for i in range(count):
         # Leggi lunghezza link certificate (2 bytes)
@@ -436,3 +436,8 @@ def decode_link_certificates_bundle(bundle_bytes: bytes) -> list[Dict]:
             raise ValueError(f"Errore decodifica link {i + 1}: {e}")
 
     return link_certificates
+
+
+# Backward compatibility
+ETSILinkCertificateEncoder = LinkCertificate
+__all__ = ['LinkCertificate', 'ETSILinkCertificateEncoder']

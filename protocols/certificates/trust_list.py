@@ -44,11 +44,11 @@ from typing import Dict, List, Optional, Tuple
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
-# Import centralized ETSI utilities from etsi_message_types (DRY compliance)
-from protocols.etsi_message_types import compute_hashed_id8, time32_decode, time32_encode
+# Import centralized ETSI utilities from core modules
+from protocols.core.primitives import compute_hashed_id8, time32_decode, time32_encode
 
 
-class ETSITrustListEncoder:
+class TrustListEncoder:
     """
     Codifica e decodifica Certificate Trust Lists (CTL) in formato ASN.1 OER ETSI-compliant.
     
@@ -59,7 +59,7 @@ class ETSITrustListEncoder:
     - Time32 encoding (Unix timestamp relativo a ETSI epoch 2004-01-01)
     - HashedId8 identificatori per certificati
     
-    Uses centralized ETSI utilities from etsi_message_types module (DRY compliance).
+    Uses centralized ETSI utilities from core modules (DRY compliance).
     """
     
     # ETSI TS 102941 constants
@@ -70,7 +70,7 @@ class ETSITrustListEncoder:
     CTL_COMMAND_ADD = 0x00
     CTL_COMMAND_DELETE = 0x01
     
-    # Delegate to centralized utilities from etsi_message_types (DRY compliance)
+    # Delegate to centralized utilities from core modules (DRY compliance)
     time32_encode = staticmethod(time32_encode)
     time32_decode = staticmethod(time32_decode)
     

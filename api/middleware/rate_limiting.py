@@ -1,4 +1,4 @@
-"""
+﻿"""
 Rate Limiting Middleware
 
 Implements token bucket rate limiting for REST endpoints.
@@ -15,7 +15,7 @@ from threading import Lock
 
 from flask import current_app, jsonify, request
 
-from protocols.etsi_message_types import ResponseCode
+from protocols.core.types import ResponseCode
 
 
 class TokenBucket:

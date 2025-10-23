@@ -3,6 +3,12 @@ Butterfly Key Expansion - ETSI TS 102941 V2.1.1 Section 6.3.3
 
 Implements butterfly key expansion for batch Authorization Ticket generation
 with unlinkability guarantees using HKDF key derivation.
+
+Standards Reference:
+- ETSI TS 102941 V2.1.1 Section 6.3.3 - Butterfly Key Expansion
+
+Author: SecureRoad PKI Project
+Date: October 2025
 """
 
 import hashlib
@@ -12,6 +18,11 @@ from typing import List, Tuple
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+
+# ============================================================================
+# CORE BUTTERFLY KEY DERIVATION
+# ============================================================================
 
 
 def derive_at_keys(
@@ -147,8 +158,6 @@ def compute_shared_secret_ecdh(
     Returns:
         Shared secret (32 bytes)
     """
-    from cryptography.hazmat.primitives.asymmetric import ec
-
     # ECDH key agreement
     shared_key = itss_private_key.exchange(ec.ECDH(), aa_public_key)
 
@@ -266,43 +275,117 @@ def derive_ticket_hmac(master_hmac: bytes, ticket_index: int) -> bytes:
 
 
 # ============================================================================
-# EXAMPLE USAGE
+# CLASS-BASED INTERFACE (WRAPPER)
 # ============================================================================
 
-if __name__ == "__main__":
-    print("=" * 80)
-    print("BUTTERFLY KEY EXPANSION - DEMO")
-    print("=" * 80)
 
-    # Simula generazione batch di 20 AT
-    shared_secret = secrets.token_bytes(32)
-    key_tag = generate_key_tag()
-    batch_size = 20
-
-    print(f"\n📋 Parametri:")
-    print(f"   Shared secret: {shared_secret.hex()[:32]}...")
-    print(f"   Key tag: {key_tag.hex()}")
-    print(f"   Batch size: {batch_size}")
-
-    print(f"\n🔐 Derivando chiavi...")
-    keys = derive_at_keys(shared_secret, key_tag, batch_size)
-
-    print(f"\n✅ Chiavi derivate:")
-    for i, (v_key, e_key) in enumerate(keys[:3]):  # Mostra solo prime 3
-        print(f"   AT #{i}:")
-        print(f"      Verification: {compute_key_fingerprint(v_key)}")
-        print(f"      Encryption:   {compute_key_fingerprint(e_key)}")
-
-    print(f"   ...")
-    print(f"   (altre {batch_size - 3} coppie)")
-
-    print(f"\n🔍 Validando unlinkability...")
-    is_valid = validate_butterfly_keys(keys)
-
-    if is_valid:
-        print(f"\n✅ SUCCESSO: Tutte le {batch_size} coppie sono valide e uniche!")
-        print(f"   → Privacy garantita: impossibile correlare gli AT")
-    else:
-        print(f"\n❌ ERRORE: Validazione fallita!")
-
-    print("\n" + "=" * 80)
+class ButterflyExpansion:
+    """
+    Butterfly Key Expansion for Authorization Ticket batch generation.
+    
+    Provides a clean class-based interface to the butterfly key expansion protocol,
+    ensuring unlinkability and deterministic key derivation.
+    
+    Usage:
+        butterfly = ButterflyExpansion()
+        keys = butterfly.derive_keys(shared_secret, key_tag, batch_size=20)
+        for verification_key, encryption_key in keys:
+            # Use keys for AT generation
+            pass
+    """
+    
+    @staticmethod
+    def derive_keys(
+        shared_secret: bytes,
+        key_tag: bytes,
+        batch_size: int
+    ) -> List[Tuple[bytes, bytes]]:
+        """
+        Derive N key pairs for Authorization Tickets using butterfly expansion.
+        
+        Args:
+            shared_secret: Shared secret seed (min 32 bytes)
+            key_tag: Unique request tag (16 bytes)
+            batch_size: Number of key pairs to generate (1-100)
+            
+        Returns:
+            List of (verification_key, encryption_key) tuples (each 32 bytes)
+        """
+        return derive_at_keys(shared_secret, key_tag, batch_size)
+    
+    @staticmethod
+    def generate_key_tag() -> bytes:
+        """
+        Generate random key tag (16 bytes).
+        
+        Returns:
+            bytes: Random 16-byte key tag
+        """
+        return generate_key_tag()
+    
+    @staticmethod
+    def derive_key_pair_from_seed(seed: bytes):
+        """
+        Derive ECC key pair from deterministic seed.
+        
+        Args:
+            seed: Seed bytes (32+ bytes)
+            
+        Returns:
+            Tuple of (private_key, public_key_bytes)
+        """
+        return derive_ecc_key_pair_from_seed(seed)
+    
+    @staticmethod
+    def compute_shared_secret(private_key, public_key) -> bytes:
+        """
+        Compute ECDH shared secret.
+        
+        Args:
+            private_key: Local private key
+            public_key: Remote public key
+            
+        Returns:
+            bytes: Shared secret (32 bytes)
+        """
+        return compute_shared_secret_ecdh(private_key, public_key)
+    
+    @staticmethod
+    def validate_keys(keys: List[Tuple[bytes, bytes]]) -> bool:
+        """
+        Validate butterfly keys for unlinkability.
+        
+        Args:
+            keys: List of (verification_key, encryption_key) tuples
+            
+        Returns:
+            bool: True if all keys are unique (unlinkable)
+        """
+        return validate_butterfly_keys(keys)
+    
+    @staticmethod
+    def compute_fingerprint(key: bytes) -> str:
+        """
+        Compute key fingerprint for logging/debugging.
+        
+        Args:
+            key: Key bytes
+            
+        Returns:
+            str: Hex fingerprint
+        """
+        return compute_key_fingerprint(key)
+    
+    @staticmethod
+    def derive_hmac(master_hmac: bytes, ticket_index: int) -> bytes:
+        """
+        Derive HMAC key for specific ticket.
+        
+        Args:
+            master_hmac: Master HMAC key (32 bytes)
+            ticket_index: Index of ticket in batch
+            
+        Returns:
+            bytes: Derived HMAC key (32 bytes)
+        """
+        return derive_ticket_hmac(master_hmac, ticket_index)

@@ -1,7 +1,8 @@
 """
 CRL Distribution Blueprint
 
-Simplified implementation for testing.
+RFC 5280 compliant CRL (Certificate Revocation List) distribution endpoint.
+Provides REST API for ITS-S to retrieve and verify certificate revocation status.
 """
 
 from flask import Blueprint, current_app, jsonify, request

@@ -46,7 +46,7 @@ def create_stats_blueprint(entity_instance, entity_type):
                 import os
                 from pathlib import Path
                 
-                # EA stores issued ECs in enrollment_certificates/ (ASN.1 OER format .oer)
+                # EA stores issued ECs in enrollment_certificates/ (ASN.1 asn format .asn)
                 ec_dir = Path(bp.entity.base_dir) / "enrollment_certificates"
                 if ec_dir.exists():
                     ec_issued = len(list(ec_dir.glob("EC_*.oer")))
@@ -95,7 +95,7 @@ def create_stats_blueprint(entity_instance, entity_type):
                 import os
                 from pathlib import Path
                 
-                # AA stores issued ATs in tickets/ (ASN.1 OER format .oer)
+                # AA stores issued ATs in tickets/ (ASN.1 asn format .asn)
                 at_dir = Path(bp.entity.base_dir) / "tickets"
                 if at_dir.exists():
                     at_issued = len(list(at_dir.glob("AT_*.oer")))
@@ -210,8 +210,8 @@ def create_stats_blueprint(entity_instance, entity_type):
                     aa_count = 0
                     
                     if cert_dir.exists():
-                        # Count all certificates (ASN.1 OER format .oer)
-                        cert_files = list(cert_dir.glob("*.oer"))
+                        # Count all certificates (ASN.1 asn format .asn)
+                        cert_files = list(cert_dir.glob('*.oer'))
                         sub_ca_count = len(cert_files)
                         
                         # Count by type

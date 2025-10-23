@@ -9,13 +9,11 @@ from pathlib import Path
 
 from filelock import FileLock
 
-# ETSI Protocol Layer - ASN.1 OER Implementation
-from protocols.etsi_link_certificate import ETSILinkCertificateEncoder
-from protocols.etsi_message_types import (
-    compute_hashed_id8,
-    verify_asn1_certificate_signature,
-)
-from protocols.etsi_trust_list import ETSITrustListEncoder
+# ETSI Protocol Layer - ASN.1 asn Implementation (Updated imports)
+from protocols.certificates import LinkCertificate as ETSILinkCertificateEncoder
+from protocols.core import compute_hashed_id8
+from protocols.certificates.trust_list import TrustListEncoder
+from protocols.core.crypto import verify_asn1_certificate_signature
 
 # Managers
 from managers.crl_manager import CRLManager
@@ -36,40 +34,50 @@ class TrustListManager:
     
     Responsabilità (Single Responsibility):
     - Gestione trust anchors (EA, AA, subordinate CAs)
-    - Pubblicazione Full CTL e Delta CTL in formato ASN.1 OER
+    - Pubblicazione Full CTL e Delta CTL in formato ASN.1 asn
     - Generazione Link Certificates per trust chain navigation
     - Validazione catene di fiducia per ITS-S
     
     Standard ETSI Implementati:
-    - ETSI TS 102941 V2.1.1 Section 6.5: CTL Messages (ASN.1 OER)
+    - ETSI TS 102941 V2.1.1 Section 6.5: CTL Messages (ASN.1 asn)
     - ETSI TS 103097 V2.1.1: Certificate Formats and HashedId8
     - IEEE 1609.2: Trust anchor management
     
     Metodi Principali (ETSI-compliant):
     - add_trust_anchor(): Aggiunge CA fidata usando HashedId8
     - remove_trust_anchor(): Rimuove CA compromessa/scaduta
-    - publish_full_ctl(): Genera Full CTL in ASN.1 OER
+    - publish_full_ctl(): Genera Full CTL in ASN.1 asn
     - publish_delta_ctl(): Genera Delta CTL con modifiche incrementali
     - publish_link_certificates(): Pubblica Link Certificates bundle
     - is_trusted(): Verifica se certificato è firmato da CA fidata
     """
     
-    def __init__(self, root_ca, tlm_id="TLM_MAIN", base_dir="./pki_data/tlm/", crl_manager=None):
+    def __init__(self, root_ca, tlm_id: str = "TLM_MAIN", base_dir: str = None):
         """
         Inizializza Trust List Manager.
         
         Args:
-            root_ca: Riferimento alla Root CA (per firma CTL e link certificates)
-            tlm_id: ID del TLM (default: "TLM_MAIN")
-            base_dir: Directory base per dati TLM
-            crl_manager: CRLManager opzionale per revocation checking (ETSI-compliant)
+            root_ca: RootCA instance (REQUIRED per firma CTL e link certificates)
+            tlm_id: TLM identifier (default: "TLM_MAIN")
+            base_dir: Directory base per dati TLM (default: PKI_PATHS.get_tlm_path(tlm_id))
+        
+        Raises:
+            ValueError: Se root_ca non fornito
+        
+        Note:
+            CRLManager per revocation checking � accessibile via root_ca.crl_manager.
+            ETSI TS 102941 � 6.5: TLM usa RootCA CRL per validare trust anchors.
         """
         # ========================================================================
         # 1. VALIDAZIONE PARAMETRI E PATH SETUP
         # ========================================================================
         
         if not root_ca:
-            raise ValueError("root_ca è obbligatorio (istanza RootCA)")
+            raise ValueError("root_ca � obbligatorio (istanza RootCA)")
+        
+        if base_dir is None:
+            from config import PKI_PATHS
+            base_dir = str(PKI_PATHS.get_tlm_path(tlm_id))
         
         # Usa PKIPathManager per gestire i path in modo centralizzato
         self.paths = PKIPathManager.get_entity_paths("TLM", tlm_id, base_dir)
@@ -77,14 +85,11 @@ class TrustListManager:
         self.root_ca = root_ca
         self.tlm_id = tlm_id
         self.base_dir = self.paths.base_dir
-        
-        # CRL Manager per revocation checking (ETSI TS 102941 compliance)
-        self.crl_manager = crl_manager
 
-        # Percorsi usando PathManager (mantieni Path objects per coerenza)
+        # Percorsi usando PathManager (mantieni Path objects per consistenza)
         self.ctl_dir = self.paths.data_dir / "ctl"
-        self.full_ctl_path = self.ctl_dir / "full_ctl.oer"  # ASN.1 OER format
-        self.delta_ctl_path = self.ctl_dir / "delta_ctl.oer"  # ASN.1 OER format
+        self.full_ctl_path = self.ctl_dir / "full_ctl.oer"
+        self.delta_ctl_path = self.ctl_dir / "delta_ctl.oer"
         self.link_certs_dir = self.paths.data_dir / "link_certificates"
         self.link_certs_asn1_dir = self.link_certs_dir / "asn1"
         self.metadata_path = self.ctl_dir / "ctl_metadata.json"
@@ -115,14 +120,15 @@ class TrustListManager:
         self.logger.info(f"Directory CTL: {self.ctl_dir}")
         
         # ETSI Encoders (Delegation Pattern)
-        self.ctl_encoder = ETSITrustListEncoder()
-        self.link_encoder = ETSILinkCertificateEncoder()
+        self.ctl_encoder = TrustListEncoder()
+        from protocols.certificates.link import LinkCertificate
+        self.link_encoder = LinkCertificate()
         
-        self.logger.info(f"✅ ETSI Encoders inizializzati (ASN.1 OER)")
+        self.logger.info(f"? ETSI Encoders inizializzati (ASN.1 asn)")
         self.logger.info(f"✅ Struttura directory creata da PKIPathManager")
-        
-        # Log CRL Manager integration status
-        if self.crl_manager:
+
+        # Log CRL Manager integration status (accessibile via root_ca)
+        if hasattr(root_ca, 'crl_manager') and root_ca.crl_manager:
             self.logger.info(f"✅ CRL Manager integrato per revocation checking (ETSI TS 102941)")
         else:
             self.logger.warning(f"⚠️  CRL Manager non configurato - revocation checking disabilitato")
@@ -131,9 +137,9 @@ class TrustListManager:
         # 3. TRUST ANCHORS E LINK CERTIFICATES (IN-MEMORY STATE)
         # ========================================================================
         
-        # Trust anchors storage (FULL ASN.1 OER - NO X.509)
+        # Trust anchors storage (FULL ASN.1 asn - NO X.509)
         # Ogni entry: {
-        #   "cert_asn1_oer": bytes (ASN.1 OER encoding - ETSI TS 103097),
+        #   "cert_asn1_asn": bytes (ASN.1 asn encoding - ETSI TS 103097),
         #   "hashed_id8": str (16 char hex - PRIMARY KEY),
         #   "subject_name": str (per logging/debug),
         #   "authority_type": str (EA/AA/RCA),
@@ -177,23 +183,23 @@ class TrustListManager:
         self.logger.info(f"Trust anchors caricati: {len(self.trust_anchors)}")
         self.logger.info("=" * 80)
 
-    def add_trust_anchor(self, cert_asn1_oer, authority_type="UNKNOWN", subject_name=None, expiry_date=None):
+    def add_trust_anchor(self, cert_asn1_asn, authority_type="UNKNOWN", subject_name=None, expiry_date=None):
         """
-        Aggiunge una CA fidata alla Certificate Trust List usando ASN.1 OER ETSI-compliant.
+        Aggiunge una CA fidata alla Certificate Trust List usando ASN.1 asn ETSI-compliant.
         
         ETSI TS 102941 Section 6.5: Trust anchors identificati da HashedId8
-        ETSI TS 103097: Certificati in formato ASN.1 OER (NO X.509)
+        ETSI TS 103097: Certificati in formato ASN.1 asn (NO X.509)
         
         Args:
-            cert_asn1_oer: Certificato in formato ASN.1 OER (bytes)
-            authority_type: Tipo di autorità ("EA", "AA", "RCA")
+            cert_asn1_asn: Certificato in formato ASN.1 asn (bytes)
+            authority_type: Tipo di autorit� ("EA", "AA", "RCA")
             subject_name: Nome soggetto (opzionale, per logging)
             expiry_date: Data scadenza (opzionale, datetime)
             
-        Thread-safe: Usa file lock per garantire atomicità operazioni
+        Thread-safe: Usa file lock per garantire atomicit� operazioni
         """
         # Calcola HashedId8 ETSI-compliant (PRIMARY KEY)
-        hashed_id8_bytes = compute_hashed_id8(cert_asn1_oer)
+        hashed_id8_bytes = compute_hashed_id8(cert_asn1_asn)
         hashed_id8 = hashed_id8_bytes.hex()  # 16 char hex string
         
         # Usa subject_name fornito o default
@@ -206,7 +212,7 @@ class TrustListManager:
         if not expiry_date:
             expiry_date = added_date + timedelta(days=3*365)
 
-        self.logger.info(f"Aggiungendo trust anchor (ASN.1 OER): {subject_name}")
+        self.logger.info(f"Aggiungendo trust anchor (ASN.1 asn): {subject_name}")
         self.logger.info(f"  HashedId8: {hashed_id8}")
         self.logger.info(f"  Tipo: {authority_type}")
         self.logger.info(f"  Scadenza: {expiry_date}")
@@ -217,17 +223,17 @@ class TrustListManager:
         
         try:
             with lock:
-                # IMPORTANTE: Ricarica metadata per fare merge con anchor già salvati da altri processi
+                # IMPORTANTE: Ricarica metadata per fare merge con anchor gi� salvati da altri processi
                 self.load_metadata()
 
-                # Controlla se già presente (usa HashedId8 per confronto)
+                # Controlla se gi� presente (usa HashedId8 per confronto)
                 if any(anchor["hashed_id8"] == hashed_id8 for anchor in self.trust_anchors):
-                    self.logger.info(f"Trust anchor già presente nella lista")
+                    self.logger.info(f"Trust anchor gi� presente nella lista")
                     return
 
-                # Crea entry trust anchor (FULL ASN.1 OER)
+                # Crea entry trust anchor (FULL ASN.1 asn)
                 trust_anchor_entry = {
-                    "cert_asn1_oer": cert_asn1_oer,  # ASN.1 OER bytes (ETSI-compliant)
+                    "cert_asn1_asn": cert_asn1_asn,  # ASN.1 asn bytes (ETSI-compliant)
                     "hashed_id8": hashed_id8,  # PRIMARY KEY (ETSI-compliant)
                     "subject_name": subject_name,
                     "authority_type": authority_type,
@@ -243,30 +249,30 @@ class TrustListManager:
                 self.logger.info(f"Aggiunte delta pending: {len(self.delta_additions)}")
 
                 # Genera automaticamente link certificate per questa CA (usa ETSILinkCertificateEncoder)
-                self._generate_link_certificate_for_authority(cert_asn1_oer, authority_type, subject_name)
+                self._generate_link_certificate_for_authority(cert_asn1_asn, authority_type, subject_name)
                 
-                # Salva metadata per persistenza (skip lock perché siamo già dentro il lock!)
+                # Salva metadata per persistenza (skip lock perch� siamo gi� dentro il lock!)
                 self.save_metadata(_skip_lock=True)
                 
         except Exception as e:
-            self.logger.error(f"❌ Errore durante add_trust_anchor con lock: {e}")
+            self.logger.error(f"? Errore durante add_trust_anchor con lock: {e}")
             raise
 
-    def remove_trust_anchor(self, cert_asn1_oer, reason="unspecified"):
+    def remove_trust_anchor(self, cert_asn1_asn, reason="unspecified"):
         """
         Rimuove una CA dalla Certificate Trust List usando HashedId8.
 
         Questo accade quando:
-        - La CA è stata compromessa
-        - La CA è stata dismessa
-        - Il certificato della CA è scaduto
+        - La CA � stata compromessa
+        - La CA � stata dismessa
+        - Il certificato della CA � scaduto
 
         Args:
-            cert_asn1_oer: Certificato ASN.1 OER da rimuovere (bytes)
+            cert_asn1_asn: Certificato ASN.1 asn da rimuovere (bytes)
             reason: Motivo della rimozione
         """
         # Calcola HashedId8 ETSI-compliant
-        hashed_id8_bytes = compute_hashed_id8(cert_asn1_oer)
+        hashed_id8_bytes = compute_hashed_id8(cert_asn1_asn)
         hashed_id8 = hashed_id8_bytes.hex()
 
         self.logger.info(f"Rimozione trust anchor con HashedId8: {hashed_id8}")
@@ -287,7 +293,7 @@ class TrustListManager:
 
         # Aggiungi alla lista rimozioni delta
         removal_entry = {
-            "cert_asn1_oer": cert_asn1_oer,  # ASN.1 OER bytes
+            "cert_asn1_asn": cert_asn1_asn,  # ASN.1 asn bytes
             "hashed_id8": hashed_id8,  # PRIMARY KEY
             "subject_name": found["subject_name"],
             "authority_type": found["authority_type"],
@@ -322,20 +328,20 @@ class TrustListManager:
             if anchor["hashed_id8"] == issuer_hashed_id8:
                 # Usa encoder appropriato per estrarre chiave pubblica
                 auth_type = anchor.get("authority_type", "EA")
-                cert_asn1 = anchor["certificate"]
+                cert_asn1 = anchor["cert_asn1_asn"]
                 
                 try:
                     if auth_type in ["EA", "AA"]:
-                        from protocols.etsi_authority_certificate import ETSIAuthorityCertificateEncoder
+                        from protocols.certificates import SubordinateCertificate as ETSIAuthorityCertificateEncoder
                         encoder = ETSIAuthorityCertificateEncoder()
                         return encoder.extract_public_key(cert_asn1)
                     elif auth_type == "RCA":
-                        from protocols.etsi_root_certificate import ETSIRootCertificateEncoder
-                        encoder = ETSIRootCertificateEncoder()
+                        from protocols.certificates.root import RootCertificate
+                        encoder = RootCertificate()
                         # Decode e estrai chiave pubblica dal root cert
                         decoded = encoder.decode_root_certificate(cert_asn1)
-                        # La chiave pubblica è nel campo 'public_key_bytes'
-                        from protocols.etsi_message_types import decode_public_key_compressed
+                        # La chiave pubblica � nel campo 'public_key_bytes'
+                        from protocols.core.primitives import decode_public_key_compressed
                         if 'public_key_bytes' in decoded:
                             return decode_public_key_compressed(decoded['public_key_bytes'])
                 except Exception as e:
@@ -344,56 +350,57 @@ class TrustListManager:
         return None
 
 
-    def is_trusted(self, cert_asn1_oer):
+    def is_trusted(self, cert_asn1_asn):
         """
-        Verifica se un certificato ASN.1 OER è fidato (ETSI-compliant).
+        Verifica se un certificato ASN.1 asn � fidato (ETSI-compliant).
 
-        Questo è il metodo principale usato dagli ITS-S per validare
+        Questo � il metodo principale usato dagli ITS-S per validare
         certificati ricevuti (EC, AT, ecc.) secondo ETSI TS 102941.
         
         IMPORTANTE: Ora include revocation checking tramite CRL Manager (ETSI-compliant).
 
         Args:
-            cert_asn1_oer: Certificato ASN.1 OER da verificare (bytes)
+            cert_asn1_asn: Certificato ASN.1 asn da verificare (bytes)
 
         Returns:
             tuple (bool, str): (is_trusted, issuer_info)
         """
         # Calcola HashedId8 del certificato
-        cert_hashed_id8 = compute_hashed_id8(cert_asn1_oer).hex()
+        cert_hashed_id8 = compute_hashed_id8(cert_asn1_asn).hex()
         
-        # Controlla se il certificato stesso è un trust anchor (usa HashedId8)
+        # Controlla se il certificato stesso � un trust anchor (usa HashedId8)
         for anchor in self.trust_anchors:
             if anchor["hashed_id8"] == cert_hashed_id8:
                 # ETSI TS 102941: Verifica revocazione trust anchor
-                if self.crl_manager and self.crl_manager.is_certificate_revoked(cert_asn1_oer):
-                    self.logger.warning(f"⚠️  Trust anchor REVOKED: {anchor['subject_name']}")
+                if self.root_ca.crl_manager and self.root_ca.crl_manager.is_certificate_revoked(cert_asn1_asn):
+                    self.logger.warning(f"??  Trust anchor REVOKED: {anchor['subject_name']}")
                     return False, f"Trust anchor revoked: {anchor['subject_name']}"
                 
                 return True, f"Direct trust anchor: {anchor['subject_name']}"
 
-        # ✅ ETSI TS 102941 COMPLIANCE - Trust Chain Validation with Signature Verification
+        # ? ETSI TS 102941 COMPLIANCE - Trust Chain Validation with Signature Verification
         # 
         # ETSI TS 102941 v2.1.1 Section 6.1.3.2 requires:
-        # 1. ✅ Check if certificate is a direct trust anchor (implemented above)
-        # 2. ✅ Extract issuer HashedId8 from certificate (implemented below)
-        # 3. ✅ Verify cryptographic signature using issuer's public key (NOW IMPLEMENTED)
+        # 1. ? Check if certificate is a direct trust anchor (implemented above)
+        # 2. ? Extract issuer HashedId8 from certificate (implemented below)
+        # 3. ? Verify cryptographic signature using issuer's public key (NOW IMPLEMENTED)
         #
         # Current implementation: Full ETSI-compliant certificate validation including:
         # - Trust anchor lookup via HashedId8
         # - Issuer verification via certificate chain
         # - Cryptographic signature verification with issuer's public key
         
-        if len(cert_asn1_oer) >= 11:
+        if len(cert_asn1_asn) >= 11:
             # Try multiple offsets to find issuer HashedId8 (certificate structure varies)
             # Standard EC structure: version(1) + type(1) + issuer{choice(1) + HashedId8(8)}
             # Some certificates have outer wrappers causing offset variations
             for test_offset in [3, 4, 5]:
-                if len(cert_asn1_oer) >= test_offset + 8:
-                    test_issuer = cert_asn1_oer[test_offset:test_offset+8].hex()
+                if len(cert_asn1_asn) >= test_offset + 8:
+                    test_issuer = cert_asn1_asn[test_offset:test_offset+8].hex()
                     for anchor in self.trust_anchors:
                         if anchor["hashed_id8"] == test_issuer:
                             # Trovato issuer nei trust anchors, ora verifica firma
+                            self.logger.info(f"🔍 Found issuer in trust anchors: {anchor['subject_name']} (HashedId8: {test_issuer[:16]}...)")
                             issuer_public_key = self._extract_issuer_public_key_from_anchor(test_issuer)
                             
                             if issuer_public_key is None:
@@ -402,9 +409,11 @@ class TrustListManager:
                                 return True, f"Issued by trusted anchor: {anchor['subject_name']} (signature not verified)"
                             
                             # Verifica firma crittografica usando funzione centralizzata DRY
+                            self.logger.info(f"🔐 Verifying certificate signature with issuer public key...")
                             try:
-                                if verify_asn1_certificate_signature(cert_asn1_oer, issuer_public_key):
-                                    return True, f"Issued by trusted anchor: {anchor['subject_name']} (signature verified ✅)"
+                                if verify_asn1_certificate_signature(cert_asn1_asn, issuer_public_key):
+                                    self.logger.info(f"✅ Signature verified successfully!")
+                                    return True, f"Issued by trusted anchor: {anchor['subject_name']} (signature verified ✓)"
                                 else:
                                     self.logger.error(f"❌ Firma certificato non valida per issuer: {anchor['subject_name']}")
                                     return False, f"Invalid signature from issuer: {anchor['subject_name']}"
@@ -413,11 +422,13 @@ class TrustListManager:
                                 return False, f"Signature verification error: {e}"
         
         # Certificate not trusted: neither a direct anchor nor issued by trusted anchor
+        self.logger.warning(f"⚠️  Certificate not trusted - issuer not found in trust list")
+        self.logger.warning(f"   Available trust anchors: {[a['subject_name'] for a in self.trust_anchors]}")
         return False, "Not a direct trust anchor and issuer not in trust list"
 
     def publish_full_ctl(self, validity_days=30):
         """
-        Genera e pubblica una Full CTL in formato ASN.1 OER ETSI-compliant.
+        Genera e pubblica una Full CTL in formato ASN.1 asn ETSI-compliant.
 
         La Full CTL:
         - Contiene tutti i certificati fidati (EA, AA, RCA)
@@ -425,15 +436,15 @@ class TrustListManager:
         - Serve come base di riferimento per i Delta CTL
         - Usa HashedId8 per identificazione certificati
 
-        ETSI TS 102941 V2.1.1 Section 6.5: ToBeSignedTlmCtl (ASN.1 OER)
+        ETSI TS 102941 V2.1.1 Section 6.5: ToBeSignedTlmCtl (ASN.1 asn)
 
         Args:
-            validity_days: Giorni di validità della CTL
+            validity_days: Giorni di validit� della CTL
             
         Returns:
             dict: Metadata della CTL pubblicata
         """
-        self.logger.info(f"=== GENERAZIONE FULL CTL (ASN.1 OER) ===")
+        self.logger.info(f"=== GENERAZIONE FULL CTL (ASN.1 asn) ===")
 
         # Incrementa CTL number
         self.ctl_number += 1
@@ -446,14 +457,14 @@ class TrustListManager:
         self.logger.info(f"CTL Number: {self.ctl_number}")
         self.logger.info(f"Trust anchors attivi: {len(self.trust_anchors)}")
 
-        # Prepara trust anchors per encoding (ASN.1 OER bytes)
-        # Format: [(cert_asn1_oer, authority_type), ...]
+        # Prepara trust anchors per encoding (ASN.1 asn bytes)
+        # Format: [(cert_asn1_asn, authority_type), ...]
         trust_anchors_for_encoding = [
-            (anchor["cert_asn1_oer"], anchor["authority_type"])
+            (anchor["cert_asn1_asn"], anchor["authority_type"])
             for anchor in self.trust_anchors
         ]
 
-        # Calcola date validità
+        # Calcola date validit�
         this_update = datetime.now(timezone.utc)
         next_update = this_update + timedelta(days=validity_days)
 
@@ -466,17 +477,17 @@ class TrustListManager:
             private_key=self.root_ca.private_key
         )
 
-        # Salva Full CTL in formato ASN.1 OER binario
+        # Salva Full CTL in formato ASN.1 asn binario
         with open(self.full_ctl_path, "wb") as f:
             f.write(ctl_bytes)
 
-        self.logger.info(f"Full CTL ASN.1 OER salvata: {self.full_ctl_path}")
+        self.logger.info(f"Full CTL ASN.1 asn salvata: {self.full_ctl_path}")
         self.logger.info(f"  Dimensione: {len(ctl_bytes)} bytes")
 
         # Salva anche metadata JSON per debugging/compatibility
         ctl_metadata = {
             "version": "1.0",
-            "format": "ASN.1 OER (ETSI TS 102941)",
+            "format": "ASN.1 asn (ETSI TS 102941)",
             "ctl_number": self.ctl_number,
             "issuer_hashed_id8": self.root_ca.get_hashed_id8(),
             "issue_date": this_update.isoformat(),
@@ -500,7 +511,7 @@ class TrustListManager:
 
         self.logger.info(f"Metadata JSON salvati: {metadata_path}")
 
-        # Reset delta changes (tutto è ora nella Full CTL)
+        # Reset delta changes (tutto � ora nella Full CTL)
         self.delta_additions = []
         self.delta_removals = []
 
@@ -512,11 +523,11 @@ class TrustListManager:
 
     def publish_delta_ctl(self, validity_days=7):
         """
-        Genera e pubblica una Delta CTL in formato ASN.1 OER ETSI-compliant.
+        Genera e pubblica una Delta CTL in formato ASN.1 asn ETSI-compliant.
 
         La Delta CTL:
         - Contiene solo trust anchors aggiunti/rimossi dall'ultima Full CTL
-        - È molto più piccola e veloce da distribuire
+        - � molto pi� piccola e veloce da distribuire
         - Include riferimento alla Full CTL base (Base CTL Number)
         - Viene pubblicata frequentemente (es. settimanalmente)
 
@@ -526,12 +537,12 @@ class TrustListManager:
         - Usa HashedId8 per identificazione
 
         Args:
-            validity_days: Giorni di validità della Delta CTL
+            validity_days: Giorni di validit� della Delta CTL
             
         Returns:
             dict: Metadata della Delta CTL o None se nessuna modifica
         """
-        self.logger.info(f"=== GENERAZIONE DELTA CTL (ASN.1 OER) ===")
+        self.logger.info(f"=== GENERAZIONE DELTA CTL (ASN.1 asn) ===")
 
         # Controlla se ci sono modifiche
         if not self.delta_additions and not self.delta_removals:
@@ -546,19 +557,19 @@ class TrustListManager:
         self.logger.info(f"Aggiunte: {len(self.delta_additions)}")
         self.logger.info(f"Rimozioni: {len(self.delta_removals)}")
 
-        # Prepara additions e removals per encoding (ASN.1 OER bytes)
-        # Format: [(cert_asn1_oer, authority_type), ...]
+        # Prepara additions e removals per encoding (ASN.1 asn bytes)
+        # Format: [(cert_asn1_asn, authority_type), ...]
         additions_for_encoding = [
-            (anchor["cert_asn1_oer"], anchor["authority_type"])
+            (anchor["cert_asn1_asn"], anchor["authority_type"])
             for anchor in self.delta_additions
         ]
         
         removals_for_encoding = [
-            (removal["cert_asn1_oer"], removal["authority_type"])
+            (removal["cert_asn1_asn"], removal["authority_type"])
             for removal in self.delta_removals
         ]
 
-        # Calcola date validità
+        # Calcola date validit�
         this_update = datetime.now(timezone.utc)
         next_update = this_update + timedelta(days=validity_days)
 
@@ -572,17 +583,17 @@ class TrustListManager:
             private_key=self.root_ca.private_key
         )
 
-        # Salva Delta CTL in formato ASN.1 OER binario
+        # Salva Delta CTL in formato ASN.1 asn binario
         with open(self.delta_ctl_path, "wb") as f:
             f.write(delta_ctl_bytes)
 
-        self.logger.info(f"Delta CTL ASN.1 OER salvata: {self.delta_ctl_path}")
+        self.logger.info(f"Delta CTL ASN.1 asn salvata: {self.delta_ctl_path}")
         self.logger.info(f"  Dimensione: {len(delta_ctl_bytes)} bytes")
 
         # Salva metadata JSON per debugging
         delta_ctl_metadata = {
             "version": "1.0",
-            "format": "ASN.1 OER (ETSI TS 102941)",
+            "format": "ASN.1 asn (ETSI TS 102941)",
             "ctl_number": self.ctl_number,
             "base_ctl_number": self.base_ctl_number,
             "issuer_hashed_id8": self.root_ca.get_hashed_id8(),
@@ -623,13 +634,13 @@ class TrustListManager:
 
     def _generate_link_certificate_for_authority(self, authority_cert_asn1, authority_type, subject_name):
         """
-        Genera Link Certificate ASN.1 OER per collegare RootCA -> EA/AA.
+        Genera Link Certificate ASN.1 asn per collegare RootCA -> EA/AA.
         
-        Delega encoding ASN.1 OER a ETSILinkCertificateEncoder (DRY principle).
+        Delega encoding ASN.1 asn a ETSILinkCertificateEncoder (DRY principle).
 
         Args:
-            authority_cert_asn1: Certificato ASN.1 OER dell'autorità (EA/AA)
-            authority_type: Tipo di autorità ("EA", "AA")
+            authority_cert_asn1: Certificato ASN.1 asn dell'autorit� (EA/AA)
+            authority_type: Tipo di autorit� ("EA", "AA")
             subject_name: Nome del soggetto (per logging)
         """
         self.logger.info(f"Generando Link Certificate ETSI-compliant: RootCA -> {authority_type}")
@@ -645,14 +656,14 @@ class TrustListManager:
         # Genera link certificate completo usando ETSILinkCertificateEncoder
         try:
             asn1_bytes = self.link_encoder.encode_full_link_certificate(
-                issuer_cert_der=self.root_ca.certificate_asn1,  # RootCA ASN.1 OER
-                subject_cert_der=authority_cert_asn1,  # EA/AA ASN.1 OER
+                issuer_cert_der=self.root_ca.certificate_asn1,  # RootCA ASN.1 asn
+                subject_cert_der=authority_cert_asn1,  # EA/AA ASN.1 asn
                 expiry_time=link_expiry,
                 private_key=self.root_ca.private_key
             )
-            self.logger.debug(f"✅ Link certificate encoded: {len(asn1_bytes)} bytes")
+            self.logger.debug(f"? Link certificate encoded: {len(asn1_bytes)} bytes")
         except Exception as e:
-            self.logger.error(f"❌ Link certificate encoding failed: {e}")
+            self.logger.error(f"? Link certificate encoding failed: {e}")
             # Fallback: usa solo il certificato subject (non ideale ma funzionale)
             asn1_bytes = authority_cert_asn1
 
@@ -662,7 +673,7 @@ class TrustListManager:
         link_cert_metadata = {
             "link_id": f"LINK_{root_ca_hashed_id8[:8]}_to_{cert_hashed_id8[:8]}",
             "version": "1.0",
-            "format": "ASN.1 OER (ETSI TS 102941)",
+            "format": "ASN.1 asn (ETSI TS 102941)",
             # Issuer (RootCA)
             "from_ca": "RootCA",
             "from_hashed_id8": root_ca_hashed_id8,
@@ -700,12 +711,12 @@ class TrustListManager:
 
     def verify_link_certificate(self, link_cert_asn1_bytes: bytes) -> tuple:
         """
-        Verifica la firma di un Link Certificate ASN.1 OER secondo ETSI TS 102941.
+        Verifica la firma di un Link Certificate ASN.1 asn secondo ETSI TS 102941.
 
         DELEGA verifica a ETSILinkCertificateEncoder (DRY principle).
 
         Args:
-            link_cert_asn1_bytes: Link certificate in formato ASN.1 OER binario
+            link_cert_asn1_bytes: Link certificate in formato ASN.1 asn binario
 
         Returns:
             tuple (bool, str): (is_valid, message)
@@ -713,18 +724,18 @@ class TrustListManager:
         ETSI TS 102941 Section 6.4 - Link Certificate Verification
         """
         try:
-            # Estrai chiave pubblica da RootCA certificate ASN.1 OER
-            from protocols.etsi_root_certificate import ETSIRootCertificateEncoder
-            root_encoder = ETSIRootCertificateEncoder()
+            # Estrai chiave pubblica da RootCA certificate ASN.1 asn
+            from protocols.certificates.root import RootCertificate
+            root_encoder = RootCertificate()
             
             # Decodifica RootCA cert per estrarre chiave pubblica
             root_cert_decoded = root_encoder.decode_root_certificate(self.root_ca.certificate_asn1)
             
             # Estrai chiave pubblica
-            from protocols.etsi_message_types import decode_public_key_compressed
+            from protocols.core.primitives import decode_public_key_compressed
             root_public_key = decode_public_key_compressed(root_cert_decoded['public_key_bytes'])
             
-            # DELEGA VERIFICA A ETSILinkCertificateEncoder
+            # DELEGA VERIFICA A LinkCertificate encoder
             is_valid = self.link_encoder.verify_link_certificate_signature(
                 link_cert_asn1_bytes,
                 root_public_key
@@ -770,7 +781,7 @@ class TrustListManager:
 
     def publish_link_certificates(self):
         """
-        Pubblica tutti i link certificates in un bundle ASN.1 OER.
+        Pubblica tutti i link certificates in un bundle ASN.1 asn.
 
         Questo bundle viene distribuito agli ITS-S insieme alla CTL
         per permettere la validazione completa delle catene.
@@ -780,7 +791,7 @@ class TrustListManager:
         Returns:
             dict: Metadata del bundle pubblicato
         """
-        self.logger.info(f"=== PUBBLICAZIONE LINK CERTIFICATES (ASN.1 OER) ===")
+        self.logger.info(f"=== PUBBLICAZIONE LINK CERTIFICATES (ASN.1 asn) ===")
         self.logger.info(f"Link certificates totali: {len(self.link_certificates)}")
 
         # Prepara lista di link certificates da encodare
@@ -805,8 +816,8 @@ class TrustListManager:
             
             # Aggiungi alla lista per encoding
             links_to_encode.append({
-                "issuer_cert_asn1": self.root_ca.certificate_asn1,  # RootCA ASN.1 OER
-                "subject_cert_asn1": subject_cert,  # EA/AA ASN.1 OER
+                "issuer_cert_asn1": self.root_ca.certificate_asn1,  # RootCA ASN.1 asn
+                "subject_cert_asn1": subject_cert,  # EA/AA ASN.1 asn
                 "expiry_time": expiry_time
             })
 
@@ -836,23 +847,23 @@ class TrustListManager:
                 bundle_asn1.extend(link_asn1)
                 links_encoded += 1
                 
-                self.logger.debug(f"✅ Link certificate {links_encoded} encoded: {len(link_asn1)} bytes")
+                self.logger.debug(f"? Link certificate {links_encoded} encoded: {len(link_asn1)} bytes")
 
             except Exception as e:
-                self.logger.error(f"❌ Errore codifica link certificate: {e}")
+                self.logger.error(f"? Errore codifica link certificate: {e}")
                 continue
 
         # Salva bundle ASN.1
         bundle_path_asn1.write_bytes(bytes(bundle_asn1))
 
-        self.logger.info(f"Bundle ASN.1 OER salvato: {bundle_path_asn1}")
+        self.logger.info(f"Bundle ASN.1 asn salvato: {bundle_path_asn1}")
         self.logger.info(f"  Link certificates codificati: {links_encoded}/{len(self.link_certificates)}")
         self.logger.info(f"  Dimensione bundle: {len(bundle_asn1)} bytes")
 
         # Salva metadata JSON per debugging
         bundle_metadata = {
             "version": "1.0",
-            "format": "ASN.1 OER Bundle (ETSI TS 102941)",
+            "format": "ASN.1 asn Bundle (ETSI TS 102941)",
             "issue_date": datetime.now(timezone.utc).isoformat(),
             "total_links": links_encoded,
             "size_bytes": len(bundle_asn1),
@@ -919,7 +930,7 @@ class TrustListManager:
             self.logger.warning("Full CTL non disponibile")
             return None
 
-        # Metadata path (.oer -> _metadata.json)
+        # Metadata path (.asn -> _metadata.json)
         metadata_path = self.full_ctl_path.with_name(
             self.full_ctl_path.stem + "_metadata.json"
         )
@@ -930,7 +941,7 @@ class TrustListManager:
             "metadata_path": str(metadata_path) if metadata_path.exists() else None,
             "trust_anchors_count": len(self.trust_anchors),
             "last_update": self.last_full_ctl_time.isoformat() if self.last_full_ctl_time else None,
-            "format": "ASN.1 OER (ETSI TS 102941)",
+            "format": "ASN.1 asn (ETSI TS 102941)",
         }
 
         self.logger.info(f"CTL disponibile per download:")
@@ -945,7 +956,7 @@ class TrustListManager:
         Rimuove trust anchors scaduti dalla lista.
 
         Simile a cleanup nel CRLManager, ma per certificati fidati.
-        Un certificato scaduto non può più essere usato per firmare,
+        Un certificato scaduto non pu� pi� essere usato per firmare,
         quindi non serve mantenerlo nei trust anchors.
         
         IMPORTANTE - AGGIORNAMENTO AUTOMATICO METRICHE:
@@ -955,13 +966,13 @@ class TrustListManager:
         1. Quando viene pubblicata una Full CTL (publish_full_ctl)
         2. Quando vengono richieste le statistiche (get_statistics)
         3. Quando il dashboard richiede metriche (/api/monitoring/metrics)
-        4. Quando viene richiesto lo stato dell'entità (/api/stats)
+        4. Quando viene richiesto lo stato dell'entit� (/api/stats)
         
         Questo garantisce che:
         - I trust anchors scaduti vengono rimossi automaticamente
         - Le metriche riflettono sempre lo stato reale del sistema
         - La dashboard mostra conteggi accurati e aggiornati
-        - Il sistema è conforme agli standard ETSI TS 102 941
+        - Il sistema � conforme agli standard ETSI TS 102 941
         
         Le rimozioni vengono tracciate anche nei delta_removals per il prossimo Delta CTL.
         
@@ -977,7 +988,7 @@ class TrustListManager:
         
         for anchor in self.trust_anchors:
             expiry_date = anchor.get("expiry_date")
-            cert_asn1_oer = anchor.get("cert_asn1_oer")
+            cert_asn1_asn = anchor.get("cert_asn1_asn")
             
             # Check expiration
             is_expired = False
@@ -991,11 +1002,11 @@ class TrustListManager:
             
             # Check revocation (ETSI TS 102941 compliance)
             is_revoked = False
-            if not is_expired and self.crl_manager and cert_asn1_oer:
-                if self.crl_manager.is_certificate_revoked(cert_asn1_oer):
+            if not is_expired and self.root_ca.crl_manager and cert_asn1_asn:
+                if self.root_ca.crl_manager.is_certificate_revoked(cert_asn1_asn):
                     is_revoked = True
                     revoked_anchors.append(anchor)
-                    self.logger.warning(f"⚠️  Rimozione trust anchor REVOCATO: {anchor['subject_name']}")
+                    self.logger.warning(f"??  Rimozione trust anchor REVOCATO: {anchor['subject_name']}")
             
             # Keep only valid and non-revoked anchors
             if not is_expired and not is_revoked:
@@ -1006,7 +1017,7 @@ class TrustListManager:
         # Aggiungi gli anchor scaduti ai delta_removals per tracciamento
         for anchor in expired_anchors:
             removal_entry = {
-                "cert_asn1_oer": anchor.get("cert_asn1_oer"),
+                "cert_asn1_asn": anchor.get("cert_asn1_asn"),
                 "hashed_id8": anchor.get("hashed_id8"),
                 "subject_name": anchor.get("subject_name"),
                 "authority_type": anchor.get("authority_type"),
@@ -1020,7 +1031,7 @@ class TrustListManager:
         # Aggiungi gli anchor revocati ai delta_removals
         for anchor in revoked_anchors:
             removal_entry = {
-                "cert_asn1_oer": anchor.get("cert_asn1_oer"),
+                "cert_asn1_asn": anchor.get("cert_asn1_asn"),
                 "hashed_id8": anchor.get("hashed_id8"),
                 "subject_name": anchor.get("subject_name"),
                 "authority_type": anchor.get("authority_type"),
@@ -1092,20 +1103,20 @@ class TrustListManager:
 
     def save_metadata(self, _skip_lock=False):
         """
-        Salva metadata TLM su file JSON per persistenza (FULL ASN.1 OER).
+        Salva metadata TLM su file JSON per persistenza (FULL ASN.1 asn).
 
         Simile a CRLManager, mantiene stato tra restart.
-        Salva trust anchors in formato ASN.1 OER (base64-encoded per JSON) usando HashedId8.
-        NOTA: _skip_lock=True quando chiamato da dentro add_trust_anchor() che ha già il lock.
+        Salva trust anchors in formato ASN.1 asn (base64-encoded per JSON) usando HashedId8.
+        NOTA: _skip_lock=True quando chiamato da dentro add_trust_anchor() che ha gi� il lock.
         """
-        # Serializza trust anchors (ASN.1 OER in base64 per JSON)
+        # Serializza trust anchors (ASN.1 asn in base64 per JSON)
         serialized_anchors = []
         for anchor in self.trust_anchors:
-            # Encode ASN.1 OER bytes as base64 string for JSON serialization
-            cert_asn1_b64 = base64.b64encode(anchor["cert_asn1_oer"]).decode("utf-8")
+            # Encode ASN.1 asn bytes as base64 string for JSON serialization
+            cert_asn1_b64 = base64.b64encode(anchor["cert_asn1_asn"]).decode("utf-8")
             
             serialized_anchors.append({
-                "cert_asn1_oer_b64": cert_asn1_b64,  # ASN.1 OER in base64
+                "cert_asn1_asn_b64": cert_asn1_b64,  # ASN.1 asn in base64
                 "hashed_id8": anchor["hashed_id8"],  # PRIMARY KEY (ETSI-compliant)
                 "subject_name": anchor["subject_name"],
                 "authority_type": anchor["authority_type"],
@@ -1115,7 +1126,7 @@ class TrustListManager:
         
         metadata = {
             "version": "2.0",
-            "format": "ETSI TS 102941 Compliant (FULL ASN.1 OER)",
+            "format": "ETSI TS 102941 Compliant (FULL ASN.1 asn)",
             "ctl_number": self.ctl_number,
             "base_ctl_number": self.base_ctl_number,
             "last_full_ctl_time": (
@@ -1160,7 +1171,7 @@ class TrustListManager:
                     pass
                 raise
 
-        # Se skip_lock=True (chiamato da dentro add_trust_anchor che ha già il lock)
+        # Se skip_lock=True (chiamato da dentro add_trust_anchor che ha gi� il lock)
         if _skip_lock:
             _do_save()
         else:
@@ -1196,26 +1207,26 @@ class TrustListManager:
             # IMPORTANTE: Svuota la lista prima di ricaricare per evitare duplicati
             self.trust_anchors.clear()
             
-            # Ricarica trust anchors (FULL ASN.1 OER)
+            # Ricarica trust anchors (FULL ASN.1 asn)
             serialized_anchors = metadata.get("trust_anchors", [])
             if serialized_anchors:
-                self.logger.info(f"Ricaricando {len(serialized_anchors)} trust anchors (ASN.1 OER)...")
+                self.logger.info(f"Ricaricando {len(serialized_anchors)} trust anchors (ASN.1 asn)...")
                 for ser_anchor in serialized_anchors:
                     try:
-                        # Deserializza certificato da base64 -> ASN.1 OER bytes
-                        cert_asn1_b64 = ser_anchor.get("cert_asn1_oer_b64")
+                        # Deserializza certificato da base64 -> ASN.1 asn bytes
+                        cert_asn1_b64 = ser_anchor.get("cert_asn1_asn_b64")
                         
                         # BACKWARD COMPATIBILITY: Se metadata vecchio (v1.0) con PEM, skip
                         if not cert_asn1_b64:
-                            self.logger.warning(f"⚠️  Trust anchor legacy (PEM) ignorato: {ser_anchor.get('subject_name')}")
-                            self.logger.warning(f"   Convertire metadata a formato v2.0 (ASN.1 OER)")
+                            self.logger.warning(f"??  Trust anchor legacy (PEM) ignorato: {ser_anchor.get('subject_name')}")
+                            self.logger.warning(f"   Convertire metadata a formato v2.0 (ASN.1 asn)")
                             continue
                         
-                        cert_asn1_oer = base64.b64decode(cert_asn1_b64)
+                        cert_asn1_asn = base64.b64decode(cert_asn1_b64)
                         
-                        # Ricostruisci anchor entry (FULL ASN.1 OER)
+                        # Ricostruisci anchor entry (FULL ASN.1 asn)
                         anchor_entry = {
-                            "cert_asn1_oer": cert_asn1_oer,  # ASN.1 OER bytes
+                            "cert_asn1_asn": cert_asn1_asn,  # ASN.1 asn bytes
                             "hashed_id8": ser_anchor["hashed_id8"],  # PRIMARY KEY
                             "subject_name": ser_anchor["subject_name"],
                             "authority_type": ser_anchor["authority_type"],
@@ -1227,7 +1238,7 @@ class TrustListManager:
                     except Exception as e:
                         self.logger.error(f"Errore ricaricamento trust anchor: {e}")
 
-            self.logger.info("Metadata caricati con successo (FULL ASN.1 OER)")
+            self.logger.info("Metadata caricati con successo (FULL ASN.1 asn)")
             self.logger.info(f"  CTL Number: {self.ctl_number}")
             self.logger.info(f"  Base CTL Number: {self.base_ctl_number}")
             self.logger.info(f"  Trust anchors ricaricati: {len(self.trust_anchors)}")
@@ -1253,11 +1264,11 @@ class TrustListManager:
         
         # Check revocazione (se CRL Manager disponibile)
         revocation_info = None
-        if self.crl_manager:
+        if self.root_ca.crl_manager:
             revoked_count = 0
             for anchor in self.trust_anchors:
-                cert_asn1_oer = anchor.get("cert_asn1_oer")
-                if cert_asn1_oer and self.crl_manager.is_certificate_revoked(cert_asn1_oer):
+                cert_asn1_asn = anchor.get("cert_asn1_asn")
+                if cert_asn1_asn and self.root_ca.crl_manager.is_certificate_revoked(cert_asn1_asn):
                     revoked_count += 1
             
             revocation_info = {
@@ -1290,7 +1301,7 @@ class TrustListManager:
 
     def _get_anchors_by_type(self):
         """
-        Conta trust anchors per tipo di autorità.
+        Conta trust anchors per tipo di autorit�.
 
         Returns:
             dict con conteggi per tipo
@@ -1305,7 +1316,7 @@ class TrustListManager:
         """
         Verifica manualmente tutti i trust anchors contro il CRL Manager.
         
-        Questo metodo può essere chiamato periodicamente o on-demand per
+        Questo metodo pu� essere chiamato periodicamente o on-demand per
         sincronizzare lo stato di revocazione dei trust anchors.
         
         ETSI TS 102941 Section 6.6: CRL Management Integration
@@ -1318,8 +1329,8 @@ class TrustListManager:
                 "crl_manager_available": bool
             }
         """
-        if not self.crl_manager:
-            self.logger.warning("⚠️  CRL Manager non disponibile - skip revocation check")
+        if not self.root_ca.crl_manager:
+            self.logger.warning("??  CRL Manager non disponibile - skip revocation check")
             return {
                 "total_checked": 0,
                 "revoked_count": 0,
@@ -1334,14 +1345,14 @@ class TrustListManager:
         
         for anchor in self.trust_anchors:
             total_checked += 1
-            cert_asn1_oer = anchor.get("cert_asn1_oer")
+            cert_asn1_asn = anchor.get("cert_asn1_asn")
             
-            if not cert_asn1_oer:
-                self.logger.warning(f"⚠️  Trust anchor senza certificato ASN.1: {anchor.get('subject_name')}")
+            if not cert_asn1_asn:
+                self.logger.warning(f"??  Trust anchor senza certificato ASN.1: {anchor.get('subject_name')}")
                 continue
             
             # Verifica revocazione tramite CRL Manager
-            if self.crl_manager.is_certificate_revoked(cert_asn1_oer):
+            if self.root_ca.crl_manager.is_certificate_revoked(cert_asn1_asn):
                 revoked_info = {
                     "hashed_id8": anchor.get("hashed_id8"),
                     "subject_name": anchor.get("subject_name"),
@@ -1349,14 +1360,14 @@ class TrustListManager:
                     "added_date": anchor.get("added_date").isoformat() if anchor.get("added_date") else None,
                 }
                 revoked_list.append(revoked_info)
-                self.logger.warning(f"⚠️  REVOCATO: {anchor.get('subject_name')} ({anchor.get('hashed_id8')[:16]}...)")
+                self.logger.warning(f"??  REVOCATO: {anchor.get('subject_name')} ({anchor.get('hashed_id8')[:16]}...)")
         
         self.logger.info(f"Verifica completata:")
         self.logger.info(f"  - Trust anchors verificati: {total_checked}")
         self.logger.info(f"  - Trust anchors revocati: {len(revoked_list)}")
         
         if revoked_list:
-            self.logger.warning(f"⚠️  ATTENZIONE: {len(revoked_list)} trust anchor(s) revocati trovati!")
+            self.logger.warning(f"??  ATTENZIONE: {len(revoked_list)} trust anchor(s) revocati trovati!")
             self.logger.warning(f"   Eseguire cleanup con publish_full_ctl() per rimuoverli")
         
         self.logger.info("=== VERIFICA COMPLETATA ===")
@@ -1377,8 +1388,9 @@ class TrustListManager:
         Args:
             crl_manager: Istanza di CRLManager
         """
-        self.crl_manager = crl_manager
+        self.root_ca.crl_manager = crl_manager
         if crl_manager:
             self.logger.info(f"✅ CRL Manager configurato per revocation checking")
         else:
             self.logger.warning(f"⚠️  CRL Manager rimosso - revocation checking disabilitato")
+

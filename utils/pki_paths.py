@@ -12,9 +12,9 @@ Previene problemi come:
 Esempio:
     >>> paths = PKIPathManager.get_entity_paths("EA", "EA_001")
     >>> print(paths.base_dir)
-    ./data/ea/EA_001
+    ./pki_data/ea/EA_001
     >>> print(paths.certificates_dir)
-    ./data/ea/EA_001/certificates
+    ./pki_data/ea/EA_001/certificates
 """
 
 import os

@@ -408,19 +408,25 @@ def verify_asn1_certificate_signature(
 # ============================================================================
 
 
-def extract_public_key_from_asn1_certificate(cert_asn1_oer: bytes) -> EllipticCurvePublicKey:
+def extract_public_key_from_asn1_certificate(cert_asn1_oer: bytes, key_type: str = "verification") -> EllipticCurvePublicKey:
     """
     Estrae la chiave pubblica da un certificato ASN.1 OER generico.
     
-    Questa funzione cerca la chiave pubblica in diverse posizioni tipiche
-    della struttura ASN.1 OER dei certificati ETSI, supportando:
+    Questa funzione decodifica il certificato ASN.1 OER usando il decoder ufficiale
+    e estrae la chiave pubblica dal campo verifyKeyIndicator o encryptionKey, supportando:
     - Root CA certificates
     - Authority certificates (EA, AA)
     - Enrollment certificates
     - Authorization Tickets
     
+    ETSI TS 103097 v2.1.1 Section 6.4.11: VerificationKeyIndicator
+    ETSI TS 103097 v2.1.1 Section 6.4.26: PublicEncryptionKey
+    
     Args:
         cert_asn1_oer: Certificato ASN.1 OER completo (bytes)
+        key_type: Tipo di chiave da estrarre:
+                  - "verification": chiave di verifica firma (default)
+                  - "encryption": chiave di cifratura (per AA/EA certificates)
         
     Returns:
         EllipticCurvePublicKey: Chiave pubblica estratta
@@ -429,25 +435,133 @@ def extract_public_key_from_asn1_certificate(cert_asn1_oer: bytes) -> EllipticCu
         ValueError: Se la chiave pubblica non può essere estratta
     """
     try:
-        # Leggi TBS length (primi 2 bytes)
-        if len(cert_asn1_oer) < 2:
-            raise ValueError("Certificate too short")
+        # Import asn1_compiler qui per evitare import circolari
+        from protocols.certificates.asn1_encoder import decode_certificate_with_asn1
         
-        tbs_len = struct.unpack('>H', cert_asn1_oer[0:2])[0]
-        tbs_data = cert_asn1_oer[2:2+tbs_len]
+        # Decodifica certificato usando ASN.1 decoder ufficiale
+        cert_dict = decode_certificate_with_asn1(cert_asn1_oer, "EtsiTs103097Certificate")
         
-        # La chiave pubblica è solitamente verso la fine del TBS
-        # Cerca un pattern di 33 bytes che inizia con 0x02 o 0x03 (compressed key)
-        for offset in range(len(tbs_data) - 33):
-            if tbs_data[offset] in (0x02, 0x03):
-                try:
-                    compressed_key = tbs_data[offset:offset+33]
-                    public_key = decode_public_key_compressed(compressed_key)
-                    return public_key
-                except Exception:
-                    continue
+        # Naviga nella struttura decodificata per trovare la chiave richiesta
+        # Struttura: certificate -> toBeSigned -> verifyKeyIndicator / encryptionKey
+        if 'toBeSigned' not in cert_dict:
+            raise ValueError("toBeSigned field not found in certificate")
         
-        raise ValueError("Public key not found in certificate")
+        to_be_signed = cert_dict['toBeSigned']
+        
+        # Se richiesta chiave di encryption, cerca nel campo encryptionKey
+        if key_type == "encryption":
+            if 'encryptionKey' not in to_be_signed:
+                raise ValueError("encryptionKey field not found in certificate")
+            
+            encryption_key = to_be_signed['encryptionKey']
+            
+            # encryptionKey è PublicEncryptionKey
+            # PublicEncryptionKey ::= SEQUENCE {
+            #     supportedSymmAlg    SymmAlgorithm,
+            #     publicKey           BasePublicEncryptionKey
+            # }
+            # BasePublicEncryptionKey ::= CHOICE {
+            #     eciesNistP256       EccP256CurvePoint,
+            #     eciesBrainpoolP256r1 EccP256CurvePoint,
+            #     ...
+            # }
+            
+            if not isinstance(encryption_key, dict):
+                raise ValueError("Invalid encryptionKey format")
+            
+            if 'publicKey' not in encryption_key:
+                raise ValueError("publicKey field not found in encryptionKey")
+            
+            public_key = encryption_key['publicKey']
+            
+            # publicKey è un CHOICE (BasePublicEncryptionKey)
+            if not isinstance(public_key, tuple) or len(public_key) != 2:
+                raise ValueError("Invalid BasePublicEncryptionKey format")
+            
+            alg_tag, key_data = public_key
+            
+            # Supporta eciesNistP256
+            if alg_tag not in ('eciesNistP256', 'eciesBrainpoolP256r1'):
+                raise ValueError(f"Unsupported encryption algorithm: {alg_tag}")
+            
+            # key_data è EccP256CurvePoint (CHOICE)
+            return _extract_ecc_point(key_data)
+        
+        # Altrimenti, estrai la chiave di verifica (default)
+        if 'verifyKeyIndicator' not in to_be_signed:
+            raise ValueError("verifyKeyIndicator field not found in toBeSigned")
+        
+        verify_key_indicator = to_be_signed['verifyKeyIndicator']
+        
+        # verifyKeyIndicator è un CHOICE, può essere:
+        # - ('verificationKey', PublicVerificationKey)
+        # - ('reconstructionValue', EccP256CurvePoint)
+        
+        if not isinstance(verify_key_indicator, tuple) or len(verify_key_indicator) != 2:
+            raise ValueError("Invalid verifyKeyIndicator format")
+        
+        choice_tag, choice_value = verify_key_indicator
+        
+        if choice_tag == 'verificationKey':
+            # PublicVerificationKey è anche un CHOICE
+            if not isinstance(choice_value, tuple) or len(choice_value) != 2:
+                raise ValueError("Invalid PublicVerificationKey format")
+            
+            alg_tag, key_data = choice_value
+            
+            # Supporta solo ecdsaNistP256 per ora
+            if alg_tag != 'ecdsaNistP256':
+                raise ValueError(f"Unsupported algorithm: {alg_tag}")
+            
+            # key_data è EccP256CurvePoint (CHOICE)
+            return _extract_ecc_point(key_data)
+            
+        elif choice_tag == 'reconstructionValue':
+            # Per ora non supportato - usato per certificate compression
+            raise ValueError("reconstructionValue not supported yet")
+        
+        else:
+            raise ValueError(f"Unknown verifyKeyIndicator choice: {choice_tag}")
         
     except Exception as e:
-        raise ValueError(f"Failed to extract public key: {e}")
+        raise ValueError(f"Failed to extract public key ({key_type}): {e}")
+
+
+def _extract_ecc_point(key_data) -> EllipticCurvePublicKey:
+    """
+    Helper function per estrarre una chiave ECC da un EccP256CurvePoint.
+    
+    Args:
+        key_data: EccP256CurvePoint (CHOICE format)
+        
+    Returns:
+        EllipticCurvePublicKey: Chiave pubblica estratta
+        
+    Raises:
+        ValueError: Se il formato non è valido
+    """
+    # key_data è EccP256CurvePoint (CHOICE)
+    if not isinstance(key_data, tuple) or len(key_data) != 2:
+        raise ValueError("Invalid EccP256CurvePoint format")
+    
+    point_type, point_data = key_data
+    
+    # Ricostruisci chiave compressa da compressed-y-0 o compressed-y-1
+    if point_type == 'compressed-y-0':
+        compressed_key = b'\x02' + point_data  # point_data è 32 bytes (x-coordinate)
+    elif point_type == 'compressed-y-1':
+        compressed_key = b'\x03' + point_data
+    elif point_type == 'uncompressedP256':
+        # point_data è un dict {'x': bytes, 'y': bytes}
+        x = point_data['x']
+        y = point_data['y']
+        uncompressed = b'\x04' + x + y
+        return ec.EllipticCurvePublicKey.from_encoded_point(
+            ec.SECP256R1(),
+            uncompressed
+        )
+    else:
+        raise ValueError(f"Unsupported point format: {point_type}")
+    
+    # Decodifica chiave compressa
+    return decode_public_key_compressed(compressed_key)

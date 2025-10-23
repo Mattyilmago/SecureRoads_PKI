@@ -12,8 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 from utils.pki_paths import EntityPaths
-from protocols.etsi_message_types import compute_hashed_id8
-from protocols.etsi_authorization_ticket import ETSIAuthorizationTicketEncoder
+from protocols.core import compute_hashed_id8, time32_encode
 
 
 class CRLReason(IntEnum):
@@ -27,14 +26,14 @@ class CRLReason(IntEnum):
 
 class CRLManager:
     """
-    ETSI-compliant CRL Manager using ASN.1 OER format.
+    ETSI-compliant CRL Manager using ASN.1 asn format.
     
     Manages Certificate Revocation Lists according to ETSI TS 102941 V2.1.1.
     Uses HashedId8 identifiers instead of X.509 serial numbers.
     
     Standards:
     - ETSI TS 102941 V2.1.1 Section 6.6: CRL Messages
-    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
+    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 asn)
     """
     
     ETSI_EPOCH = datetime(2004, 1, 1, tzinfo=timezone.utc)
@@ -43,7 +42,7 @@ class CRLManager:
         self,
         authority_id: str,
         paths: EntityPaths,
-        issuer_certificate_oer: bytes,
+        issuer_certificate_asn: bytes,
         issuer_private_key
     ):
         """
@@ -52,14 +51,14 @@ class CRLManager:
         Args:
             authority_id: Authority identifier (EA_001, AA_001, etc.)
             paths: EntityPaths object from PathManager
-            issuer_certificate_oer: Issuer certificate in ASN.1 OER format (bytes)
+            issuer_certificate_asn: Issuer certificate in ASN.1 asn format (bytes)
             issuer_private_key: ECC private key for signing CRL
         """
         self.authority_id = authority_id
-        self.issuer_certificate_oer = issuer_certificate_oer
+        self.issuer_certificate_asn = issuer_certificate_asn
         self.issuer_private_key = issuer_private_key
         
-        self.issuer_hashed_id8 = compute_hashed_id8(issuer_certificate_oer)
+        self.issuer_hashed_id8 = compute_hashed_id8(issuer_certificate_asn)
 
         # Use EntityPaths (PathManager delegation)
         self.crl_dir = paths.crl_dir
@@ -103,18 +102,18 @@ class CRLManager:
         self.logger.info(f"ETSI CRL Manager initialized for {authority_id}")
         self.logger.info(f"  Issuer HashedId8: {self.issuer_hashed_id8.hex()[:16]}...")
         self.logger.info(f"  CRL Number: {self.crl_number}")
-        self.logger.info(f"  Format: ASN.1 OER (ETSI TS 102941)")
+        self.logger.info(f"  Format: ASN.1 asn (ETSI TS 102941)")
 
-    def add_revoked_certificate(self, certificate_oer: bytes, reason: CRLReason = CRLReason.UNSPECIFIED, expiry_time: Optional[datetime] = None):
+    def add_revoked_certificate(self, certificate_asn: bytes, reason: CRLReason = CRLReason.UNSPECIFIED, expiry_time: Optional[datetime] = None):
         """
         Add certificate to revocation list (ETSI-compliant).
         
         Args:
-            certificate_oer: Certificate in ASN.1 OER format (bytes)
+            certificate_asn: Certificate in ASN.1 asn format (bytes)
             reason: Revocation reason (CRLReason enum)
             expiry_time: Certificate expiry time (optional, for cleanup)
         """
-        hashed_id8 = compute_hashed_id8(certificate_oer)
+        hashed_id8 = compute_hashed_id8(certificate_asn)
         hashed_id8_hex = hashed_id8.hex()
         revocation_date = datetime.now(timezone.utc)
         
@@ -198,17 +197,17 @@ class CRLManager:
 
         self.logger.info(f"HashedId8 added. Total revoked: {len(self.revoked_certificates)}")
 
-    def is_certificate_revoked(self, certificate_oer: bytes) -> bool:
+    def is_certificate_revoked(self, certificate_asn: bytes) -> bool:
         """
-        Check if certificate is revoked.
+        Check if ETSI certificate is revoked.
         
         Args:
-            certificate_oer: Certificate in ASN.1 OER format
+            certificate_asn: Certificate in ASN.1 OER format (bytes) - ETSI TS 103097
             
         Returns:
             bool: True if revoked
         """
-        hashed_id8 = compute_hashed_id8(certificate_oer)
+        hashed_id8 = compute_hashed_id8(certificate_asn)
         hashed_id8_hex = hashed_id8.hex()
         
         for entry in self.revoked_certificates:
@@ -219,12 +218,12 @@ class CRLManager:
 
     def publish_full_crl(self, validity_days=7):
         """
-        Generate and publish Full CRL in ASN.1 OER format (ETSI TS 102941).
+        Generate and publish Full CRL in ASN.1 asn format (ETSI TS 102941).
         
         Args:
             validity_days: CRL validity in days
         """
-        self.logger.info(f"=== GENERATING FULL CRL (ETSI ASN.1 OER) ===")
+        self.logger.info(f"=== GENERATING FULL CRL (ETSI ASN.1 asn) ===")
 
         self.crl_number += 1
         self.base_crl_number = self.crl_number
@@ -238,7 +237,7 @@ class CRLManager:
         now = datetime.now(timezone.utc)
         next_update = now + timedelta(days=validity_days)
 
-        crl_oer = self._encode_crl_oer(
+        crl_asn = self._encode_crl_asn(
             crl_number=self.crl_number,
             this_update=now,
             next_update=next_update,
@@ -246,9 +245,9 @@ class CRLManager:
             is_delta=False
         )
 
-        PKIFileHandler.save_binary_file(crl_oer, str(self.full_crl_path))
+        PKIFileHandler.save_binary_file(crl_asn, str(self.full_crl_path))
 
-        self.logger.info(f"Full CRL saved: {self.full_crl_path} ({len(crl_oer)} bytes)")
+        self.logger.info(f"Full CRL saved: {self.full_crl_path} ({len(crl_asn)} bytes)")
 
         self.save_full_crl_metadata(validity_days)
         self.delta_revocations = []
@@ -260,7 +259,7 @@ class CRLManager:
                 "crl_number": self.crl_number,
                 "revoked_count": len(self.revoked_certificates),
                 "validity_days": validity_days,
-                "size_bytes": len(crl_oer),
+                "size_bytes": len(crl_asn),
             },
         )
         self.backup_crl("full")
@@ -270,13 +269,13 @@ class CRLManager:
 
     def publish_delta_crl(self, validity_hours=24, skip_backup=False):
         """
-        Generate and publish Delta CRL in ASN.1 OER format (ETSI TS 102941).
+        Generate and publish Delta CRL in ASN.1 asn format (ETSI TS 102941).
         
         Args:
             validity_hours: CRL validity in hours
             skip_backup: Skip backup for performance
         """
-        self.logger.info(f"=== GENERATING DELTA CRL (ETSI ASN.1 OER) ===")
+        self.logger.info(f"=== GENERATING DELTA CRL (ETSI ASN.1 asn) ===")
 
         if not self.delta_revocations:
             self.logger.info(f"No new revocations, Delta CRL not needed")
@@ -291,7 +290,7 @@ class CRLManager:
         now = datetime.now(timezone.utc)
         next_update = now + timedelta(hours=validity_hours)
 
-        crl_oer = self._encode_crl_oer(
+        crl_asn = self._encode_crl_asn(
             crl_number=self.crl_number,
             this_update=now,
             next_update=next_update,
@@ -300,9 +299,9 @@ class CRLManager:
             base_crl_number=self.base_crl_number
         )
 
-        PKIFileHandler.save_binary_file(crl_oer, str(self.delta_crl_path))
+        PKIFileHandler.save_binary_file(crl_asn, str(self.delta_crl_path))
 
-        self.logger.info(f"Delta CRL saved: {self.delta_crl_path} ({len(crl_oer)} bytes)")
+        self.logger.info(f"Delta CRL saved: {self.delta_crl_path} ({len(crl_asn)} bytes)")
 
         self.save_delta_crl_metadata(validity_hours / 24)
         self.save_metadata()
@@ -314,7 +313,7 @@ class CRLManager:
                 "base_crl_number": self.base_crl_number,
                 "delta_revocations_count": len(self.delta_revocations),
                 "validity_hours": validity_hours,
-                "size_bytes": len(crl_oer),
+                "size_bytes": len(crl_asn),
             },
         )
         
@@ -322,11 +321,11 @@ class CRLManager:
             self.backup_crl("delta")
 
         self.logger.info(f"=== DELTA CRL PUBLISHED ===")
-        return crl_oer
+        return crl_asn
 
-    def _encode_crl_oer(self, crl_number: int, this_update: datetime, next_update: datetime, entries: list, is_delta: bool = False, base_crl_number: int = 0) -> bytes:
+    def _encode_crl_asn(self, crl_number: int, this_update: datetime, next_update: datetime, entries: list, is_delta: bool = False, base_crl_number: int = 0) -> bytes:
         """
-        Encode CRL in ASN.1 OER format according to ETSI TS 102941.
+        Encode CRL in ASN.1 asn format according to ETSI TS 102941.
         
         Structure:
             EtsiTs102941Crl ::= SEQUENCE {
@@ -348,8 +347,8 @@ class CRLManager:
         
         to_be_signed.append(2)
         
-        to_be_signed.extend(struct.pack('>I', ETSIAuthorizationTicketEncoder.time32_encode(this_update)))
-        to_be_signed.extend(struct.pack('>I', ETSIAuthorizationTicketEncoder.time32_encode(next_update)))
+        to_be_signed.extend(struct.pack('>I', time32_encode(this_update)))
+        to_be_signed.extend(struct.pack('>I', time32_encode(next_update)))
         to_be_signed.extend(struct.pack('>I', crl_number))
         
         if is_delta:
@@ -365,7 +364,7 @@ class CRLManager:
             hashed_id8_bytes = bytes.fromhex(hashed_id8_hex)
             to_be_signed.extend(hashed_id8_bytes)
             
-            revocation_time32 = ETSIAuthorizationTicketEncoder.time32_encode(entry["revocation_date"])
+            revocation_time32 = time32_encode(entry["revocation_date"])
             to_be_signed.extend(struct.pack('>I', revocation_time32))
             
             reason = entry["reason"]
@@ -407,26 +406,26 @@ class CRLManager:
             self.logger.info(f"Cleanup: removed {removed} expired certificates")
 
     def load_full_crl(self):
-        """Load Full CRL from file (ASN.1 OER format)."""
+        """Load Full CRL from file (ASN.1 asn format)."""
         if not self.full_crl_path.exists():
             self.logger.info(f"Full CRL not found")
             return None
 
-        crl_oer = PKIFileHandler.load_binary_file(str(self.full_crl_path))
-        if crl_oer:
-            self.logger.info(f"Full CRL loaded: {len(crl_oer)} bytes")
-        return crl_oer
+        crl_asn = PKIFileHandler.load_binary_file(str(self.full_crl_path))
+        if crl_asn:
+            self.logger.info(f"Full CRL loaded: {len(crl_asn)} bytes")
+        return crl_asn
 
     def load_delta_crl(self):
-        """Load Delta CRL from file (ASN.1 OER format)."""
+        """Load Delta CRL from file (ASN.1 asn format)."""
         if not self.delta_crl_path.exists():
             self.logger.info(f"Delta CRL not found")
             return None
 
-        crl_oer = PKIFileHandler.load_binary_file(str(self.delta_crl_path))
-        if crl_oer:
-            self.logger.info(f"Delta CRL loaded: {len(crl_oer)} bytes")
-        return crl_oer
+        crl_asn = PKIFileHandler.load_binary_file(str(self.delta_crl_path))
+        if crl_asn:
+            self.logger.info(f"Delta CRL loaded: {len(crl_asn)} bytes")
+        return crl_asn
 
     def save_metadata(self):
         """Save CRL metadata to JSON file."""
@@ -439,7 +438,7 @@ class CRLManager:
             ),
             "revoked_count": len(self.revoked_certificates),
             "delta_pending": len(self.delta_revocations),
-            "format": "ASN.1 OER (ETSI TS 102941)",
+            "format": "ASN.1 asn (ETSI TS 102941)",
         }
 
         try:
@@ -480,14 +479,14 @@ class CRLManager:
             "last_full_crl": (
                 self.last_full_crl_time.isoformat() if self.last_full_crl_time else None
             ),
-            "format": "ASN.1 OER",
+            "format": "ASN.1 asn",
         }
 
     def save_full_crl_metadata(self, validity_days=7):
         """Save Full CRL metadata with revocation list."""
         metadata = {
             "version": "2.0-ETSI",
-            "format": "ASN.1 OER",
+            "format": "ASN.1 asn",
             "crl_number": self.crl_number,
             "authority_id": self.authority_id,
             "issuer_hashed_id8": self.issuer_hashed_id8.hex(),
@@ -520,7 +519,7 @@ class CRLManager:
         """Save Delta CRL metadata with new revocations."""
         metadata = {
             "version": "2.0-ETSI",
-            "format": "ASN.1 OER",
+            "format": "ASN.1 asn",
             "crl_number": self.crl_number,
             "base_crl_number": self.base_crl_number,
             "authority_id": self.authority_id,
@@ -593,7 +592,7 @@ class CRLManager:
             "authority_id": self.authority_id,
             "operation": operation,
             "crl_number": self.crl_number,
-            "format": "ASN.1 OER",
+            "format": "ASN.1 asn",
             "details": details,
         }
 

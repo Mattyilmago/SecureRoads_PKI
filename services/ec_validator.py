@@ -1,4 +1,4 @@
-"""
+﻿"""
 Enrollment Certificate Validator Service
 
 Implements complete EC validation according to ETSI TS 102941 V2.1.1.
@@ -70,26 +70,39 @@ class ECValidator:
         Raises:
             ValueError: If certificate is invalid with detailed reason
         """
-        self.logger.info(f"🔐 Starting EC validation")
+        from protocols.core.primitives import compute_hashed_id8
+        
+        # Log EC details for debugging (ETSI TS 102941 compliance check)
+        ec_hashed_id8 = compute_hashed_id8(enrollment_cert).hex() if isinstance(enrollment_cert, bytes) else "N/A"
+        ec_size = len(enrollment_cert) if isinstance(enrollment_cert, bytes) else "N/A"
+        self.logger.info(f"🔍 Starting EC validation")
+        self.logger.info(f"   HashedId8: {ec_hashed_id8[:16]}...")
+        self.logger.info(f"   Size: {ec_size} bytes")
         
         # Step 1: Trust Chain Verification
+        self.logger.info(f"  Step 1/3: Verifying trust chain...")
         is_trusted, trust_info = self.check_trust_chain(enrollment_cert)
         if not is_trusted:
+            self.logger.error(f"  ❌ Trust chain verification FAILED: {trust_info}")
             raise ValueError(f"EC trust chain invalid: {trust_info}")
         
-        self.logger.info(f"✅ Trust chain valid: {trust_info}")
+        self.logger.info(f"  ✅ Trust chain valid: {trust_info}")
         
         # Step 2: Expiry Check
+        self.logger.info(f"  Step 2/3: Checking expiry...")
         if not self.check_expiry(enrollment_cert):
+            self.logger.error(f"  ❌ Certificate EXPIRED")
             raise ValueError(f"EC expired")
         
-        self.logger.info(f"✅ EC not expired")
+        self.logger.info(f"  ✅ EC not expired")
         
         # Step 3: Revocation Check
+        self.logger.info(f"  Step 3/3: Checking revocation status...")
         if self.check_revocation(enrollment_cert):
+            self.logger.error(f"  ❌ Certificate REVOKED")
             raise ValueError(f"EC revoked")
         
-        self.logger.info(f"✅ EC not revoked")
+        self.logger.info(f"  ✅ EC not revoked")
         self.logger.info(f"✅ EC validation completed successfully")
     
     def check_trust_chain(self, certificate: Union[bytes, x509.Certificate]) -> Tuple[bool, str]:
@@ -105,7 +118,7 @@ class ECValidator:
         try:
             return self.tlm.is_trusted(certificate)
         except Exception as e:
-            self.logger.error(f"❌ Trust chain verification failed: {e}")
+            self.logger.error(f"âŒ Trust chain verification failed: {e}")
             return False, str(e)
     
     def check_expiry(self, certificate: Union[bytes, x509.Certificate]) -> bool:
@@ -119,7 +132,7 @@ class ECValidator:
             True if valid, False if expired
         """
         try:
-            # ✅ ETSI TS 103097 COMPLIANCE - Validity Period Check
+            # … ETSI TS 103097 COMPLIANCE - Validity Period Check
             #
             # ETSI TS 103097 v2.1.1 Section 6.4.6 defines ValidityPeriod as:
             #   ValidityPeriod ::= SEQUENCE {
@@ -132,7 +145,7 @@ class ECValidator:
             
             if isinstance(certificate, bytes):
                 # ASN.1 OER certificate - use centralized extraction function
-                from protocols.etsi_message_types import extract_validity_period
+                from protocols.core.primitives import extract_validity_period
                 
                 try:
                     start_time, expiry_time, duration = extract_validity_period(certificate)
@@ -142,16 +155,16 @@ class ECValidator:
                     
                     if is_valid:
                         days_remaining = (expiry_time - now_utc).days
-                        self.logger.debug(f"✅ Certificate valid, expires in {days_remaining} days")
+                        self.logger.debug(f"… Certificate valid, expires in {days_remaining} days")
                     else:
-                        self.logger.warning(f"⚠️  Certificate expired on {expiry_time.isoformat()}")
+                        self.logger.warning(f"âš ï¸  Certificate expired on {expiry_time.isoformat()}")
                     
                     return is_valid
                     
                 except ValueError as e:
-                    self.logger.error(f"❌ ValidityPeriod extraction failed: {e}")
+                    self.logger.error(f"âŒ ValidityPeriod extraction failed: {e}")
                     # Fail-open: assume valid if extraction fails (for compatibility)
-                    self.logger.warning("⚠️  Assuming certificate valid (extraction failed)")
+                    self.logger.warning("âš ï¸  Assuming certificate valid (extraction failed)")
                     return True
             
             # X.509 certificate (legacy path)
@@ -160,7 +173,7 @@ class ECValidator:
             return expiry_time > now_utc
             
         except Exception as e:
-            self.logger.error(f"❌ Expiry check failed: {e}")
+            self.logger.error(f"âŒ Expiry check failed: {e}")
             return False
     
     def check_revocation(self, certificate: Union[bytes, x509.Certificate]) -> bool:
@@ -172,11 +185,14 @@ class ECValidator:
             
         Returns:
             True if revoked, False if valid
+            
+        Raises:
+            ValueError: If revocation check fails (fail-closed security policy)
         """
         try:
             return self.tlm.is_revoked(certificate)
         except Exception as e:
-            # If revocation check fails, assume not revoked (fail-open)
-            # In production, consider fail-closed for security
-            self.logger.warning(f"⚠️ Revocation check failed (assuming valid): {e}")
-            return False
+            # FAIL-CLOSED security policy (ETSI TS 102941 best practice)
+            # If revocation check fails, reject certificate for security
+            self.logger.error(f"❌ Revocation check failed (fail-closed): {e}")
+            raise ValueError(f"Revocation check failed: {e}")

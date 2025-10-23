@@ -23,7 +23,7 @@ from typing import Callable
 
 import schedule
 
-from protocols.etsi_authorization_ticket import ETSIAuthorizationTicketEncoder
+from protocols.certificates import AuthorizationTicket as ETSIAuthorizationTicketEncoder
 from utils.aa_constants import (
     CRL_DELTA_INTERVAL_HOURS,
     CRL_DELTA_VALIDITY_HOURS,

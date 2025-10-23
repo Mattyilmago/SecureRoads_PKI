@@ -37,31 +37,32 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
 )
 
-# Import centralized ETSI utilities from etsi_message_types (DRY compliance)
-from protocols.etsi_message_types import (
-    CERT_TYPE_ENROLLMENT,
+# Import from new modular structure
+from protocols.core.types import CERT_TYPE_ENROLLMENT
+from protocols.core.primitives import (
     compute_hashed_id8,
     encode_public_key_compressed,
+    decode_public_key_compressed,
     time32_decode,
     time32_encode,
 )
 
 
-class ETSIEnrollmentCertificateEncoder:
+class EnrollmentCertificate:
     """
     Encoder/Decoder for ETSI Enrollment Certificates in ASN.1 OER format.
     
     Implements certificate generation, signing, verification, and serialization
     according to ETSI TS 103097 V2.1.1 standards.
     
-    Uses centralized ETSI utilities from etsi_message_types module (DRY compliance).
+    Uses centralized ETSI utilities from core.encoding module (DRY compliance).
     """
 
     def __init__(self):
         """Initialize Enrollment Certificate Encoder"""
         pass
 
-    # Delegate to centralized utilities from etsi_message_types (DRY compliance)
+    # Delegate to centralized utilities from core.encoding (DRY compliance)
     compute_hashed_id8 = staticmethod(compute_hashed_id8)
     time32_encode = staticmethod(time32_encode)
     time32_decode = staticmethod(time32_decode)
@@ -154,10 +155,23 @@ class ETSIEnrollmentCertificateEncoder:
         tbs.append(0x00)  # IssuerIdentifier choice: sha256AndDigest
         tbs.extend(issuer_hashed_id8)
         
-        # 4. Validity Period (4 + 4 bytes) - start Time32 + duration seconds
+        # 4. Validity Period (start Time32 + Duration CHOICE)
         start_time32 = self.time32_encode(start_validity)
+        tbs.extend(struct.pack('>I', start_time32))
+        
+        # Encode Duration as CHOICE (OER tag required)
+        # Tag 0x82 = seconds (Uint16)
         duration_seconds = duration_days * 86400  # days to seconds
-        tbs.extend(struct.pack('>II', start_time32, duration_seconds))
+        # Duration.seconds è Uint16, max 65535 secondi (~18 ore)
+        # Per durate > 18 ore, usa hours (tag 0x84)
+        if duration_seconds <= 65535:
+            tbs.append(0x82)  # seconds
+            tbs.extend(struct.pack('>H', duration_seconds))
+        else:
+            # Usa hours invece
+            duration_hours = (duration_seconds + 3599) // 3600  # Round up
+            tbs.append(0x84)  # hours
+            tbs.extend(struct.pack('>H', min(duration_hours, 65535)))
         
         # 5. Geographic Region (optional) - NOT PRESENT for EC
         tbs.append(0x00)  # Not present
@@ -301,7 +315,10 @@ class ETSIEnrollmentCertificateEncoder:
         ea_public_key: EllipticCurvePublicKey,
     ) -> bool:
         """
-        Verify Enrollment Certificate signature.
+        Verify Enrollment Certificate signature using centralized function.
+        
+        Uses verify_asn1_certificate_signature() for consistent ETSI-compliant
+        signature verification across all certificate types.
         
         Args:
             full_certificate: Complete ASN.1 OER encoded EC
@@ -310,46 +327,12 @@ class ETSIEnrollmentCertificateEncoder:
         Returns:
             bool: True if signature is valid, False otherwise
         """
-        try:
-            # 1. Extract TBS and signature
-            if len(full_certificate) < 67:  # Minimum: 2 + 1 + 1 + 64
-                return False
-            
-            # Read TBS length (2 bytes)
-            tbs_len = struct.unpack('>H', full_certificate[0:2])[0]
-            
-            # Extract TBS
-            tbs_cert = full_certificate[2:2+tbs_len]
-            
-            # Extract signature type (1 byte)
-            sig_type = full_certificate[2+tbs_len]
-            if sig_type != 0x00:  # Only ECDSA-P256 supported
-                return False
-            
-            # Extract signature (64 bytes)
-            signature_raw = full_certificate[2+tbs_len+1:2+tbs_len+1+64]
-            if len(signature_raw) != 64:
-                return False
-            
-            # 2. Convert raw signature to DER format
-            r_bytes = signature_raw[:32]
-            s_bytes = signature_raw[32:64]
-            r_int = int.from_bytes(r_bytes, byteorder='big')
-            s_int = int.from_bytes(s_bytes, byteorder='big')
-            
-            from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
-            der_signature = encode_dss_signature(r_int, s_int)
-            
-            # 3. Verify signature
-            ea_public_key.verify(
-                der_signature,
-                tbs_cert,
-                ec.ECDSA(hashes.SHA256())
-            )
-            return True
+        from protocols.certificates.utils import verify_asn1_certificate_signature
         
-        except Exception as e:
-            print(f"[EC VERIFICATION] Signature verification failed: {e}")
+        try:
+            # Use centralized ASN.1 signature verification (DRY principle)
+            return verify_asn1_certificate_signature(full_certificate, ea_public_key)
+        except Exception:
             return False
 
     def decode_enrollment_certificate(
@@ -435,10 +418,10 @@ class ETSIEnrollmentCertificateEncoder:
         full_certificate: bytes,
     ) -> EllipticCurvePublicKey:
         """
-        Extract public key from Enrollment Certificate.
+        Extract public key from Enrollment Certificate using ASN.1 decoder.
         
-        Parses the ASN.1 OER encoded certificate and extracts the compressed
-        public key, then decompresses it to return a usable EllipticCurvePublicKey.
+        Uses the centralized extract_public_key_from_asn1_certificate() function
+        to properly decode the certificate structure according to ETSI TS 103097.
         
         Args:
             full_certificate: Complete ASN.1 OER encoded EC
@@ -449,70 +432,13 @@ class ETSIEnrollmentCertificateEncoder:
         Raises:
             ValueError: If certificate is malformed or key cannot be extracted
         """
-        from protocols.etsi_message_types import decode_public_key_compressed
+        from protocols.certificates.utils import extract_public_key_from_asn1_certificate
         
         try:
-            # Read TBS length
-            tbs_len = struct.unpack('>H', full_certificate[0:2])[0]
-            tbs_cert = full_certificate[2:2+tbs_len]
-            
-            # Parse TBS certificate to find verification key
-            offset = 0
-            
-            # Skip: Version (1), Type (1), Issuer type (1), Issuer hash (8)
-            offset += 1 + 1 + 1 + 8
-            
-            # Skip: Validity period (8 bytes)
-            offset += 8
-            
-            # Skip: Geographic region (1 byte presence flag + optional data)
-            has_region = tbs_cert[offset]
-            offset += 1
-            if has_region:
-                offset += 10  # Lat (4) + Lon (4) + Radius (2)
-            
-            # Skip: Subject assurance (1 byte presence flag)
-            has_assurance = tbs_cert[offset]
-            offset += 1
-            
-            # Skip: App permissions (1 byte count)
-            num_perms = tbs_cert[offset]
-            offset += 1
-            # Skip permission entries (simplified - assume 2 bytes each)
-            offset += num_perms * 2
-            
-            # Skip: Cert issue permissions (1 byte)
-            has_issue = tbs_cert[offset]
-            offset += 1
-            
-            # Skip: Cert request permissions (1 + optional 1 byte)
-            has_request = tbs_cert[offset]
-            offset += 1
-            if has_request:
-                offset += 1
-            
-            # Skip: Subject attributes (variable length)
-            # Country (2 bytes)
-            offset += 2
-            # Organization length + value
-            org_len = tbs_cert[offset]
-            offset += 1 + org_len
-            # ITS ID length + value
-            its_id_len = tbs_cert[offset]
-            offset += 1 + its_id_len
-            
-            # Now at Verification Key Indicator
-            key_indicator = tbs_cert[offset]
-            offset += 1
-            
-            if key_indicator != 0x00:  # Must be verificationKey (not reconstructionValue)
-                raise ValueError(f"Unexpected key indicator: 0x{key_indicator:02x}")
-            
-            # Extract compressed public key (33 bytes)
-            compressed_key = tbs_cert[offset:offset+33]
-            
-            if len(compressed_key) != 33:
-                raise ValueError(f"Invalid compressed key length: {len(compressed_key)}")
+            # Use centralized ASN.1 decoder-based extraction (DRY principle)
+            return extract_public_key_from_asn1_certificate(full_certificate)
+        except Exception as e:
+            raise ValueError(f"Failed to extract public key from EC: {e}")
             
             # Decompress and return public key
             return decode_public_key_compressed(compressed_key)
@@ -571,7 +497,7 @@ def generate_enrollment_certificate(
     Returns:
         bytes: Complete Enrollment Certificate (ASN.1 OER)
     """
-    encoder = ETSIEnrollmentCertificateEncoder()
+    encoder = EnrollmentCertificate()
     
     # Compute EA's HashedId8
     ea_hashed_id8 = encoder.compute_hashed_id8(ea_certificate_oer)
@@ -592,3 +518,10 @@ def generate_enrollment_certificate(
     )
     
     return ec_certificate
+
+
+# Backward compatibility
+ETSIEnrollmentCertificateEncoder = EnrollmentCertificate
+generate_enrollment_certificate = EnrollmentCertificate.generate if hasattr(EnrollmentCertificate, 'generate') else None
+
+__all__ = ['EnrollmentCertificate', 'ETSIEnrollmentCertificateEncoder']

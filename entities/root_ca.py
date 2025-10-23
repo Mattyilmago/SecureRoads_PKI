@@ -10,12 +10,13 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
 )
 
-# ETSI Protocol Layer - ASN.1 OER Implementation
-from protocols.etsi_root_certificate import (
-    ETSIRootCertificateEncoder,
+# ETSI Protocol Layer - ASN.1 Implementation (100% ETSI Standard)
+from protocols.certificates.asn1_encoder import (
+    decode_certificate_with_asn1,
     generate_root_certificate,
 )
-from protocols.etsi_message_types import compute_hashed_id8
+from protocols.core import compute_hashed_id8
+from protocols.core.primitives import extract_validity_period
 
 # Managers
 from managers.crl_manager import CRLManager, CRLReason
@@ -30,19 +31,19 @@ class RootCA:
     """
     Root Certificate Authority - ETSI TS 103097 Compliant
     
-    **REFACTORED VERSION** - ETSI-compliant, ASN.1 OER only, DRY principles
+    **REFACTORED VERSION** - ETSI-compliant, ASN.1 asn only, DRY principles
     
     Implementa la Root CA secondo lo standard ETSI TS 103097 V2.1.1 usando
-    SOLO ASN.1 OER (NO X.509).
+    SOLO ASN.1 asn (NO X.509).
     
     Responsabilità (Single Responsibility):
-    - Generazione certificato root self-signed in formato ASN.1 OER
-    - Firma certificati subordinati (EA, AA) in formato ASN.1 OER
+    - Generazione certificato root self-signed in formato ASN.1 asn
+    - Firma certificati subordinati (EA, AA) in formato ASN.1 asn
     - Gestione revoche tramite CRLManager
     - Archiviazione certificati subordinati
     
     Standard ETSI Implementati:
-    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 OER)
+    - ETSI TS 103097 V2.1.1: Certificate Formats (ASN.1 asn)
     - ETSI TS 102941 V2.1.1: Trust and Privacy Management
     
     Design Patterns Used:
@@ -52,29 +53,39 @@ class RootCA:
     - DRY: Usa PathManager, PKIFileHandler, shared utilities
     """
     
-    def __init__(self, base_dir: str = "./pki_data/root_ca/"):
+    def __init__(self, ca_id: str = "ROOT_CA_01", base_dir: str = None):
         """
         Inizializza Root CA.
         
         Args:
-            base_dir: Directory base per dati RootCA
+            ca_id: ETSI-compliant identifier per Root CA (usato in certificate subjectInfo)
+            base_dir: Directory base per dati RootCA (default: PKI_PATHS.ROOT_CA)
+        
+        Note:
+            ca_id deve essere univoco nella PKI hierarchy per ETSI TS 103097 compliance
         """
+        if base_dir is None:
+            from config import PKI_PATHS
+            base_dir = str(PKI_PATHS.ROOT_CA)
+        
+        self.ca_id = ca_id
+        
         # ========================================================================
         # 1. SETUP PATHS (PathManager - DRY)
         # ========================================================================
         
         # Usa PKIPathManager per gestione centralizzata paths
-        self.paths = PKIPathManager.get_entity_paths("RootCA", "ROOT_CA", base_dir)
+        self.paths = PKIPathManager.get_entity_paths("RootCA", ca_id, base_dir)
         
         self.base_dir = str(self.paths.base_dir)
-        # Standard ETSI: .oer per certificati ASN.1 OER, .key per chiavi, .pem per CRL
+        # Standard ETSI: .oer per certificati ASN.1 OER encoded, .key per chiavi, .pem per CRL
         self.ca_certificate_path = str(self.paths.certificates_dir / "root_ca_certificate.oer")
         self.ca_key_path = str(self.paths.private_keys_dir / "root_ca_key.key")
         self.crl_path = str(self.paths.crl_dir / "root_ca_crl.pem")
         self.log_dir = str(self.paths.logs_dir)
         self.backup_dir = str(self.paths.backup_dir)
         
-        # Directory per certificati subordinati ASN.1 OER
+        # Directory per certificati subordinati ASN.1 asn
         self.subordinates_dir = str(self.paths.data_dir)  # subordinates/
         
         # Crea tutte le directory necessarie
@@ -91,7 +102,7 @@ class RootCA:
         )
         
         self.logger.info("=" * 60)
-        self.logger.info("Inizializzando Root CA (ETSI-compliant, ASN.1 OER)")
+        self.logger.info(f"Inizializzando Root CA: {self.ca_id} (ETSI-compliant, ASN.1 asn)")
         self.logger.info("=" * 60)
         self.logger.info(f"Percorso certificato: {self.ca_certificate_path}")
         self.logger.info(f"Percorso chiave privata: {self.ca_key_path}")
@@ -104,12 +115,7 @@ class RootCA:
         # ========================================================================
         
         self.private_key: Optional[EllipticCurvePrivateKey] = None
-        self.certificate_asn1: Optional[bytes] = None  # ASN.1 OER certificate
-        
-        # Inizializza ETSI encoder
-        self.logger.info("Inizializzando ETSI Root Certificate Encoder (ASN.1 OER)...")
-        self.root_encoder = ETSIRootCertificateEncoder()
-        self.logger.info("✅ ETSI Root Certificate Encoder inizializzato!")
+        self.certificate_asn1: Optional[bytes] = None  # ASN.1 asn certificate
 
         # Carica o genera chiave e certificato
         self.logger.info("Caricando o generando chiave e certificato...")
@@ -120,11 +126,11 @@ class RootCA:
         # ========================================================================
         
         self.logger.info("Inizializzando CRLManager per RootCA...")
-        # CRLManager usa ETSI ASN.1 OER per CRL (standard ETSI TS 102941)
+        # CRLManager usa ETSI ASN.1 asn per CRL (standard ETSI TS 102941)
         self.crl_manager = CRLManager(
             authority_id="RootCA",
             paths=self.paths,
-            issuer_certificate_oer=self.certificate_asn1,
+            issuer_certificate_asn=self.certificate_asn1,
             issuer_private_key=self.private_key,
         )
         self.logger.info("CRLManager inizializzato con successo!")
@@ -160,34 +166,40 @@ class RootCA:
         self.logger.info("✅ Chiave privata generata e salvata con successo!")
 
     def _generate_self_signed_certificate_asn1(self):
-        """Genera certificato self-signed in formato ASN.1 OER (ETSI-compliant)."""
-        self.logger.info("Generando certificato self-signed ASN.1 OER...")
+        """Genera certificato self-signed in formato ASN.1 asn (ETSI-compliant)."""
+        self.logger.info("Generando certificato self-signed ASN.1 asn...")
         self.logger.info("Standard: ETSI TS 103097 V2.1.1")
         
         # Delega generazione a generate_root_certificate (DRY)
         self.certificate_asn1 = generate_root_certificate(
-            root_public_key=self.private_key.public_key(),
-            root_private_key=self.private_key,
-            duration_years=10,
             ca_name="RootCA",
+            private_key=self.private_key,
+            duration_years=10,
             country="IT",
             organization="SecureRoad PKI"
         )
         
-        # Salva certificato ASN.1 OER usando PKIFileHandler (DRY)
-        self.logger.info(f"Salvando certificato ASN.1 OER: {self.ca_certificate_path}")
+        # Salva certificato ASN.1 asn usando PKIFileHandler (DRY)
+        self.logger.info(f"Salvando certificato ASN.1 asn: {self.ca_certificate_path}")
         PKIFileHandler.save_binary_file(self.certificate_asn1, self.ca_certificate_path)
         
-        # Log certificato info
-        cert_info = self.root_encoder.decode_root_certificate(self.certificate_asn1)
-        self.logger.info(f"✅ Certificato generato: {cert_info['ca_name']}")
-        self.logger.info(f"   Organizzazione: {cert_info['organization']}")
-        self.logger.info(f"   Paese: {cert_info['country']}")
-        self.logger.info(f"   Validità: {cert_info['start_validity']}")
-        self.logger.info(f"   Durata: {cert_info['duration_hours']} ore")
-        self.logger.info(f"   Dimensione: {len(self.certificate_asn1)} bytes")
+        # Log certificato info usando decoder ASN.1 standard ETSI
+        try:
+            cert_decoded = decode_certificate_with_asn1(self.certificate_asn1, "EtsiTs103097Certificate")
+            version = cert_decoded.get('version', '?')
+            cert_type = cert_decoded.get('type', '?')
+            issuer = cert_decoded.get('issuer', {})
+            self.logger.info(f"✅ Certificato Root CA generato con ASN.1 encoder")
+            self.logger.info(f"   Version: {version}")
+            self.logger.info(f"   Type: {cert_type}")
+            self.logger.info(f"   Issuer: {issuer}")
+            self.logger.info(f"   Dimensione: {len(self.certificate_asn1)} bytes")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Impossibile decodificare certificato per logging: {e}")
+            self.logger.info(f"✅ Certificato Root CA generato (dimensione: {len(self.certificate_asn1)} bytes)")
+
         
-        self.logger.info("✅ Certificato self-signed ASN.1 OER generato con successo!")
+        self.logger.info("✅ Certificato self-signed ASN.1 asn generato con successo!")
 
     def _load_ca_keypair(self):
         """Carica chiave privata (usa PKIFileHandler - DRY)."""
@@ -196,23 +208,29 @@ class RootCA:
         self.logger.info("✅ Chiave privata caricata con successo!")
 
     def _load_certificate_asn1(self):
-        """Carica certificato ASN.1 OER (usa PKIFileHandler - DRY)."""
-        self.logger.info(f"Caricando certificato ASN.1 OER da: {self.ca_certificate_path}")
+        """Carica certificato ASN.1 asn (usa PKIFileHandler - DRY)."""
+        self.logger.info(f"Caricando certificato ASN.1 asn da: {self.ca_certificate_path}")
         
         # Usa PKIFileHandler per caricare file binario (DRY)
         self.certificate_asn1 = PKIFileHandler.load_binary_file(self.ca_certificate_path)
         
-        # Verifica e log info
-        cert_info = self.root_encoder.decode_root_certificate(self.certificate_asn1)
-        self.logger.info("✅ Certificato caricato con successo!")
-        self.logger.info(f"   CA Name: {cert_info['ca_name']}")
-        self.logger.info(f"   Organizzazione: {cert_info['organization']}")
-        self.logger.info(f"   Validità: {cert_info['start_validity']}")
-        self.logger.info(f"   Durata: {cert_info['duration_hours']} ore")
+        # Verifica e log info usando decoder ASN.1 standard ETSI
+        try:
+            cert_decoded = decode_certificate_with_asn1(self.certificate_asn1, "EtsiTs103097Certificate")
+            version = cert_decoded.get('version', '?')
+            cert_type = cert_decoded.get('type', '?')
+            issuer = cert_decoded.get('issuer', {})
+            self.logger.info("✅ Certificato caricato con successo!")
+            self.logger.info(f"   Version: {version}")
+            self.logger.info(f"   Type: {cert_type}")
+            self.logger.info(f"   Issuer: {issuer}")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Impossibile decodificare certificato per logging: {e}")
+            self.logger.info("✅ Certificato caricato!")
 
 
     # ========================================================================
-    # PUBLIC API - CERTIFICATE SIGNING (ASN.1 OER)
+    # PUBLIC API - CERTIFICATE SIGNING (ASN.1 asn)
     # ========================================================================
     
     def sign_to_be_signed_data(self, tbs_data: bytes) -> bytes:
@@ -225,25 +243,41 @@ class RootCA:
         - EA/AA assembla certificato completo
         
         Args:
-            tbs_data: ToBeSignedCertificate bytes (ASN.1 OER)
+            tbs_data: ToBeSignedCertificate bytes (ASN.1 asn)
             
         Returns:
             bytes: Signature ECDSA (64 bytes: R|S)
         """
         self.logger.info(f"Firmando TBS data ({len(tbs_data)} bytes)...")
         
-        # Usa root_encoder per firma
-        signature = self.root_encoder.sign_root_certificate(tbs_data, self.private_key)
+        # Firma ECDSA diretta ETSI-compliant (SHA-256 + SECP256R1)
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import utils
+        
+        # Calcola hash SHA-256
+        from hashlib import sha256
+        digest = sha256(tbs_data).digest()
+        
+        # Firma con ECDSA
+        signature_der = self.private_key.sign(
+            digest,
+            ec.ECDSA(utils.Prehashed(hashes.SHA256()))
+        )
+        
+        # Converti DER in raw R|S format (ETSI standard)
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        r, s = decode_dss_signature(signature_der)
+        signature = r.to_bytes(32, byteorder='big') + s.to_bytes(32, byteorder='big')
         
         self.logger.info(f"✅ Firma generata: {len(signature)} bytes")
         return signature
 
     def save_subordinate_certificate_asn1(self, cert_asn1: bytes, authority_type: str, entity_id: str):
         """
-        Salva certificato subordinato ASN.1 OER nell'archivio RootCA.
+        Salva certificato subordinato ASN.1 asn nell'archivio RootCA.
         
         Args:
-            cert_asn1: Certificato ASN.1 OER (bytes)
+            cert_asn1: Certificato ASN.1 asn (bytes)
             authority_type: Tipo autorità ("EA", "AA")
             entity_id: ID entità (es: "EA_001", "AA_001")
         """
@@ -278,17 +312,17 @@ class RootCA:
         reason: CRLReason = CRLReason.UNSPECIFIED
     ):
         """
-        Revoca un certificato ASN.1 OER aggiungendolo alla CRL.
+        Revoca un certificato ASN.1 asn aggiungendolo alla CRL.
         
         Args:
-            certificate_asn1: Certificato ASN.1 OER da revocare
+            certificate_asn1: Certificato ASN.1 asn da revocare
             reason: Motivo della revoca (CRLReason enum)
         """
         # Calcola HashedId8 per identificare certificato
         cert_hashed_id8_bytes = compute_hashed_id8(certificate_asn1)
         cert_hashed_id8 = cert_hashed_id8_bytes.hex()
         
-        self.logger.info(f"Revocando certificato ASN.1 OER: {cert_hashed_id8[:16]}")
+        self.logger.info(f"Revocando certificato ASN.1 asn: {cert_hashed_id8[:16]}")
         self.logger.info(f"Motivo revoca: {reason.name}")
         
         # Usa CRLManager per tracciare la revoca tramite HashedId8
@@ -372,13 +406,13 @@ class RootCA:
         """
         Restituisce statistiche sui certificati subordinati emessi dalla Root CA.
         
-        Conta i certificati subordinati ASN.1 OER (EA, AA) nella directory 'subordinates'.
+        Conta i certificati subordinati ASN.1 asn (EA, AA) nella directory 'subordinates'.
         Include il conteggio totale e per tipo (EA, AA).
         
         AGGIORNAMENTO AUTOMATICO METRICHE:
         Questo metodo calcola dinamicamente le statistiche in tempo reale:
         
-        1. Legge tutti i certificati ASN.1 OER dalla directory 'subordinates'
+        1. Legge tutti i certificati ASN.1 asn dalla directory 'subordinates'
         2. Verifica per ogni certificato se è ancora valido (non scaduto)
         3. Controlla se il certificato è stato revocato (presente nella CRL)
         4. Conta solo i certificati attivi (validi E non revocati)
@@ -415,7 +449,7 @@ class RootCA:
         now = datetime.now(timezone.utc)
         for cert_file in cert_files:
             try:
-                # Leggi certificato ASN.1 OER usando PKIFileHandler (DRY)
+                # Leggi certificato ASN.1 asn usando PKIFileHandler (DRY)
                 cert_asn1 = PKIFileHandler.load_binary_file(str(cert_file))
                 
                 # Determina il tipo dal nome del file
@@ -424,33 +458,24 @@ class RootCA:
                 elif cert_file.name.startswith('AA_'):
                     stats['aa_count'] += 1
                 
-                # Verifica validità tramite decoder
+                # Verifica validità tramite extract_validity_period ETSI-compliant
                 try:
-                    cert_info = self.root_encoder.decode_root_certificate(cert_asn1)
+                    start_datetime, expiry_datetime, duration_sec = extract_validity_period(cert_asn1)
                     
-                    # Calcola scadenza
-                    start_validity = datetime.fromisoformat(cert_info['start_validity'])
-                    duration_hours = cert_info['duration_hours']
-                    expiry_date = start_validity + timedelta(hours=duration_hours)
-                    
-                    # Assicura timezone-aware
-                    if expiry_date.tzinfo is None:
-                        expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-                    
-                    # Verifica scadenza
-                    is_expired = expiry_date <= now
+                    # Verifica se il certificato è scaduto
+                    is_expired = expiry_datetime <= now
                     
                     # Verifica revoca (controlla se HashedId8 è nella CRL)
                     cert_hashed_id8 = compute_hashed_id8(cert_asn1).hex()
                     is_revoked = False
-                    # Check revoca implementato quando CRLManager sarà attivo
+                    # TODO: Implementare check revoca con CRLManager quando attivo
                     
                     # Se non scaduto e non revocato, è attivo
                     if not is_expired and not is_revoked:
                         stats['active_subordinates'] += 1
-                        
+                    
                 except Exception as decode_err:
-                    self.logger.warning(f"Impossibile decodificare {cert_file.name}: {decode_err}")
+                    self.logger.warning(f"Impossibile estrarre validità {cert_file.name}: {decode_err}")
                     # Assume attivo se non possiamo verificare
                     stats['active_subordinates'] += 1
                     
@@ -472,10 +497,10 @@ class RootCA:
     
     def get_certificate_asn1(self) -> bytes:
         """
-        Ritorna certificato Root CA in formato ASN.1 OER.
+        Ritorna certificato Root CA in formato ASN.1 asn.
         
         Returns:
-            bytes: Certificato ASN.1 OER
+            bytes: Certificato ASN.1 asn
         """
         return self.certificate_asn1
     
@@ -484,7 +509,7 @@ class RootCA:
         Calcola e ritorna HashedId8 del certificato RootCA.
         
         ETSI-compliant HashedId8 computation per ETSI TS 103097 V2.1.1.
-        Usa compute_hashed_id8 per calcolare hash del certificato ASN.1 OER.
+        Usa compute_hashed_id8 per calcolare hash del certificato ASN.1 asn.
         
         Returns:
             str: HashedId8 (16 caratteri hex string)

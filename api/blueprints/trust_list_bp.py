@@ -1,7 +1,8 @@
 """
 Trust List Manager Blueprint
 
-Simplified implementation for testing.
+ETSI TS 102941 compliant CTL (Certificate Trust List) distribution endpoint.
+Provides REST API for ITS-S to retrieve and verify trust anchors.
 """
 
 from datetime import datetime

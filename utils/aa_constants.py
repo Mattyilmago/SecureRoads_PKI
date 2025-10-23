@@ -89,7 +89,7 @@ PRIORITY_EMERGENCY = 7   # Emergency vehicles
 # FILE EXTENSIONS (Managed by PKIPathManager)
 # ========================================================================
 
-# Authorization Ticket file extension (ASN.1 OER binary format)
+# Authorization Ticket file extension (ASN.1 OER binary format - ETSI compliant)
 AT_FILE_EXTENSION = ".oer"
 
 # ========================================================================

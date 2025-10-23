@@ -30,24 +30,26 @@ import struct
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
 )
 
-# Import centralized ETSI utilities from etsi_message_types (DRY compliance)
-from protocols.etsi_message_types import (
-    CERT_TYPE_AUTHORIZATION,
+# Import from new modular structure
+from protocols.core.types import CERT_TYPE_AUTHORIZATION
+from protocols.core.primitives import (
     compute_hashed_id8,
     encode_public_key_compressed,
+    decode_public_key_compressed,
     time32_decode,
     time32_encode,
 )
+from protocols.core.crypto import sign_data_ecdsa_sha256
 
 
-class ETSIAuthorizationTicketEncoder:
+class AuthorizationTicket:
     """
     Encoder/Decoder for ETSI Authorization Tickets in ASN.1 OER format.
     
@@ -209,10 +211,14 @@ class ETSIAuthorizationTicketEncoder:
         tbs.append(0x00)  # IssuerIdentifier choice: sha256AndDigest
         tbs.extend(issuer_hashed_id8)
         
-        # 4. Validity Period (4 + 4 bytes) - start Time32 + duration seconds
+        # 4. Validity Period (start Time32 + Duration CHOICE)
         start_time32 = self.time32_encode(start_validity)
-        duration_seconds = duration_hours * 3600
-        tbs.extend(struct.pack('>II', start_time32, duration_seconds))
+        tbs.extend(struct.pack('>I', start_time32))
+        
+        # Encode Duration as CHOICE (OER tag required)
+        # Tag 0x84 = hours (Uint16)
+        tbs.append(0x84)  # hours
+        tbs.extend(struct.pack('>H', min(duration_hours, 65535)))
         
         # 5. Geographic Region (optional, 1 + 12 bytes if present)
         if geographic_region:
@@ -357,7 +363,10 @@ class ETSIAuthorizationTicketEncoder:
         aa_public_key: EllipticCurvePublicKey,
     ) -> bool:
         """
-        Verify Authorization Ticket signature.
+        Verify Authorization Ticket signature using centralized function.
+        
+        Uses verify_asn1_certificate_signature() for consistent ETSI-compliant
+        signature verification across all certificate types.
         
         Args:
             full_certificate: Complete ASN.1 OER encoded AT
@@ -366,46 +375,12 @@ class ETSIAuthorizationTicketEncoder:
         Returns:
             bool: True if signature is valid, False otherwise
         """
-        try:
-            # 1. Extract TBS and signature
-            if len(full_certificate) < 67:  # Minimum: 2 + 1 + 1 + 64
-                return False
-            
-            # Read TBS length (2 bytes)
-            tbs_len = struct.unpack('>H', full_certificate[0:2])[0]
-            
-            # Extract TBS
-            tbs_cert = full_certificate[2:2+tbs_len]
-            
-            # Extract signature type (1 byte)
-            sig_type = full_certificate[2+tbs_len]
-            if sig_type != 0x00:  # Only ECDSA-P256 supported
-                return False
-            
-            # Extract signature (64 bytes)
-            signature_raw = full_certificate[2+tbs_len+1:2+tbs_len+1+64]
-            if len(signature_raw) != 64:
-                return False
-            
-            # 2. Convert raw signature to DER format
-            r_bytes = signature_raw[:32]
-            s_bytes = signature_raw[32:64]
-            r_int = int.from_bytes(r_bytes, byteorder='big')
-            s_int = int.from_bytes(s_bytes, byteorder='big')
-            
-            from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
-            der_signature = encode_dss_signature(r_int, s_int)
-            
-            # 3. Verify signature
-            aa_public_key.verify(
-                der_signature,
-                tbs_cert,
-                ec.ECDSA(hashes.SHA256())
-            )
-            return True
+        from protocols.certificates.utils import verify_asn1_certificate_signature
         
-        except Exception as e:
-            print(f"[AT VERIFICATION] Signature verification failed: {e}")
+        try:
+            # Use centralized ASN.1 signature verification (DRY principle)
+            return verify_asn1_certificate_signature(full_certificate, aa_public_key)
+        except Exception:
             return False
 
     def decode_authorization_ticket(
@@ -497,10 +472,10 @@ class ETSIAuthorizationTicketEncoder:
         full_certificate: bytes,
     ) -> EllipticCurvePublicKey:
         """
-        Extract public key from Authorization Ticket.
+        Extract public key from Authorization Ticket using ASN.1 decoder.
         
-        Parses the ASN.1 OER encoded certificate and extracts the compressed
-        public key, then decompresses it to return a usable EllipticCurvePublicKey.
+        Uses the centralized extract_public_key_from_asn1_certificate() function
+        to properly decode the certificate structure according to ETSI TS 103097.
         
         Args:
             full_certificate: Complete ASN.1 OER encoded AT
@@ -511,57 +486,11 @@ class ETSIAuthorizationTicketEncoder:
         Raises:
             ValueError: If certificate is malformed or key cannot be extracted
         """
-        from protocols.etsi_message_types import decode_public_key_compressed
+        from protocols.certificates.utils import extract_public_key_from_asn1_certificate
         
         try:
-            # Read TBS length
-            tbs_len = struct.unpack('>H', full_certificate[0:2])[0]
-            tbs_cert = full_certificate[2:2+tbs_len]
-            
-            # Parse TBS certificate to find verification key
-            offset = 0
-            
-            # Skip: Version (1), Type (1), Issuer type (1), Issuer hash (8)
-            offset += 1 + 1 + 1 + 8
-            
-            # Skip: Validity period (8 bytes)
-            offset += 8
-            
-            # Skip: Geographic region (1 byte presence flag + optional data)
-            has_region = tbs_cert[offset]
-            offset += 1
-            if has_region:
-                offset += 10  # Lat (4) + Lon (4) + Radius (2)
-            
-            # Skip: Subject assurance (1 byte presence flag)
-            has_assurance = tbs_cert[offset]
-            offset += 1
-            
-            # Skip: App permissions (variable)
-            num_perms = tbs_cert[offset]
-            offset += 1
-            # Each permission: PSID (varint, simplified as 1 byte) + SSP length + SSP
-            for _ in range(num_perms):
-                offset += 1  # PSID (simplified)
-                ssp_len = tbs_cert[offset] if offset < len(tbs_cert) else 0
-                offset += 1 + ssp_len  # SSP length + SSP data
-            
-            # Now at Verification Key Indicator
-            key_indicator = tbs_cert[offset]
-            offset += 1
-            
-            if key_indicator != 0x00:  # Must be verificationKey
-                raise ValueError(f"Unexpected key indicator: 0x{key_indicator:02x}")
-            
-            # Extract compressed public key (33 bytes)
-            compressed_key = tbs_cert[offset:offset+33]
-            
-            if len(compressed_key) != 33:
-                raise ValueError(f"Invalid compressed key length: {len(compressed_key)}")
-            
-            # Decompress and return public key
-            return decode_public_key_compressed(compressed_key)
-            
+            # Use centralized ASN.1 decoder-based extraction (DRY principle)
+            return extract_public_key_from_asn1_certificate(full_certificate)
         except Exception as e:
             raise ValueError(f"Failed to extract public key from AT certificate: {e}")
 
@@ -614,7 +543,7 @@ def generate_authorization_ticket(
     Returns:
         bytes: Complete Authorization Ticket (ASN.1 OER)
     """
-    encoder = ETSIAuthorizationTicketEncoder()
+    encoder = AuthorizationTicket()
     
     # Compute AA's HashedId8
     aa_hashed_id8 = encoder.compute_hashed_id8(aa_certificate_oer)
@@ -638,3 +567,8 @@ def generate_authorization_ticket(
     )
     
     return at_certificate
+
+
+# Backward compatibility
+ETSIAuthorizationTicketEncoder = AuthorizationTicket
+__all__ = ['AuthorizationTicket', 'ETSIAuthorizationTicketEncoder']

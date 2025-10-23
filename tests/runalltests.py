@@ -38,11 +38,11 @@ def run_tests_with_pytest(test_path=None, pattern=None, verbosity=2, failfast=Fa
     print("=" * 70)
     print("  PKI TEST SUITE RUNNER (pytest)")
     print("=" * 70)
-    print(f"\n📁 Test Directory: {test_path}")
+    print(f"\nTest Directory: {test_path}")
     if pattern:
-        print(f"🔍 Pattern: {pattern}")
-    print(f"📊 Verbosity: {verbosity}")
-    print(f"⚡ Fail Fast: {failfast}")
+        print(f"Pattern: {pattern}")
+    print(f"Verbosity: {verbosity}")
+    print(f"Fail Fast: {failfast}")
     print("\n" + "=" * 70)
     
     # Build pytest command

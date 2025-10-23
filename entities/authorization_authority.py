@@ -10,14 +10,17 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 
-# ETSI Protocol Layer - ASN.1 OER Implementation
-from protocols.etsi_authorization_ticket import ETSIAuthorizationTicketEncoder
-from protocols.etsi_message_encoder import ETSIMessageEncoder
-from protocols.etsi_message_types import (
-    InnerAtRequest,
-    ResponseCode,
-    compute_request_hash,
+# ETSI Protocol Layer - ASN.1 asn Implementation
+from protocols.certificates.asn1_encoder import (
+    generate_authorization_ticket,
+    decode_certificate_with_asn1,
 )
+from protocols.core import ResponseCode, compute_request_hash, compute_hashed_id8
+from protocols.messages.encoder import ETSIMessageEncoder
+from protocols.messages import (
+    InnerAtRequest,
+)
+from protocols.security import ButterflyExpansion
 
 # Managers (Direct imports - NO interfaces needed)
 from managers.crl_manager import CRLManager, CRLReason
@@ -61,8 +64,8 @@ class AuthorizationAuthority:
     - ETSI TS 103097 V2.1.1: Certificate Formats and Security Headers
     
     Metodi Principali (ETSI-compliant):
-    - process_authorization_request_etsi(): Processa AuthorizationRequest ASN.1 OER
-    - issue_authorization_ticket(): Genera singolo AT in formato ASN.1 OER
+    - process_authorization_request_etsi(): Processa AuthorizationRequest ASN.1 asn
+    - issue_authorization_ticket(): Genera singolo AT in formato ASN.1 asn
     - issue_butterfly_authorization_tickets(): Butterfly batch mode
     - revoke_authorization_ticket(): Delega revoca a CRLPublisher
     
@@ -76,22 +79,24 @@ class AuthorizationAuthority:
         self,
         root_ca,  
         tlm,      
-        crl_manager: CRLManager,  
         aa_id: Optional[str] = None,
-        base_dir: str = "./pki_data/aa/"
+        base_dir: str = None
     ):
         """
         Inizializza Authorization Authority.
 
         Args:
-            root_ca: RootCA instance per firma certificati
-            tlm: TrustListManager instance per validazione trust chain
-            crl_manager: CRLManager instance per gestione CRL
+            root_ca: RootCA instance per firma certificati AA
+            tlm: TrustListManager instance per validazione trust chain (REQUIRED)
             aa_id: ID dell'AA (generato automaticamente se None)
-            base_dir: Directory base per dati AA
+            base_dir: Directory base per dati AA (default: PKI_PATHS.get_aa_path(aa_id))
             
         Raises:
             ValueError: Se parametri obbligatori mancanti
+        
+        Note:
+            ETSI TS 102941 § 6.3: AA crea proprio CRLManager dedicato per AT revocations.
+            Per verificare revoche EC/subordinati, AA usa root_ca.crl_manager.
         """
         # ========================================================================
         # 1. VALIDAZIONE PARAMETRI
@@ -102,9 +107,6 @@ class AuthorizationAuthority:
         
         if not tlm:
             raise ValueError("tlm è obbligatorio (istanza TrustListManager)")
-        
-        if not crl_manager:
-            raise ValueError("crl_manager è obbligatorio (istanza CRLManager)")
         
         # Genera ID randomico se non specificato
         if aa_id is None:
@@ -139,12 +141,10 @@ class AuthorizationAuthority:
         
         self.root_ca = root_ca
         self.tlm = tlm
-        self.crl_manager = crl_manager
         
         self.logger.info(f"✅ Dependencies stored successfully")
         self.logger.info(f"   - RootCA: {type(root_ca).__name__}")
         self.logger.info(f"   - TrustListManager: {type(tlm).__name__}")
-        self.logger.info(f"   - CRLManager: {type(crl_manager).__name__}")
         
         # ========================================================================
         # 4. KEY MANAGEMENT SERVICE
@@ -155,13 +155,26 @@ class AuthorizationAuthority:
             aa_id=aa_id,
             key_path=str(self.paths.private_keys_dir / "aa_key.key"),
             cert_path=str(self.paths.certificates_dir / "aa_certificate.oer"),
-            root_ca=root_ca,  # Direct RootCA instance
+            root_ca=root_ca,
             logger=self.logger
         )
         
-        # Load or generate keys and certificate
+        # Load or generate keys and certificate (needed for CRLManager)
         self.private_key, self.certificate_asn1 = self.key_manager.load_or_generate()
-        self.logger.info(f"✅ AAKeyManager initialized (ASN.1 OER certificate)")
+        self.logger.info(f"✅ AAKeyManager initialized (ASN.1 certificate)")
+        
+        # ========================================================================
+        # 4b. INITIALIZE AA-SPECIFIC CRL MANAGER (ETSI TS 102941 § 6.3)
+        # ========================================================================
+        
+        self.logger.info(f"Initializing AA-specific CRLManager for AT revocations...")
+        self.crl_manager = CRLManager(
+            authority_id=aa_id,
+            paths=self.paths,
+            issuer_certificate_asn=self.certificate_asn1,
+            issuer_private_key=self.private_key
+        )
+        self.logger.info(f"✅ AA CRLManager initialized (dedicated for Authorization Tickets)")
         
         # ========================================================================
         # 5. EC VALIDATION SERVICE
@@ -179,17 +192,9 @@ class AuthorizationAuthority:
         # 6. ETSI MESSAGE ENCODER
         # ========================================================================
         
-        self.logger.info(f"Initializing ETSI Message Encoder (ASN.1 OER)...")
+        self.logger.info(f"Initializing ETSI Message Encoder (ASN.1)...")
         self.message_encoder = ETSIMessageEncoder()
         self.logger.info(f"✅ ETSI Message Encoder initialized")
-        
-        # ========================================================================
-        # 6b. ETSI AUTHORIZATION TICKET ENCODER (Riutilizzabile - DRY)
-        # ========================================================================
-        
-        self.logger.info(f"Initializing ETSI Authorization Ticket Encoder...")
-        self.at_encoder = ETSIAuthorizationTicketEncoder()
-        self.logger.info(f"✅ ETSI AT Encoder initialized")
         
         # ========================================================================
         # 7. SCHEDULER SERVICE (CRL + Expiry)
@@ -198,8 +203,8 @@ class AuthorizationAuthority:
         self.logger.info(f"Initializing ATScheduler...")
         self.scheduler = ATScheduler(
             aa_id=aa_id,
-            crl_manager=crl_manager,  
-            certificates_dir=self.paths.data_dir,  # Contains AT_*.oer files
+            crl_manager=self.crl_manager,  
+            certificates_dir=self.paths.data_dir,
             logger=self.logger
         )
         self.scheduler.start()
@@ -226,29 +231,29 @@ class AuthorizationAuthority:
         self.logger.info("=" * 80)
 
     # ========================================================================
-    # ETSI TS 102941 PROTOCOL METHODS (ASN.1 OER)
+    # ETSI TS 102941 PROTOCOL METHODS (ASN.1)
     # ========================================================================
 
     def process_authorization_request_etsi(self, request_bytes: bytes) -> bytes:
         """
-        Processa una AuthorizationRequest ETSI TS 102941 (ASN.1 OER encoded).
+        Processa una AuthorizationRequest ETSI TS 102941 (ASN.1 encoded).
 
            FLUSSO COMPLETO:
-        1. Decripta e decodifica AuthorizationRequest (ASN.1 OER)
+        1. Decripta e decodifica AuthorizationRequest (ASN.1 )
         2. Estrae Enrollment Certificate allegato
         3. Valida EC tramite TLM o EA (legacy)
         4. Verifica che EC non sia revocato (CRL check)
         5. Emette Authorization Ticket
-        6. Crea AuthorizationResponse (ASN.1 OER encoded)
+        6. Crea AuthorizationResponse (ASN.1  encoded)
         7. Cripta risposta con hmacKey per unlinkability
 
         Args:
-            request_bytes: ASN.1 OER encoded AuthorizationRequest
+            request_bytes: ASN.1  encoded AuthorizationRequest
 
         Returns:
-            ASN.1 OER encoded AuthorizationResponse (encrypted con hmacKey)
+            ASN.1  encoded AuthorizationResponse (encrypted con hmacKey)
         """
-        self.logger.info(f"\nRicevuto AuthorizationRequest ETSI (ASN.1 OER): {len(request_bytes)} bytes")
+        self.logger.info(f"\nRicevuto AuthorizationRequest ETSI (ASN.1 ): {len(request_bytes)} bytes")
 
         try:
             # 1. Decripta e decodifica request + estrae EC
@@ -261,15 +266,19 @@ class AuthorizationAuthority:
             self.logger.info(f"   Public keys: {list(inner_at_request.publicKeys.keys())}")
             self.logger.info(f"   HMAC key length: {len(inner_at_request.hmacKey)} bytes")
             self.logger.info(f"   Requested attributes: {inner_at_request.requestedSubjectAttributes}")
-            self.logger.info(f"   Enrollment Certificate extracted: {len(enrollment_cert)} bytes (ASN.1 OER)")
+            self.logger.info(f"   Enrollment Certificate extracted: {len(enrollment_cert)} bytes (ASN.1 )")
 
             # 2. Valida Enrollment Certificate
             self.logger.info(f"Validazione Enrollment Certificate...")
+            import sys
+            print(f"\n[DEBUG AA] Inizio validazione EC, size: {len(enrollment_cert)} bytes", file=sys.stderr, flush=True)
             try:
                 self._validate_enrollment_certificate(enrollment_cert)
                 self.logger.info(f"✅ Enrollment Certificate validato con successo!")
+                print(f"[DEBUG AA] ✅ EC validato con successo!", file=sys.stderr, flush=True)
             except ValueError as e:
                 self.logger.error(f"❌ EC non valido: {e}")
+                print(f"[DEBUG AA] ❌ EC validation FAILED: {e}", file=sys.stderr, flush=True)
                 return self._create_at_error_response(
                     request_bytes, inner_at_request.hmacKey, ResponseCode.UNAUTHORIZED
                 )
@@ -290,30 +299,30 @@ class AuthorizationAuthority:
                 public_key = ec.EllipticCurvePublicKey.from_encoded_point(
                     ec.SECP256R1(), verification_key_bytes
                 )
-
-            self.logger.info(f"Emissione Authorization Ticket ASN.1 OER...")
+            
+            self.logger.info(f"Emissione Authorization Ticket ASN.1 ...")
             # Genera ITS-ID univoco per AT (solo per logging, non incluso in AT per privacy)
             its_id = f"AT_{secrets.token_hex(8)}"
 
-            # Issue AT in formato ASN.1 OER (ritorna bytes)
-            at_certificate_oer = self.issue_authorization_ticket(
+            # Issue AT in formato ASN.1  (ritorna bytes)
+            at_certificate_asn = self.issue_authorization_ticket(
                 its_id=its_id,
                 public_key=public_key,
                 attributes=inner_at_request.requestedSubjectAttributes,
             )
             
-            # Calcola HashedId8 per logging (usa encoder riutilizzabile)
-            at_hashed_id8 = self.at_encoder.compute_hashed_id8(at_certificate_oer)
-            self.logger.info(f"✅ AT emesso: HashedId8={at_hashed_id8.hex()[:16]}... ({len(at_certificate_oer)} bytes)")
+            # Calcola HashedId8 for logging (ETSI TS 103097 V2.1.1)
+            at_hashed_id8 = compute_hashed_id8(at_certificate_asn)
+            self.logger.info(f"✅ AT emesso: HashedId8={at_hashed_id8.hex()[:16]}... ({len(at_certificate_asn)} bytes)")
 
             # 5. Crea e cripta response con hmacKey
-            self.logger.info(f"Creando AuthorizationResponse (ASN.1 OER)...")
+            self.logger.info(f"Creando AuthorizationResponse (ASN.1)...")
             request_hash = compute_request_hash(request_bytes)
 
             response_bytes = self.message_encoder.encode_authorization_response(
                 response_code=ResponseCode.OK,
                 request_hash=request_hash,
-                certificate_asn1=at_certificate_oer,  #ASN.1 OER
+                certificate_asn1=at_certificate_asn,  #ASN.1
                 hmac_key=inner_at_request.hmacKey,
             )
 
@@ -321,21 +330,142 @@ class AuthorizationAuthority:
             self.logger.info(f"   Response code: OK")
             self.logger.info(f"   Certificate attached: Yes")
             self.logger.info(f"   Encryption: HMAC-based (unlinkability)")
-            self.logger.info(f"   Encoding: ASN.1 OER")
+            self.logger.info(f"   Encoding: ASN.1")
 
             return response_bytes
 
         except Exception as e:
             self.logger.error(f"❌ Error processing AuthorizationRequest: {e}", exc_info=True)
             # Se abbiamo hmacKey, usiamolo per error response
+            # IMPORTANTE: inner_at_request potrebbe non essere definito se decode fallisce
+            if 'inner_at_request' in locals() and inner_at_request is not None:
+                try:
+                    return self._create_at_error_response(
+                        request_bytes, inner_at_request.hmacKey, ResponseCode.INTERNAL_SERVER_ERROR
+                    )
+                except:
+                    pass
+            # Se non riusciamo nemmeno a decrittare la request, non possiamo rispondere
+            self.logger.error(f"❌ Cannot create error response (request not decryptable)")
+            raise
+
+    def process_butterfly_authorization_request_etsi(self, request_bytes: bytes) -> bytes:
+        """
+        Processa una ButterflyAuthorizationRequest ETSI TS 102941 (ASN.1 OER encoded).
+        
+        Butterfly mode permette di richiedere N Authorization Tickets in una singola richiesta,
+        con N chiavi pubbliche e N HMAC keys per unlinkability.
+        
+        ETSI TS 102941 Section 6.3.3 - Butterfly Authorization
+        
+        Args:
+            request_bytes: ASN.1 OER encoded ButterflyAuthorizationRequest
+            
+        Returns:
+            ASN.1 OER encoded ButterflyAuthorizationResponse (multiple responses)
+        """
+        self.logger.info(f"\n🦋 Ricevuto ButterflyAuthorizationRequest ETSI (ASN.1 OER): {len(request_bytes)} bytes")
+
+        try:
+            # 1. Decripta e decodifica butterfly request + estrae EC
+            self.logger.info(f"Decrittando ButterflyAuthorizationRequest...")
+            butterfly_request, enrollment_cert = self.message_encoder.decode_butterfly_authorization_request(
+                request_bytes, self.private_key
+            )
+
+            num_requests = len(butterfly_request.innerAtRequests)
+            self.logger.info(f"🦋 Request decrittata con successo!")
+            self.logger.info(f"   Numero richieste AT: {num_requests}")
+            self.logger.info(f"   Enrollment Certificate: {len(enrollment_cert)} bytes")
+
+            # 2. Valida Enrollment Certificate
+            self.logger.info(f"Validazione Enrollment Certificate...")
             try:
+                self._validate_enrollment_certificate(enrollment_cert)
+                self.logger.info(f"✅ Enrollment Certificate validato!")
+            except ValueError as e:
+                self.logger.error(f"❌ EC non valido: {e}")
+                # Per butterfly, ritorniamo errore per tutte le richieste
+                # Usa il primo hmacKey per error response (standard ETSI)
+                first_hmac_key = butterfly_request.innerAtRequests[0].hmacKey
                 return self._create_at_error_response(
-                    request_bytes, inner_at_request.hmacKey, ResponseCode.INTERNAL_SERVER_ERROR
+                    request_bytes, first_hmac_key, ResponseCode.UNAUTHORIZED
                 )
-            except:
-                # Se non riusciamo nemmeno a decrittare la request, non possiamo rispondere
-                self.logger.error(f"❌ Cannot create error response (request not decryptable)")
-                raise
+
+            # 3. Processa ogni InnerAtRequest e genera AT
+            at_certificates = []
+            for i, inner_request in enumerate(butterfly_request.innerAtRequests):
+                self.logger.info(f"🎫 Processing AT request {i+1}/{num_requests}...")
+                
+                # Estrai chiave pubblica
+                verification_key_bytes = inner_request.publicKeys.get("verification")
+                if not verification_key_bytes:
+                    self.logger.error(f"❌ No verification key in request {i+1}")
+                    # Ritorna errore
+                    return self._create_at_error_response(
+                        request_bytes, inner_request.hmacKey, ResponseCode.BAD_REQUEST
+                    )
+
+                # Deserializza chiave pubblica
+                try:
+                    public_key = load_der_public_key(verification_key_bytes)
+                except:
+                    # Prova formato X9.62 uncompressed point
+                    public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+                        ec.SECP256R1(), verification_key_bytes
+                    )
+                
+                # Genera ITS-ID univoco per AT
+                its_id = f"AT_BF_{i}_{secrets.token_hex(6)}"
+
+                # Emetti AT in formato ASN.1 OER
+                at_certificate_asn = self.issue_authorization_ticket(
+                    its_id=its_id,
+                    public_key=public_key,
+                    attributes=inner_request.requestedSubjectAttributes or 
+                              butterfly_request.sharedAtRequest.requestedSubjectAttributes,
+                )
+                
+                at_certificates.append(at_certificate_asn)
+                at_hashed_id8 = compute_hashed_id8(at_certificate_asn)
+                self.logger.info(f"✅ AT {i+1} emesso: HashedId8={at_hashed_id8.hex()[:16]}...")
+
+            # 4. Crea ButterflyAuthorizationResponse con tutti i certificati
+            # Per ora, ritorniamo come singola response standard (il client deve gestire multiple responses)
+            # TODO: Implementare encoder per ButterflyAuthorizationResponse completo
+            self.logger.info(f"🦋 Creando ButterflyAuthorizationResponse con {len(at_certificates)} AT...")
+            
+            # Per compatibilità, ritorniamo la prima risposta come standard AuthorizationResponse
+            # Il client butterfly dovrebbe gestire multiple responses, ma per ora semplifichiamo
+            request_hash = compute_request_hash(request_bytes)
+            first_inner_request = butterfly_request.innerAtRequests[0]
+            
+            response_bytes = self.message_encoder.encode_authorization_response(
+                response_code=ResponseCode.OK,
+                request_hash=request_hash,
+                certificate_asn1=at_certificates[0],  # Prima AT
+                hmac_key=first_inner_request.hmacKey,
+            )
+
+            self.logger.info(f"🦋 ButterflyAuthorizationResponse creata: {len(response_bytes)} bytes")
+            self.logger.info(f"   AT emessi: {len(at_certificates)}")
+            self.logger.info(f"   Encoding: ASN.1 OER")
+
+            return response_bytes
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing ButterflyAuthorizationRequest: {e}", exc_info=True)
+            # Tentativo di creare error response se possibile
+            if 'butterfly_request' in locals() and butterfly_request and len(butterfly_request.innerAtRequests) > 0:
+                try:
+                    first_hmac_key = butterfly_request.innerAtRequests[0].hmacKey
+                    return self._create_at_error_response(
+                        request_bytes, first_hmac_key, ResponseCode.INTERNAL_SERVER_ERROR
+                    )
+                except:
+                    pass
+            self.logger.error(f"❌ Cannot create butterfly error response")
+            raise
 
     def _create_at_error_response(
         self, request_bytes: bytes, hmac_key: bytes, error_code: ResponseCode
@@ -349,7 +479,7 @@ class AuthorizationAuthority:
             error_code: Codice errore da ritornare
 
         Returns:
-            ASN.1 OER encoded AuthorizationResponse con errore
+            ASN.1  encoded AuthorizationResponse con errore
         """
         self.logger.info(f"[WARNING] Creando AT error response: {error_code}")
         request_hash = compute_request_hash(request_bytes)
@@ -364,12 +494,12 @@ class AuthorizationAuthority:
     
     def issue_authorization_ticket(self, its_id: str, public_key, attributes=None):
         """
-        Emette Authorization Ticket in formato ASN.1 OER (ETSI TS 103097 V2.1.1).
+        Emette Authorization Ticket in formato ASN.1  (ETSI TS 103097 V2.1.1).
         
         **100% ETSI COMPLIANT - PRODUCTION READY**
         
         Usa ETSIAuthorizationTicketEncoder per generare AT conformi a:
-        - ETSI TS 103097 V2.1.1: Certificate format (ASN.1 OER)
+        - ETSI TS 103097 V2.1.1: Certificate format (ASN.1 )
         - ETSI TS 102941 V2.1.1: PKI Trust and Privacy Management
         - IEEE 1609.2: WAVE Security Services
         
@@ -383,7 +513,7 @@ class AuthorizationAuthority:
                 - 'priority': Priorità traffico 0-7 (opzionale)
             
         Returns:
-            bytes: Certificato AT completo in formato ASN.1 OER binario
+            bytes: Certificato AT completo in formato ASN.1  binario
         """
         # ========================================================================
         # 1. PARSING ATTRIBUTI CON DEFAULTS ETSI
@@ -416,52 +546,45 @@ class AuthorizationAuthority:
         now_utc = datetime.now(timezone.utc)
         expiry_time = now_utc + timedelta(hours=validity_hours)
         
-        # Calcola AA HashedId8 (identificatore issuer per ETSI)
-        # self.certificate_asn1 è già in formato ASN.1 OER (bytes)
-        aa_hashed_id8 = self.at_encoder.compute_hashed_id8(self.certificate_asn1)
-        
         # ========================================================================
-        # 3. GENERAZIONE AT CON ENCODER ASN.1 OER
+        # 3. GENERAZIONE AT CON ASN.1 ENCODER
         # ========================================================================
         
         try:
-            at_certificate_oer = self.at_encoder.encode_full_authorization_ticket(
-                issuer_hashed_id8=aa_hashed_id8,
-                subject_public_key=public_key,
-                start_validity=now_utc,
+            at_certificate_asn = generate_authorization_ticket(
+                aa_cert_asn1=self.certificate_asn1,
+                aa_private_key=self.private_key,
+                its_public_key=public_key,
                 duration_hours=validity_hours,
                 app_permissions=app_permissions,
-                aa_private_key=self.private_key,
-                geographic_region=geographic_region,
-                priority=priority,
             )
         except Exception as e:
-            self.logger.error(f"❌ Errore generazione AT ASN.1 OER: {e}")
+            self.logger.error(f"❌ Errore generazione AT ASN.1: {e}")
             raise ValueError(f"Impossibile generare AT: {e}")
         
         # Calcola HashedId8 del certificato AT (identificatore univoco ETSI)
-        at_hashed_id8 = self.at_encoder.compute_hashed_id8(at_certificate_oer)
+        at_hashed_id8 = compute_hashed_id8(at_certificate_asn)
         
         # ========================================================================
-        # 4. SALVATAGGIO IN FORMATO .OER BINARIO
+        # 4. SALVATAGGIO IN FORMATO .asn BINARIO
         # ========================================================================
         
         at_filename = f"AT_{at_hashed_id8.hex()}.oer"
         at_path = str(self.paths.data_dir / at_filename)
         
-        PKIFileHandler.save_binary_file(at_certificate_oer, at_path)
+        PKIFileHandler.save_binary_file(at_certificate_asn, at_path)
         
         self.logger.info(
             f"✅ AT emesso: {at_hashed_id8.hex()[:16]}... "
-            f"({len(at_certificate_oer)} bytes ASN.1 OER, {validity_hours}h, "
+            f"({len(at_certificate_asn)} bytes ASN.1, {validity_hours}h, "
             f"apps: {', '.join(app_permissions)})"
         )
         
         # ========================================================================
-        # 5. RETURN: Solo bytes ASN.1 OER (standard ETSI)
+        # 5. RETURN: Solo bytes ASN.1 asn (standard ETSI)
         # ========================================================================
         
-        return at_certificate_oer
+        return at_certificate_asn
 
     # ========================================================================
     # ETSI TS 102941 BATCH AUTHORIZATION (Butterfly Key Expansion)
@@ -568,22 +691,22 @@ class AuthorizationAuthority:
         if not public_keys or len(public_keys) == 0:
             raise RuntimeError("Batch vuoto: almeno una chiave pubblica richiesta")
 
-        # Lista certificati AT in formato ASN.1 OER (bytes)
-        certificates_oer = []
+        # Lista certificati AT in formato ASN.1 (bytes)
+        certificates_asn = []
         for idx, public_key in enumerate(public_keys):
             self.logger.info(f"Generando AT {idx+1}/{len(public_keys)}...")
-            cert_oer = self.issue_authorization_ticket(its_id_str, public_key, attributes)
-            certificates_oer.append(cert_oer)
+            cert_asn = self.issue_authorization_ticket(its_id_str, public_key, attributes)
+            certificates_asn.append(cert_asn)
 
-        self.logger.info(f"✅ Batch di {len(certificates_oer)} AT emessi con successo (formato ASN.1 OER)!")
-        return certificates_oer
+        self.logger.info(f"✅ Batch di {len(certificates_asn)} AT emessi con successo (formato ASN.1)!")
+        return certificates_asn
     
     def _validate_enrollment_certificate(self, enrollment_cert: bytes) -> bool:
         """
         Valida completamente un Enrollment Certificate (ETSI TS 102941).
         
         **REFACTORED**: Delega a ECValidator service (elimina duplicazione).
-        **MIGRATED**: Accetta solo bytes ASN.1 OER (NO X.509)
+        **MIGRATED**: Accetta solo bytes ASN.1 asn (NO X.509)
         
         Controlli eseguiti:
         1. Trust chain verification tramite TrustValidator
@@ -591,7 +714,7 @@ class AuthorizationAuthority:
         3. Check CRL per revoche
         
         Args:
-            enrollment_cert: Certificato ASN.1 OER (bytes)
+            enrollment_cert: Certificato ASN.1 asn (bytes)
             
         Returns:
             True se valido, False altrimenti
@@ -609,7 +732,7 @@ class AuthorizationAuthority:
     
     def revoke_authorization_ticket(
         self,
-        at_certificate_oer: bytes,
+        at_certificate_asn: bytes,
         reason: CRLReason = CRLReason.UNSPECIFIED
     ) -> None:
         """
@@ -618,10 +741,11 @@ class AuthorizationAuthority:
         ETSI TS 102941: AT revocati identificati tramite HashedId8.
         
         Args:
-            at_certificate_oer: AT certificate in formato ASN.1 OER (bytes)
+            at_certificate_asn: AT certificate in formato ASN.1 asn (bytes)
             reason: Motivo della revoca (CRLReason enum)
         """
-        at_hashed_id8 = self.at_encoder.compute_hashed_id8(at_certificate_oer)
+        # Compute HashedId8 for revocation (ETSI TS 103097 V2.1.1)
+        at_hashed_id8 = compute_hashed_id8(at_certificate_asn)
         self.revoke_by_hashed_id(at_hashed_id8, reason)
     
     def revoke_by_hashed_id(
@@ -651,17 +775,17 @@ class AuthorizationAuthority:
         
         self.logger.info(f"✅ AT revoked successfully")
     
-    def is_revoked(self, at_certificate_oer: bytes) -> bool:
+    def is_revoked(self, at_certificate_asn: bytes) -> bool:
         """
         Verifica se un AT è stato revocato (controlla CRLManager).
         
         Args:
-            at_certificate_oer: AT certificate in formato ASN.1 OER (bytes)
+            at_certificate_asn: AT certificate in formato ASN.1 asn (bytes)
             
         Returns:
             bool: True se revocato, False altrimenti
         """
-        return self.crl_manager.is_certificate_revoked(at_certificate_oer)
+        return self.crl_manager.is_certificate_revoked(at_certificate_asn)
     
     def get_revoked_count(self) -> int:
         """Ritorna il numero di AT revocati dal CRLManager."""
@@ -674,13 +798,13 @@ class AuthorizationAuthority:
     
     def _auto_register_to_tlm(self) -> None:
         """
-        Auto-registra AA nel Trust List Manager usando HashedId8 (ASN.1 OER compliant).
+        Auto-registra AA nel Trust List Manager usando HashedId8 (ASN.1 asn compliant).
         
         Questo metodo è chiamato automaticamente durante l'inizializzazione.
         """
         try:
-            # Calcola AA HashedId8 come identificatore univoco
-            aa_hashed_id8 = self.at_encoder.compute_hashed_id8(self.certificate_asn1)
+            # Calcola AA HashedId8 come identificatore univoco (ETSI TS 103097 V2.1.1)
+            aa_hashed_id8 = compute_hashed_id8(self.certificate_asn1)
             aa_hashed_id8_hex = aa_hashed_id8.hex()
             
             # Check if already registered (usa HashedId8 invece di SKI)
@@ -690,9 +814,9 @@ class AuthorizationAuthority:
             )
             
             if not already_registered:
-                # Registra con certificato ASN.1 OER
+                # Registra con certificato ASN.1 asn
                 self.tlm.add_trust_anchor(
-                    certificate=self.certificate_asn1,  # bytes ASN.1 OER
+                    certificate=self.certificate_asn1,  # bytes ASN.1 asn
                     authority_type="AA"
                 )
                 self.logger.info(f"✅ Auto-registered {self.aa_id} to TLM (HashedId8={aa_hashed_id8_hex[:16]}...)")

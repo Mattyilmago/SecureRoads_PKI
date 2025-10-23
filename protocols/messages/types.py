@@ -13,87 +13,15 @@ Author: SecureRoad PKI Project
 Date: October 2025
 """
 
-import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from enum import Enum
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 
-
-# ============================================================================
-# ETSI CONSTANTS (ETSI TS 103097 Section 4)
-# ============================================================================
-
-# ETSI Epoch: 2004-01-01 00:00:00 UTC (TAI - International Atomic Time)
-# Used as reference for Time32 encoding
-ETSI_EPOCH = datetime(2004, 1, 1, tzinfo=timezone.utc)
-
-# Certificate Types (ETSI TS 103097 Section 6.4.1)
-CERT_TYPE_EXPLICIT = 0  # Root CA
-CERT_TYPE_AUTHORIZATION = 1  # Authorization Ticket
-CERT_TYPE_ENROLLMENT = 2  # Enrollment Certificate
-
-# ============================================================================
-# ENUMERATIONS
-# ============================================================================
-
-
-class ETSIMessageType(Enum):
-    """ETSI Message Type Identifiers"""
-
-    ENROLLMENT_REQUEST = "EnrollmentRequest"
-    ENROLLMENT_RESPONSE = "EnrollmentResponse"
-    AUTHORIZATION_REQUEST = "AuthorizationRequest"
-    AUTHORIZATION_RESPONSE = "AuthorizationResponse"
-    AUTHORIZATION_VALIDATION_REQUEST = "AuthorizationValidationRequest"
-    AUTHORIZATION_VALIDATION_RESPONSE = "AuthorizationValidationResponse"
-    CA_CERTIFICATE_REQUEST = "CaCertificateRequest"
-    CA_CERTIFICATE_RESPONSE = "CaCertificateResponse"
-    CTL_REQUEST = "CtlRequest"
-    CTL_RESPONSE = "CtlResponse"
-    CRL_REQUEST = "CrlRequest"
-    CRL_RESPONSE = "CrlResponse"
-
-
-class ResponseCode(Enum):
-    """Response codes for ETSI messages"""
-
-    OK = 0
-    CANONICAL_ENCODING_ERROR = 1
-    BAD_CONTENT_TYPE = 2
-    IMPLICIT_CERTIFICATE_VERIFICATION_FAILED = 3
-    DECRYPTION_FAILED = 4
-    UNKNOWN_ITS_ID = 5
-    INVALID_SIGNATURE = 6
-    INVALID_ENCRYPTION_KEY = 7
-    BAD_REQUEST = 8
-    UNAUTHORIZED = 9
-    INTERNAL_SERVER_ERROR = 10
-    UNSUPPORTED_VERSION = 11
-    WRONG_EA = 12
-    WRONG_AA = 13
-    DENM_INVALID_PERMISSIONS = 14
-    CAM_INVALID_PERMISSIONS = 15
-    UNKNOWN_EA = 16
-
-
-class PublicKeyAlgorithm(Enum):
-    """Public key algorithms supported"""
-
-    ECDSA_NISTP256_WITH_SHA256 = "ecdsa-nistp256-with-sha256"
-    ECDSA_BRAINPOOLP256R1_WITH_SHA256 = "ecdsa-brainpoolp256r1-with-sha256"
-    ECDSA_BRAINPOOLP384R1_WITH_SHA384 = "ecdsa-brainpoolp384r1-with-sha384"
-
-
-class SymmetricAlgorithm(Enum):
-    """Symmetric encryption algorithms"""
-
-    AES_128_CCM = "aes128-ccm"
+from ..core import ETSIMessageType, ResponseCode
 
 
 # ============================================================================
@@ -618,49 +546,6 @@ class CaCertificateResponse:
     def get_message_type(self) -> ETSIMessageType:
         """Returns the message type identifier"""
         return ETSIMessageType.CA_CERTIFICATE_RESPONSE
-
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-# Import certificate-related utilities from centralized module (DRY principle)
-from protocols.etsi_certificate_utils import (
-    compute_hashed_id8,
-    decode_public_key_compressed,
-    encode_public_key_compressed,
-    extract_public_key_from_asn1_certificate,
-    extract_validity_period,
-    time32_decode,
-    time32_encode,
-    verify_asn1_certificate_signature,
-)
-
-
-def compute_request_hash(data: bytes) -> bytes:
-    """
-    Compute SHA-256 hash of request for response correlation.
-
-    Args:
-        data: Serialized request data
-
-    Returns:
-        SHA-256 hash (32 bytes)
-    """
-    return hashlib.sha256(data).digest()
-
-
-# Note: The following functions are now imported from etsi_certificate_utils:
-# - compute_hashed_id8()
-# - time32_encode()
-# - time32_decode()
-# - extract_validity_period()
-# - encode_public_key_compressed()
-# - decode_public_key_compressed()
-# - verify_asn1_certificate_signature()
-# - extract_public_key_from_asn1_certificate()
-
-
 
 
 # ============================================================================

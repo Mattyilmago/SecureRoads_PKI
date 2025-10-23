@@ -28,6 +28,14 @@ sys.path.insert(0, str(project_root))
 from entities.root_ca import RootCA
 from entities.enrollment_authority import EnrollmentAuthority
 from entities.authorization_authority import AuthorizationAuthority
+from managers.trust_list_manager import TrustListManager
+from config import PKI_PATHS
+sys.path.insert(0, str(project_root))
+
+from entities.root_ca import RootCA
+from entities.enrollment_authority import EnrollmentAuthority
+from entities.authorization_authority import AuthorizationAuthority
+from config import PKI_PATHS
 
 
 def generate_root_ca_crl(validity_days):
@@ -36,8 +44,7 @@ def generate_root_ca_crl(validity_days):
     print(f"  GENERAZIONE FULL CRL - ROOT CA")
     print(f"{'='*70}\n")
     
-    # Carica Root CA esistente
-    root_ca = RootCA(base_dir="./data/root_ca")
+    root_ca = RootCA(ca_id="ROOT_CA_01")
     
     # Get subject from certificate
     subject = root_ca.certificate.subject
@@ -49,7 +56,6 @@ def generate_root_ca_crl(validity_days):
     print(f"Validità: {validity_days} giorni")
     print(f"\nGenerazione in corso...")
     
-    # Genera Full CRL
     crl_path = root_ca.publish_full_crl(validity_days=validity_days)
     
     print(f"\n✅ Full CRL generata con successo!")
@@ -65,21 +71,20 @@ def generate_ea_crl(entity_id, validity_days):
     print(f"  GENERAZIONE FULL CRL - {entity_id}")
     print(f"{'='*70}\n")
     
-    base_dir = f"./data/ea/{entity_id}"
+    base_dir = PKI_PATHS.get_ea_path(entity_id)
     
     if not os.path.exists(base_dir):
         print(f"❌ Errore: Directory {base_dir} non trovata!")
         print(f"   L'entità {entity_id} non esiste.")
         return
     
-    # Carica Root CA prima (necessario per EA)
-    root_ca = RootCA(base_dir="./data/root_ca")
+    root_ca = RootCA(ca_id="ROOT_CA_01")
+    tlm = TrustListManager(root_ca, tlm_id="TLM_MAIN")
     
-    # Carica EA esistente
     ea = EnrollmentAuthority(
         root_ca=root_ca,
-        ea_id=entity_id,
-        base_dir=f"./data/ea/"
+        tlm=tlm,
+        ea_id=entity_id
     )
     
     print(f"EA caricata: {entity_id}")
@@ -109,21 +114,20 @@ def generate_aa_crl(entity_id, validity_days):
     print(f"  GENERAZIONE FULL CRL - {entity_id}")
     print(f"{'='*70}\n")
     
-    base_dir = f"./data/aa/{entity_id}"
+    base_dir = PKI_PATHS.get_aa_path(entity_id)
     
     if not os.path.exists(base_dir):
         print(f"❌ Errore: Directory {base_dir} non trovata!")
         print(f"   L'entità {entity_id} non esiste.")
         return
     
-    # Carica Root CA prima (necessario per AA)
-    root_ca = RootCA(base_dir="./data/root_ca")
+    root_ca = RootCA(ca_id="ROOT_CA_01")
+    tlm = TrustListManager(root_ca, tlm_id="TLM_MAIN")
     
-    # Carica AA esistente
     aa = AuthorizationAuthority(
         root_ca=root_ca,
-        aa_id=entity_id,
-        base_dir=f"./data/aa/"
+        tlm=tlm,
+        aa_id=entity_id
     )
     
     print(f"AA caricata: {entity_id}")

@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
 
-from protocols.etsi_root_certificate import ETSIRootCertificateEncoder
+from protocols.certificates import RootCertificate as ETSIRootCertificateEncoder
 from utils.logger import PKILogger
 from utils.pki_io import PKIFileHandler
 
@@ -212,10 +212,10 @@ class AAKeyManager:
         subject_name = f"AuthorizationAuthority_{self.aa_id}"
         
         try:
-            # Genera certificato AA usando generate_authority_certificate (firmato da Root CA)
-            from protocols.etsi_authority_certificate import generate_authority_certificate
+            # Genera certificato AA usando SubordinateCertificate.generate (firmato da Root CA)
+            from protocols.certificates import SubordinateCertificate
             
-            certificate_asn1 = generate_authority_certificate(
+            certificate_asn1 = SubordinateCertificate.generate(
                 root_ca_cert_asn1=self.root_ca.certificate_asn1,
                 root_ca_private_key=self.root_ca.private_key,
                 authority_public_key=self.private_key.public_key(),
